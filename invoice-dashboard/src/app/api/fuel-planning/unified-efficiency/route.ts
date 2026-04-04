@@ -39,6 +39,8 @@ export async function GET(req: NextRequest) {
             "fuel_end_lbs, flight_date, tail_number, nautical_miles",
         )
         .gte("flight_date", cutoff)
+        .not("fuel_burn_lbs", "is", null)
+        .gt("fuel_burn_lbs", 0)
         .order("flight_date", { ascending: false }),
 
       // 2. ForeFlight predictions (wider field set)
@@ -69,11 +71,29 @@ export async function GET(req: NextRequest) {
     ]);
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  const rawFlights = (rawFlightsRes.data ?? []) as any[];
+  const rawFlightsRaw = (rawFlightsRes.data ?? []) as any[];
   const predictions = (predictionsRes.data ?? []) as any[];
   const phases = (phasesRes.data ?? []) as any[];
   const scheduled = (scheduledRes.data ?? []) as any[];
   /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  // Dedupe: when multiple rows exist for same tail+origin+dest+date, keep the one
+  // with the most complete data (has NM, highest burn). This handles overlapping
+  // CSV uploads from different batches.
+  const dedupeMap = new Map<string, typeof rawFlightsRaw[0]>();
+  for (const f of rawFlightsRaw) {
+    const key = `${f.tail_number}:${f.origin}:${f.destination}:${f.flight_date}`;
+    const existing = dedupeMap.get(key);
+    if (!existing) {
+      dedupeMap.set(key, f);
+    } else {
+      // Prefer row with nautical_miles and higher burn
+      const existingScore = (existing.nautical_miles ? 1 : 0) + (existing.fuel_burn_lbs ?? 0);
+      const newScore = (f.nautical_miles ? 1 : 0) + (f.fuel_burn_lbs ?? 0);
+      if (newScore > existingScore) dedupeMap.set(key, f);
+    }
+  }
+  const rawFlights = [...dedupeMap.values()];
 
   // ---------------------------------------------------------------------------
   // PIC backfill from flights table (same logic as efficiency/route.ts)
