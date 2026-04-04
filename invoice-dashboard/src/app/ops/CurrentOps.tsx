@@ -2905,7 +2905,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "Cancelled") {
-                  status = "Cancelled"; statusColor = "text-red-600 font-medium";
+                  status = "FP Cancelled"; statusColor = "text-red-600 font-medium";
                 } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Filed") {
                   status = "Scheduled"; isFiled = true;
                 } else if (fi?.actual_arrival) {
