@@ -223,7 +223,7 @@ export async function GET(req: NextRequest) {
   // 1. Get today's undeparted flights
   const { data: flightRows } = await supa
     .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure")
+    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, salesperson")
     .gte("scheduled_departure", oneHourAgo)
     .lte("scheduled_departure", tomorrowStart)
     .order("scheduled_departure", { ascending: true });
@@ -243,17 +243,11 @@ export async function GET(req: NextRequest) {
     if (s.label && s.callsign) callsignMap.set(s.label.toUpperCase(), s.callsign.toUpperCase());
   }
 
-  // 3. Get salesperson map: "TAIL|DEPT_ICAO" → salesperson name
-  const { data: tripRows } = await supa
-    .from("trip_salespersons")
-    .select("tail_number, origin_icao, salesperson_name, scheduled_departure")
-    .gte("scheduled_departure", todayStart)
-    .lte("scheduled_departure", tomorrowStart);
-
+  // 3. Build salesperson map from flights data: "TAIL|DEPT_ICAO" → salesperson name
   const salespersonMap = new Map<string, string>();
-  for (const t of tripRows ?? []) {
-    if (t.tail_number && t.origin_icao && t.salesperson_name) {
-      salespersonMap.set(`${t.tail_number.toUpperCase()}|${t.origin_icao}`, t.salesperson_name);
+  for (const f of flightRows ?? []) {
+    if (f.tail_number && f.departure_icao && f.salesperson) {
+      salespersonMap.set(`${f.tail_number.toUpperCase()}|${f.departure_icao}`, f.salesperson);
     }
   }
 

@@ -47,6 +47,10 @@ export type Flight = {
   pax_count: number | null;
   jetinsight_url: string | null;
   fa_flight_id: string | null;
+  salesperson: string | null;
+  customer_name: string | null;
+  origin_fbo: string | null;
+  destination_fbo: string | null;
   diverted?: boolean | null;
   alerts: OpsAlert[];
 };
@@ -221,7 +225,7 @@ export async function fetchFlightsLite(params: {
 
   const { data: flightRows, error } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -253,6 +257,10 @@ export async function fetchFlightsLite(params: {
       pax_count: f.pax_count as number | null,
       jetinsight_url: f.jetinsight_url as string | null,
       fa_flight_id: f.fa_flight_id as string | null,
+      salesperson: f.salesperson as string | null,
+      customer_name: f.customer_name as string | null,
+      origin_fbo: f.origin_fbo as string | null,
+      destination_fbo: f.destination_fbo as string | null,
       alerts: [],
     });
   }
@@ -275,7 +283,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -443,6 +451,10 @@ export async function fetchFlights(params: {
     pax_count: f.pax_count as number | null,
     jetinsight_url: f.jetinsight_url as string | null,
     fa_flight_id: f.fa_flight_id as string | null,
+    salesperson: f.salesperson as string | null,
+    customer_name: f.customer_name as string | null,
+    origin_fbo: f.origin_fbo as string | null,
+    destination_fbo: f.destination_fbo as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
 
@@ -526,6 +538,10 @@ export async function fetchFlights(params: {
         pax_count: null,
         jetinsight_url: null,
         fa_flight_id: null,
+        salesperson: null,
+        customer_name: null,
+        origin_fbo: null,
+        destination_fbo: null,
         alerts: [alert],
       });
     }

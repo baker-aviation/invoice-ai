@@ -3,16 +3,10 @@ export const dynamic = "force-dynamic";
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlightsLite, fetchMxNotes, fetchMelItems, fetchAircraftTags } from "@/lib/opsApi";
-import { createServiceClient } from "@/lib/supabase/service";
 import VanPositioningClient from "./VanPositioningWrapper";
 
 export default async function MaintenancePage() {
-  const supa = createServiceClient();
-  const now = new Date();
-  const past = new Date(now.getTime() - 7 * 86400000).toISOString();
-  const future = new Date(now.getTime() + 7 * 86400000).toISOString();
-
-  const [flightData, mxNotes, melItems, aircraftTags, { data: fboRows }] = await Promise.all([
+  const [flightData, mxNotes, melItems, aircraftTags] = await Promise.all([
     fetchFlightsLite({ lookahead_hours: 240, lookback_hours: 168 }).catch(() => ({
       ok: false,
       flights: [],
@@ -21,18 +15,13 @@ export default async function MaintenancePage() {
     fetchMxNotes().catch(() => []),
     fetchMelItems().catch(() => []),
     fetchAircraftTags().catch(() => []),
-    supa
-      .from("trip_salespersons")
-      .select("tail_number, destination_icao, destination_fbo")
-      .not("destination_fbo", "is", null)
-      .gte("scheduled_departure", past)
-      .lte("scheduled_departure", future),
   ]);
 
+  // Build FBO map from flights data (populated by JetInsight scraper)
   const fboMap: Record<string, string> = {};
-  for (const row of fboRows ?? []) {
-    if (row.tail_number && row.destination_icao && row.destination_fbo) {
-      fboMap[`${row.tail_number}:${row.destination_icao}`] = row.destination_fbo;
+  for (const f of flightData.flights) {
+    if (f.tail_number && f.arrival_icao && f.destination_fbo) {
+      fboMap[`${f.tail_number}:${f.arrival_icao}`] = f.destination_fbo;
     }
   }
 

@@ -639,21 +639,17 @@ export async function GET(req: NextRequest) {
   }
   if (snapshotBackfills.length > 0) await Promise.all(snapshotBackfills);
 
-  // Fetch passenger + salesperson data from trip_salespersons (CSV upload)
-  const tripTails = [...new Set((trips ?? []).map((t) => t.tail_number).filter(Boolean))];
+  // Build salesperson map from flights data (populated by JetInsight scraper)
   const salespersonMap = new Map<string, string>();
-  const csvPaxMap = new Map<string, string>();
-  if (tripTails.length > 0) {
-    const { data: paxRows } = await supa
-      .from("trip_salespersons")
-      .select("trip_id, tail_number, origin_icao, destination_icao, passengers, salesperson_name")
-      .in("tail_number", tripTails);
-
-    for (const p of paxRows ?? []) {
-      const key = `${p.tail_number}|${p.origin_icao}|${p.destination_icao}`;
-      if (p.passengers) csvPaxMap.set(key, p.passengers);
-      if (p.salesperson_name && !salespersonMap.has(p.tail_number)) {
-        salespersonMap.set(p.tail_number, p.salesperson_name);
+  if (allFlightIds.size > 0) {
+    const { data: spRows } = await supa
+      .from("flights")
+      .select("id, tail_number, salesperson")
+      .in("id", [...allFlightIds])
+      .not("salesperson", "is", null);
+    for (const f of spRows ?? []) {
+      if (f.salesperson && f.tail_number && !salespersonMap.has(f.tail_number)) {
+        salespersonMap.set(f.tail_number, f.salesperson);
       }
     }
   }
@@ -695,7 +691,7 @@ export async function GET(req: NextRequest) {
       return !ft || !/(positioning|repo|ferry|maintenance)/i.test(ft);
     });
 
-    // Get passengers from JI scraper first, fall back to CSV
+    // Get passengers from JI scraper
     const jiPax = t.jetinsight_trip_id ? jiPaxMap.get(t.jetinsight_trip_id) : null;
 
     const route = t.route_icaos ?? [];
@@ -704,13 +700,6 @@ export async function GET(req: NextRequest) {
     if (jiPax && jiPax.length > 0) {
       // JI passengers are per-trip, not per-leg — show on first revenue leg
       legPax.push({ dep: route[0] ?? "", arr: route[route.length - 1] ?? "", passengers: jiPax.join(", ") });
-    } else {
-      // Fall back to CSV per-leg data
-      for (let i = 0; i < route.length - 1; i++) {
-        const key = `${t.tail_number}|${route[i]}|${route[i + 1]}`;
-        const pax = csvPaxMap.get(key);
-        if (pax) legPax.push({ dep: route[i], arr: route[i + 1], passengers: pax });
-      }
     }
 
     if (legPax.length > 0) t.leg_passengers = legPax;

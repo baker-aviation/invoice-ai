@@ -299,7 +299,7 @@ export default function VanDriverClient({
   removals?: string[];
   unscheduledOverrides?: [string, number][];
 }) {
-  /** Look up destination FBO for a flight from trip_salespersons data */
+  /** Look up destination FBO for a flight from flights data */
   const lookupFbo = useCallback((f: Flight): string | null => {
     if (!fboMap || !f.tail_number || !f.arrival_icao) return null;
     return fboMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
@@ -354,24 +354,30 @@ export default function VanDriverClient({
     }
   }, []);
 
-  // Refresh flights from API
+  // Refresh flights from the van-specific API (no user auth required).
+  // Merges with existing flights so backfilled published flights (overnight
+  // arrivals loaded by the server component) are never lost.
   const refreshFlights = useCallback(async () => {
     setRefreshing(true);
     try {
-      const now = new Date();
-      const past = new Date(now.getTime() - 12 * 3600000).toISOString();
-      const future = new Date(now.getTime() + 36 * 3600000).toISOString();
-      const url = `/api/flights?from=${encodeURIComponent(past)}&to=${encodeURIComponent(future)}`;
-      const res = await fetch(url);
+      const pubIds = livePublishedFlightIds ?? [];
+      const qs = pubIds.length > 0 ? `?published_ids=${encodeURIComponent(pubIds.join(","))}` : "";
+      const res = await fetch(`/api/van/flights${qs}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.flights) setFlights(data.flights);
+        const freshFlights: Flight[] = data.flights ?? [];
+        setFlights((prev) => {
+          const freshIds = new Set(freshFlights.map((f) => f.id));
+          // Keep previously-loaded flights not in the fresh set (backfilled overnights)
+          const kept = prev.filter((f) => !freshIds.has(f.id));
+          return [...freshFlights, ...kept];
+        });
       }
     } catch {
       // keep existing data
     }
     setRefreshing(false);
-  }, []);
+  }, [livePublishedFlightIds]);
 
   // Refresh MX notes from API (so new notes from admin appear without page reload)
   const refreshMxNotes = useCallback(async () => {
@@ -439,7 +445,9 @@ export default function VanDriverClient({
       items = [];
       for (const fId of livePublishedFlightIds) {
         // Try real flight first
-        const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon, date);
+        // Don't pass date — the director already curated this list, so we
+        // must not filter out overnight/previous-day arrivals.
+        const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
         if (item) {
           items.push(item);
           continue;
@@ -464,6 +472,10 @@ export default function VanDriverClient({
             pax_count: null,
             jetinsight_url: null,
             fa_flight_id: null,
+            salesperson: null,
+            customer_name: null,
+            origin_fbo: null,
+            destination_fbo: null,
             alerts: [],
           };
           items.push({
