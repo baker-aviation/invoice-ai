@@ -366,7 +366,14 @@ export function midnightUtc(icao: string, dateStr: string): Date {
  * new Date() parses as server timezone (CDT) instead of airport timezone (EDT).
  */
 function parseFlightTime(timeStr: string, airportIata: string): Date {
-  // Extract date and time components from "2026-03-18 14:30" or "2026-03-18T14:30"
+  // If the time is already a UTC ISO string (from hasdata.ts parseHdTime),
+  // parse it directly — do NOT re-convert through localTimeToUtc or we'll
+  // double-apply the timezone offset (e.g., 4h error for EDT airports).
+  if (timeStr.endsWith("Z") || timeStr.includes("+") || /\.\d{3}Z$/.test(timeStr)) {
+    return new Date(timeStr);
+  }
+
+  // Legacy/raw HasData format: "2026-03-18 14:30" (local airport time)
   const clean = timeStr.replace("T", " ").trim();
   const m = clean.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})/);
   if (!m) return new Date(timeStr); // fallback to default parsing
@@ -1421,7 +1428,7 @@ function scoreCandidate(
       // Idle tails: strongly prefer latest flight making midnight.
       // 1700-1800L = ideal, earlier = progressively worse.
       if (localHour >= 17 && localHour <= 18) score += 12;
-      else if (localHour >= 16 || localHour === 19) score += 8;
+      else if (localHour === 16 || localHour === 19) score += 8;
       else if (localHour >= 14 && localHour <= 20) score += 4;
       else if (localHour < 14) score -= 3; // too early — wastes the hold opportunity
     } else {
