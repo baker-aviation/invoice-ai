@@ -290,7 +290,9 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
 
     if (routeMatches.length === 0) continue;
 
-    // Pick closest by departure time, but protect existing valid links
+    // Pick closest by departure time, but protect existing valid links.
+    // An "actually departed" FA flight (has actual_departure) should take priority
+    // over a "Scheduled" FA duplicate that may have linked first.
     let bestId: string | null = null;
     let bestDiff = Infinity;
     for (const c of routeMatches) {
@@ -299,9 +301,23 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
         bestId = null;
         break;
       }
-      // Skip candidates that already have a different fa_flight_id —
-      // don't steal a link that was already established for another FA flight
-      if (c.fa_flight_id) continue;
+      if (c.fa_flight_id) {
+        // Allow re-linking if THIS FA flight has actually departed but the
+        // currently-linked FA flight is still "Scheduled" (FA duplicate).
+        // This handles the case where FA creates two entries for the same
+        // route — one stays "Scheduled", the other becomes "En Route".
+        if (fa.actual_departure) {
+          // Check if the currently-linked FA flight is still "Scheduled"
+          const { data: linkedFa } = await supa
+            .from("fa_flights")
+            .select("status")
+            .eq("fa_flight_id", c.fa_flight_id)
+            .single();
+          if (linkedFa?.status !== "Scheduled") continue; // don't steal from active flights
+        } else {
+          continue; // don't steal if we haven't actually departed
+        }
+      }
       const diff = Math.abs(new Date(c.scheduled_departure).getTime() - faDepMs);
       if (diff < bestDiff) {
         bestDiff = diff;
