@@ -439,7 +439,7 @@ export default function VanDriverClient({
       items = [];
       for (const fId of livePublishedFlightIds) {
         // Try real flight first
-        const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
+        const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon, date);
         if (item) {
           items.push(item);
           continue;
@@ -498,7 +498,7 @@ export default function VanDriverClient({
         for (const [flightId, targetVanId] of overrideMap) {
           if (targetVanId !== vanId) continue;
           if (items.some((item) => item.arrFlight.id === flightId)) continue;
-          const item = buildItemFromFlight(flightId, flights, zone.lat, zone.lon);
+          const item = buildItemFromFlight(flightId, flights, zone.lat, zone.lon, date);
           if (item) items.push(item);
         }
       }
