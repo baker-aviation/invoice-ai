@@ -258,20 +258,26 @@ export async function buildHasdataCache(
     console.log(`[HasdataCache] Seed mode: will upsert over existing (no delete)`);
   }
   if (mode === "fill") {
-    // Only fetch pairs not already cached — skips pairs with any existing row for their date
-    const cachedKeys = new Set<string>();
+    // Fetch pairs that are either missing OR failed (offer_count = 0).
+    // Previous behavior only skipped pairs with any existing row, which meant
+    // 429/timeout failures (stored as empty rows) were never retried.
+    const cachedWithFlights = new Set<string>();
     for (const d of datesToSeed) {
       const { data: existing } = await supa
         .from("hasdata_flight_cache")
-        .select("origin_iata, destination_iata")
+        .select("origin_iata, destination_iata, offer_count")
         .eq("cache_date", d);
       for (const r of existing ?? []) {
-        cachedKeys.add(`${r.origin_iata}-${r.destination_iata}-${d}`);
+        // Only skip pairs that actually have flights — retry empty ones
+        if ((r.offer_count as number) > 0) {
+          cachedWithFlights.add(`${r.origin_iata}-${r.destination_iata}-${d}`);
+        }
       }
     }
     const before = allPairs.length;
-    allPairs = allPairs.filter((p) => !cachedKeys.has(`${p.origin}-${p.destination}-${p.date}`));
-    console.log(`[HasdataCache] Fill mode: ${allPairs.length} uncached pairs (skipping ${before - allPairs.length} already cached)`);
+    allPairs = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`));
+    const retrying = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`)).length;
+    console.log(`[HasdataCache] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} already have flights, retrying empty/failed pairs)`);
     if (allPairs.length === 0) {
       console.log(`[HasdataCache] Cache is complete for ${datesToSeed.join("+")} — nothing to fetch`);
       return { pairs_queried: 0, offers_cached: 0, errors: [], duration_ms: Date.now() - start };

@@ -68,20 +68,23 @@ export async function POST(req: NextRequest) {
   const cacheThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { data: cached } = await supa
     .from("hasdata_flight_cache")
-    .select("offers, fetched_at")
+    .select("flight_offers, fetched_at")
     .eq("origin_iata", origin_iata)
     .eq("destination_iata", destination_iata)
     .eq("cache_date", date)
     .gte("fetched_at", cacheThreshold)
     .maybeSingle();
 
-  if (cached?.offers) {
-    const offers = cached.offers as unknown as FlightOffer[];
-    return NextResponse.json({
-      options: offersToOptions(offers, origin_iata, destination_iata),
-      cached: true,
-      total: offers.length,
-    });
+  if (cached?.flight_offers) {
+    const raw = cached.flight_offers;
+    const offers = (typeof raw === "string" ? JSON.parse(raw) : raw) as FlightOffer[];
+    if (offers.length > 0) {
+      return NextResponse.json({
+        options: offersToOptions(offers, origin_iata, destination_iata),
+        cached: true,
+        total: offers.length,
+      });
+    }
   }
 
   // Cache miss or stale — call HasData live
@@ -100,7 +103,7 @@ export async function POST(req: NextRequest) {
           origin_iata,
           destination_iata,
           cache_date: date,
-          offers: result.offers as unknown as Record<string, unknown>[],
+          flight_offers: JSON.stringify(result.offers),
           offer_count: result.offers.length,
           has_direct: result.offers.some((o) => (o.itineraries[0]?.segments?.length ?? 0) <= 1),
           min_price: Math.min(...result.offers.map((o) => parseFloat(o.price.total)).filter((p) => !isNaN(p))),

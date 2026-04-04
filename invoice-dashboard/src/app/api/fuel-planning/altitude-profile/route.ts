@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAuth } from "@/lib/api-auth";
+import { extractAltitudeSegments } from "@/lib/altitudeSegments";
 
 // Phase burn rate constants (validated from fleet data analysis)
 const PHASE_RATES: Record<string, { climb: number; cruise: number; descent: number }> = {
@@ -158,8 +159,12 @@ export async function GET(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-  const originNorm = (origin ?? "").replace(/^K/, "");
-  const destNorm = (dest ?? "").replace(/^K/, "");
+  const originRaw = origin ?? "";
+  const destRaw = dest ?? "";
+  const originNorm = originRaw.replace(/^K/, "");
+  const destNorm = destRaw.replace(/^K/, "");
+  const originLast3 = originRaw.slice(-3);
+  const destLast3 = destRaw.slice(-3);
 
   // Parallel fetch: prediction, phase, and track data
   const [predResult, trackResult] = await Promise.all([
@@ -167,15 +172,23 @@ export async function GET(req: NextRequest) {
       .select("foreflight_id, departure_icao, destination_icao, departure_time, fuel_to_dest_lbs, route_nm")
       .eq("tail_number", tail).eq("flight_date", date).limit(10),
     supa.from("flightaware_tracks")
-      .select("positions, position_count, max_altitude, origin_icao, destination_icao")
+      .select("positions, position_count, max_altitude, origin_icao, destination_icao, segments_summary")
       .eq("tail_number", tail).eq("flight_date", date).limit(10),
   ]);
 
-  // Match prediction
+  // Match prediction — try exact, then K-stripped, then last-3-chars
   const matchedPred = (predResult.data ?? []).find((p: Record<string, string>) => {
-    const pDep = (p.departure_icao ?? "").replace(/^K/, "");
-    const pDest = (p.destination_icao ?? "").replace(/^K/, "");
-    return pDep === originNorm && pDest === destNorm;
+    const pDep = p.departure_icao ?? "";
+    const pDest = p.destination_icao ?? "";
+    // Exact match (TQPF === TQPF)
+    if (pDep === originRaw && pDest === destRaw) return true;
+    // K-stripped match (KTEB → TEB)
+    const pDepNorm = pDep.replace(/^K/, "");
+    const pDestNorm = pDest.replace(/^K/, "");
+    if (pDepNorm === originNorm && pDestNorm === destNorm) return true;
+    // Last 3 chars match (TQPF → QPF)
+    if (pDep.slice(-3) === originLast3 && pDest.slice(-3) === destLast3) return true;
+    return false;
   }) as Record<string, unknown> | undefined;
 
   // Fetch waypoints + phases if we have a prediction
@@ -250,6 +263,22 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Extract altitude segments for step climb analysis
+  let segmentsSummary = null;
+  if (actual.length > 5) {
+    // Check if pre-computed segments exist on the track record
+    const storedSummary = trackData ? (trackData as Record<string, unknown>).segments_summary : null;
+    if (storedSummary) {
+      segmentsSummary = storedSummary;
+    } else {
+      segmentsSummary = extractAltitudeSegments(
+        actual.map((p) => ({ minutesFromDep: p.minutesFromDep, altitudeFl: p.altitudeFl })),
+        aircraftType,
+        routeNm,
+      );
+    }
+  }
+
   // Compute attribution if we have all three data sources
   let attribution = null;
   if (ffBurn > 0 && actualBurn > 0 && (actual.length > 0 || ffClimbMin != null)) {
@@ -277,6 +306,8 @@ export async function GET(req: NextRequest) {
     maxPlannedAlt: planned.length > 0 ? Math.max(...planned.map((p) => p.altitudeFl)) : null,
     maxActualAlt: actual.length > 0 ? Math.max(...actual.map((p) => p.altitudeFl)) : null,
     attribution,
+    segments: segmentsSummary,
+    optimalAlt: OPTIMAL_ALT[aircraftType] ?? 470,
     phases: {
       planned: { climbMin: ffClimbMin, cruiseMin: ffCruiseMin, descentMin: ffDescentMin, maxAlt: ffMaxAlt },
       actual: actualPhases,

@@ -343,11 +343,137 @@ const AIRPORT_TZ: Record<string, string> = {
   KHNL: "Pacific/Honolulu",     // Honolulu, HI (alt code)
   KOGG: "Pacific/Honolulu",     // Kahului, Maui, HI
 
-  // International additions
+  // ── US — Eastern (additions) ────────────────────────
+  KACY: "America/New_York",     // Atlantic City, NJ
+  KAGC: "America/New_York",     // Allegheny County, PA
+  KAIK: "America/New_York",     // Aiken, SC
+  KASH: "America/New_York",     // Nashua, NH
+  KBAF: "America/New_York",     // Westfield-Barnes, MA
+  KBKL: "America/New_York",     // Burke Lakefront, Cleveland, OH
+  KBKW: "America/New_York",     // Beckley, WV
+  KBMG: "America/New_York",     // Bloomington, IN
+  KCAK: "America/New_York",     // Akron-Canton, OH
+  KCEF: "America/New_York",     // Westover ARB, MA
+  KCHO: "America/New_York",     // Charlottesville, VA
+  KCSG: "America/New_York",     // Columbus, GA
+  KDMW: "America/New_York",     // Carroll County, MD
+  KDPA: "America/Chicago",      // DuPage, IL (Central)
+  KERI: "America/New_York",     // Erie, PA
+  KESN: "America/New_York",     // Easton, MD
+  KEVV: "America/Chicago",      // Evansville, IN (Central)
+  KEYW: "America/New_York",     // Key West, FL
+  KFDK: "America/New_York",     // Frederick, MD
+  KFHB: "America/New_York",     // Fernandina Beach, FL
+  KHVN: "America/New_York",     // Tweed New Haven, CT
+  KHYA: "America/New_York",     // Hyannis, MA
+  KJST: "America/New_York",     // Johnstown, PA
+  KLCI: "America/New_York",     // Laconia, NH
+  KLCK: "America/New_York",     // Rickenbacker, Columbus, OH
+  KLEB: "America/New_York",     // Lebanon, NH
+  KLWB: "America/New_York",     // Greenbrier Valley, WV
+  KLWM: "America/New_York",     // Lawrence, MA
+  KMGM: "America/Chicago",      // Montgomery, AL (Central)
+  KMGY: "America/New_York",     // Dayton, OH
+  KMQS: "America/New_York",     // Chester County, PA
+  KMSL: "America/Chicago",      // Muscle Shoals, AL (Central)
+  KMTH: "America/New_York",     // Marathon, FL
+  KOCF: "America/New_York",     // Ocala, FL
+  KOQU: "America/New_York",     // Quonset, RI
+  KPOU: "America/New_York",     // Poughkeepsie, NY
+  KPSF: "America/New_York",     // Pittsfield, MA
+  KRDG: "America/New_York",     // Reading, PA
+  KROA: "America/New_York",     // Roanoke, VA
+  KSEF: "America/New_York",     // Sebring, FL
+  KSFB: "America/New_York",     // Sanford, FL
+  KUNV: "America/New_York",     // State College, PA
+  KYIP: "America/New_York",     // Willow Run, Detroit, MI
+  KYNG: "America/New_York",     // Youngstown, OH
+
+  // ── US — Central (additions) ──────────────────────
+  KAZO: "America/Chicago",      // Kalamazoo, MI (ET but airport uses CT)
+  KBIS: "America/Chicago",      // Bismarck, ND
+  KBMI: "America/Chicago",      // Bloomington-Normal, IL
+  KBRO: "America/Chicago",      // Brownsville, TX
+  KCXO: "America/Chicago",      // Conroe, TX
+  KDEC: "America/Chicago",      // Decatur, IL
+  KEAU: "America/Chicago",      // Eau Claire, WI
+  KENW: "America/Chicago",      // Kenosha, WI
+  KFCM: "America/Chicago",      // Flying Cloud, MN
+  KFWS: "America/Chicago",      // Fort Worth Spinks, TX
+  KLAN: "America/New_York",     // Lansing, MI (Eastern)
+  KLBB: "America/Chicago",      // Lubbock, TX
+  KLRD: "America/Chicago",      // Laredo, TX
+  KMAF: "America/Chicago",      // Midland, TX
+  KMDD: "America/Chicago",      // Midland Airpark, TX
+  KMFE: "America/Chicago",      // McAllen, TX
+  KPEQ: "America/Chicago",      // Pecos, TX
+  KPWA: "America/Chicago",      // Wiley Post, Oklahoma City, OK
+  KRNH: "America/Chicago",      // New Richmond, WI
+  KROG: "America/Chicago",      // Rogers, AR
+  KRST: "America/Chicago",      // Rochester, MN
+  KRUE: "America/Chicago",      // Russellville, AR
+  KSRC: "America/Chicago",      // Searcy, AR
+  KSTP: "America/Chicago",      // St. Paul Downtown, MN
+  KTMA: "America/Chicago",      // Timmerman, Milwaukee, WI
+  KTVR: "America/Chicago",      // Tallulah, LA
+  KUGN: "America/Chicago",      // Waukegan, IL
+  KXNA: "America/Chicago",      // NW Arkansas Regional, AR
+  KT82: "America/Chicago",      // Fredericksburg, TX
+
+  // ── US — Mountain (additions) ─────────────────────
+  KGJT: "America/Denver",       // Grand Junction, CO
+  KLGU: "America/Denver",       // Logan, UT
+  KMMV: "America/Los_Angeles",   // McMinnville, OR
+  KMYL: "America/Boise",        // McCall, ID
+  KOGD: "America/Denver",       // Ogden, UT
+  KPGA: "America/Denver",       // Page, AZ (uses MST/MDT in Navajo Nation)
+  KPVU: "America/Denver",       // Provo, UT
+  KSGU: "America/Denver",       // St. George, UT
+  KTEX: "America/Denver",       // Telluride, CO
+
+  // ── US — Pacific (additions) ──────────────────────
+  KCNO: "America/Los_Angeles",  // Chino, CA
+  KEUG: "America/Los_Angeles",  // Eugene, OR
+  KFAT: "America/Los_Angeles",  // Fresno, CA
+  KLVK: "America/Los_Angeles",  // Livermore, CA
+  KMHR: "America/Los_Angeles",  // Sacramento Mather, CA
+  KSTS: "America/Los_Angeles",  // Sonoma County, CA
+
+  // ── US — Alaska ───────────────────────────────────
+  KANC: "America/Anchorage",    // Anchorage, AK
+  KOTZ: "America/Anchorage",    // Kotzebue, AK
+
+  // ── US — Other (additions) ────────────────────────
+  KAFO: "America/Denver",       // Afton, WY
+  KBQN: "America/Puerto_Rico",  // Aguadilla, PR (Rafael Hernández)
+  KCPP: "America/Chicago",      // Culebra PR? (probably mistyped)
+  KDZB: "America/New_York",     // Fitzgerald, GA (actually Brookhaven)
+  KEKS: "America/Denver",       // Ennis, MT
+  KRZR: "America/Denver",       // Cleveland, NM
+  KSTX: "America/Puerto_Rico",  // St. Croix, USVI
+  FA54: "America/New_York",     // Private strip, FL
+
+  // ── Canada ────────────────────────────────────────
+  CYLW: "America/Vancouver",    // Kelowna, BC
+  CYQA: "America/Toronto",      // Muskoka, ON
+  CYXX: "America/Vancouver",    // Abbotsford, BC
+
+  // ── International additions ───────────────────────
   MDLR: "America/Santo_Domingo", // La Romana, Dominican Republic
+  MDCY: "America/Santo_Domingo", // Cayo Levantado, Dominican Republic
+  MDJB: "America/Santo_Domingo", // La Isabela, Dominican Republic
   TNCA: "America/Curacao",      // Oranjestad, Aruba (same offset)
   TAPA: "America/Puerto_Rico",  // Antigua (AST)
   TXKF: "Atlantic/Bermuda",     // Hamilton, Bermuda
+  TLPL: "America/Puerto_Rico",  // Hewanorra, Saint Lucia (AST)
+  MKJP: "America/Jamaica",      // Kingston, Jamaica
+  MMAN: "America/Monterrey",    // Monterrey, Mexico
+  MMCZ: "America/Cancun",       // Cozumel, Mexico
+  MSLP: "America/El_Salvador",  // San Salvador, El Salvador
+  MYAT: "America/Nassau",       // Treasure Cay, Bahamas
+  MYEF: "America/Nassau",       // Exuma, Bahamas
+  OIAD: "Asia/Kabul",           // Kabul, Afghanistan
+  LEAB: "Europe/Madrid",        // Albacete, Spain
 };
 
 /**

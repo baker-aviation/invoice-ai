@@ -186,7 +186,7 @@ def _is_oceanic_leg(dep_icao: str, arr_icao: str) -> bool:
 def _check_tight_turn_alerts(supa, now) -> int:
     """
     Check for tight turnarounds (< 50 min between consecutive legs on the same tail).
-    Queries the flights table after upsert so we have DB ids for flight_id linkage.
+    Uses live FA ETAs when available, falls back to scheduled arrival times.
     Returns count of alerts created/updated.
     """
     TIGHT_TURN_THRESHOLD = 50  # minutes
@@ -198,12 +198,31 @@ def _check_tight_turn_alerts(supa, now) -> int:
         cutoff = (now - timedelta(hours=6)).isoformat()
         lookahead = (now + timedelta(hours=48)).isoformat()
         rows = supa.table(FLIGHTS_TABLE).select(
-            "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival"
+            "id, ics_uid, tail_number, departure_icao, arrival_icao, "
+            "scheduled_departure, scheduled_arrival, fa_flight_id"
         ).gte("scheduled_departure", cutoff).lte("scheduled_departure", lookahead).execute()
         flights = rows.data or []
     except Exception as e:
         print(f"tight_turn: fetch error: {repr(e)}", flush=True)
         return 0
+
+    # Build FA ETA lookup: fa_flight_id -> arrival_time (live ETA or actual arrival)
+    fa_eta: Dict[str, str] = {}
+    fa_ids = [f.get("fa_flight_id") for f in flights if f.get("fa_flight_id")]
+    if fa_ids:
+        try:
+            for i in range(0, len(fa_ids), 50):
+                chunk = fa_ids[i:i + 50]
+                fa_rows = supa.table("fa_flights").select(
+                    "fa_flight_id, arrival_time, actual_arrival"
+                ).in_("fa_flight_id", chunk).execute()
+                for r in (fa_rows.data or []):
+                    # actual_arrival > arrival_time (ETA) > nothing
+                    eta = r.get("actual_arrival") or r.get("arrival_time")
+                    if eta:
+                        fa_eta[r["fa_flight_id"]] = eta
+        except Exception as e:
+            print(f"tight_turn: fa_flights lookup error: {repr(e)}", flush=True)
 
     # Group by tail, sort by departure
     by_tail: Dict[str, list] = {}
@@ -216,7 +235,12 @@ def _check_tight_turn_alerts(supa, now) -> int:
     for tail, legs in by_tail.items():
         legs.sort(key=lambda x: x.get("scheduled_departure") or "")
         for i in range(len(legs) - 1):
-            arr_str = legs[i].get("scheduled_arrival")
+            # Use FA ETA if available, fall back to scheduled arrival
+            fa_id = legs[i].get("fa_flight_id")
+            arr_str = fa_eta.get(fa_id) if fa_id else None
+            is_live = arr_str is not None
+            if not arr_str:
+                arr_str = legs[i].get("scheduled_arrival")
             dep_str = legs[i + 1].get("scheduled_departure")
             if not arr_str or not dep_str:
                 continue
@@ -232,6 +256,7 @@ def _check_tight_turn_alerts(supa, now) -> int:
             airport = legs[i].get("arrival_icao") or legs[i + 1].get("departure_icao") or ""
             flight_id = legs[i + 1].get("id")  # attach to the departing leg
             source_id = f"tight-turn-{tail}-{legs[i].get('ics_uid', '')}-{legs[i + 1].get('ics_uid', '')}"
+            live_tag = " (live ETA)" if is_live else " (scheduled)"
             alerts.append({
                 "alert_type": "TIGHT_TURN",
                 "severity": severity,
@@ -240,7 +265,7 @@ def _check_tight_turn_alerts(supa, now) -> int:
                 "flight_id": flight_id,
                 "subject": f"[{tail}] {int(gap_min)}min turn at {airport}",
                 "body": (
-                    f"{tail} arrives {airport} then departs {int(gap_min)} min later. "
+                    f"{tail} arrives {airport} then departs {int(gap_min)} min later{live_tag}. "
                     f"Threshold is {TIGHT_TURN_THRESHOLD} min."
                 ),
                 "source_message_id": source_id,
