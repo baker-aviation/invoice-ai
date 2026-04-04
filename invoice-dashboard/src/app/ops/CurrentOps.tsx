@@ -523,11 +523,19 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "bg-blue-100 text-blue-800 border-blue-200",
 };
 
-/** Find the active (unacknowledged) EDCT alert for a flight */
+/** Is this a FAA/SWIM EDCT (not ForeFlight)? */
+function isFaaEdct(a: OpsAlert): boolean {
+  const src = a.source_message_id ?? "";
+  return src.startsWith("faa-edct-") || src.startsWith("swim-edct-");
+}
+
+/** Find the active (unacknowledged) FAA/SWIM EDCT alert for a flight */
 function getActiveEdct(f: Flight): OpsAlert | null {
   const now = Date.now();
   return f.alerts?.find(a => {
     if (a.alert_type !== "EDCT" || !a.edct_time || a.acknowledged_at) return false;
+    // Only show FAA/SWIM EDCTs — ForeFlight predictions are unreliable
+    if (!isFaaEdct(a)) return false;
     // Ignore stale EDCTs: if the EDCT time is more than 2h in the past,
     // the flight has already departed and the EDCT is moot.
     if (new Date(a.edct_time).getTime() < now - 2 * 60 * 60 * 1000) return false;
@@ -535,9 +543,9 @@ function getActiveEdct(f: Flight): OpsAlert | null {
   }) ?? null;
 }
 
-/** EDCT source: SWIM vs ForeFlight */
+/** EDCT source: SWIM vs FAA */
 function edctSourceTag(alert: OpsAlert): string {
-  return (alert.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF";
+  return (alert.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FAA";
 }
 
 /* ── component ──────────────────────────────────────── */
@@ -1738,6 +1746,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type !== "EDCT") continue;
+        if (!isFaaEdct(a)) continue; // Skip ForeFlight — unreliable
         if (!showAcknowledged && isAcked(a)) continue;
         const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
         if (dep < todayStart || dep >= tomorrowStart) continue;
@@ -1745,14 +1754,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
         const tail = a.tail_number ?? f.tail_number;
         const key = `${tail}|${route}`;
-        const isFaa = (a.source_message_id ?? "").startsWith("faa-edct-");
-        const isSwim = (a.source_message_id ?? "").startsWith("swim-edct-");
-        const sourceType = isFaa ? "faa" : "ff";
+        const sourceType = "faa";
 
         // Extract callsign from subject
         const callsign = a.subject?.match(/\((KOW\d+)\)/i)?.[1]
           ?? a.subject?.match(/EDCT[:\s]+(KOW\d+)/i)?.[1]
-          ?? (isFaa ? a.subject?.match(/FAA EDCT:\s+(KOW\d+)/i)?.[1] : null)
+          ?? a.subject?.match(/FAA EDCT:\s+(KOW\d+)/i)?.[1]
           ?? null;
 
         if (!map.has(key)) {
@@ -1832,13 +1839,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 {checkingFaa ? "Checking..." : "Check FAA"}
               </button>
             </div>
-            <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] gap-x-3 gap-y-1.5 items-center text-sm">
+            <div className="grid grid-cols-[auto_auto_auto_auto_1fr_auto] gap-x-3 gap-y-1.5 items-center text-sm">
               {mergedEdcts.map((m) => {
-                const primary = m.ff ?? m.faa;
+                const primary = m.faa;
                 if (!primary) return null;
-                const allAcked = (m.ff ? isAcked(m.ff) : true) && (m.faa ? isAcked(m.faa) : true);
+                const allAcked = isAcked(primary);
                 const depIcao = m.departure_icao;
                 const opacity = allAcked ? "opacity-50" : "";
+                const srcTag = (primary.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FAA";
 
                 return (
                   <Fragment key={m.key}>
@@ -1852,23 +1860,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                     <span className={`text-amber-500 line-through whitespace-nowrap text-right ${opacity}`}>
                       {fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}
                     </span>
-                    {/* FF EDCT */}
+                    {/* EDCT time */}
                     <span className={`whitespace-nowrap ${opacity}`}>
-                      {m.ff ? (
-                        <span className="flex items-center gap-1">
-                          <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>
-                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>
-                        </span>
-                      ) : <span />}
-                    </span>
-                    {/* FAA EDCT */}
-                    <span className={`whitespace-nowrap ${opacity}`}>
-                      {m.faa ? (
-                        <span className="flex items-center gap-1">
-                          <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
-                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>
-                        </span>
-                      ) : <span />}
+                      <span className="flex items-center gap-1">
+                        <span className="text-amber-800 font-bold">{primary.edct_time ? fmt(primary.edct_time, depIcao) : "—"}</span>
+                        <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">{srcTag}</span>
+                      </span>
                     </span>
                     {/* Spacer */}
                     <span />
@@ -2846,7 +2843,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                   fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
                 }
-                const allAlerts = f.alerts ?? [];
+                const allAlerts = (f.alerts ?? []).filter((a) => a.alert_type !== "EDCT" || isFaaEdct(a));
                 const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
                 const alertCount = alerts.length;
                 const type = f.flight_type || "Other";
@@ -3001,9 +2998,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                               SWIM
                             </span>
                           )}
-                          {f.alerts?.some((a) => a.alert_type === "TIGHT_TURN" && !a.acknowledged_at) && (
-                            <span className="text-[10px] font-medium text-orange-600">TIGHT TURN</span>
-                          )}
+                          {(() => {
+                            const tt = (f.alerts ?? []).find((a) => a.alert_type === "TIGHT_TURN" && !a.acknowledged_at);
+                            if (!tt) return null;
+                            return (
+                              <span className="text-[10px] font-bold text-orange-600 cursor-help" title={tt.body ?? tt.subject ?? "Tight turnaround"}>
+                                TIGHT TURN
+                              </span>
+                            );
+                          })()}
                           {f.alerts?.some((a) => a.alert_type === "FBO_MISMATCH" && !a.acknowledged_at) && (
                             <span className="text-[10px] font-medium text-yellow-600">FBO MISMATCH</span>
                           )}
