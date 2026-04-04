@@ -105,10 +105,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: headerData.error ?? "Slack API error" }, { status: 502 });
     }
 
-    // 2) Send each aircraft as its own top-level message
+    // 2) Send each aircraft as a threaded reply under the header
+    const threadTs = headerData.ts;
     for (const item of items) {
       await postMessage({
         channel,
+        thread_ts: threadTs,
         text: buildAircraftFallbackText(item),
         blocks: buildAircraftSlackBlocks(item),
       });
