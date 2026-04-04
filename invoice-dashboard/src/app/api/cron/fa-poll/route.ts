@@ -16,7 +16,7 @@ import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-const DISCOVERY_INTERVAL_MS = 10 * 60_000; // match cron interval — operator endpoint is cheap
+const DISCOVERY_INTERVAL_MS = 30 * 60_000; // run discovery every 30 min (webhook catches real-time events)
 const PAUSE_MS = 500; // pause between sequential tail fetches
 
 // ---------------------------------------------------------------------------
@@ -143,13 +143,14 @@ async function fetchAndProcessTail(
 
     const info = toFlightInfo(tail, f);
 
-    // Fetch position for en-route flights missing last_position
+    // Fetch position ONLY for flights that are actively en-route and missing position.
+    // Skip if: already landed, or FA returned a last_position with the flight data.
     const faEnRoute = f.status === "En Route" || f.status === "Diverted";
+    const isLanded = f.actual_on != null || f.actual_in != null;
     if (
+      !isLanded &&
+      faEnRoute &&
       info.latitude == null &&
-      (f.actual_off != null || f.actual_out != null || faEnRoute) &&
-      f.actual_on == null &&
-      f.actual_in == null &&
       f.fa_flight_id
     ) {
       console.log(`[FA Poll] ${tail} ${f.fa_flight_id}: fetching position...`);
@@ -160,7 +161,6 @@ async function fetchAndProcessTail(
         info.altitude = pos.altitude ?? null;
         info.groundspeed = pos.groundspeed ?? null;
         info.heading = pos.heading ?? null;
-        console.log(`[FA Poll] ${tail}: position ${pos.latitude},${pos.longitude}`);
       }
     }
 
@@ -450,7 +450,7 @@ async function confirmUncertainDepartures(flights: FlightInfo[]): Promise<number
 
 async function pollEnRoute(
   callsignMap: Map<string, string>,
-): Promise<{ tails: string[]; flights: number; upserted: number }> {
+): Promise<{ tails: string[]; flights: number; upserted: number; skippedLanded: number }> {
   const supa = createServiceClient();
 
   // Find tails with active en-route/diverted flights
@@ -461,26 +461,39 @@ async function pollEnRoute(
 
   const enRouteTails = new Set((enRouteRows ?? []).map((r) => r.tail as string));
 
-  // Also check tails with ICS flights scheduled to depart in the last 8h but not yet
-  // marked en-route in fa_flights. This closes the gap where FA's website shows
-  // "En Route" but our DB still has "Scheduled"/"Filed" from the last discovery poll.
-  // 8h covers the longest domestic flights (e.g. KORL→KLAS ~5h).
-  const recentDepCutoff = new Date(Date.now() - 8 * 3600_000).toISOString();
+  // Only add tails from ICS that DON'T already have a landed status in fa_flights.
+  // Previously this added ALL tails with a departure in the last 8h — even landed ones.
+  // The webhook handles arrival events, so we only need to catch the gap where
+  // a flight departed but FA hasn't sent the webhook yet.
+  // Narrow to 2h window (was 8h) — if no webhook after 2h, the discovery poll catches it.
+  const recentDepCutoff = new Date(Date.now() - 2 * 3600_000).toISOString();
   const { data: recentDepRows } = await supa
     .from("flights")
     .select("tail_number")
     .lt("scheduled_departure", new Date().toISOString())
     .gt("scheduled_departure", recentDepCutoff);
 
+  // Check which of these tails already have a landed flight in fa_flights
+  const { data: landedRows } = await supa
+    .from("fa_flights")
+    .select("tail")
+    .in("status", ["Landed", "Arrived"]);
+  const landedTails = new Set((landedRows ?? []).map((r) => r.tail as string));
+
+  let skippedLanded = 0;
   for (const row of recentDepRows ?? []) {
-    if (row.tail_number) enRouteTails.add(row.tail_number);
+    if (row.tail_number && !landedTails.has(row.tail_number)) {
+      enRouteTails.add(row.tail_number);
+    } else {
+      skippedLanded++;
+    }
   }
 
   const tails = [...enRouteTails];
 
   if (tails.length === 0) {
     console.log("[FA Poll] No en-route or recently-departed flights found");
-    return { tails: [], flights: 0, upserted: 0 };
+    return { tails: [], flights: 0, upserted: 0, skippedLanded: 0 };
   }
 
   console.log(`[FA Poll] En-route polling: ${tails.length} tails [${tails.join(", ")}]`);
@@ -512,7 +525,7 @@ async function pollEnRoute(
   // Confirm uncertain departures (clear ? suffix)
   await confirmUncertainDepartures(allFlights);
 
-  return { tails, flights: totalFlights, upserted: totalUpserted };
+  return { tails, flights: totalFlights, upserted: totalUpserted, skippedLanded };
 }
 
 // ---------------------------------------------------------------------------
@@ -559,13 +572,13 @@ async function pollDiscovery(
 
     const info = toFlightInfo(tail, f);
 
-    // Fetch position for en-route flights missing last_position
+    // Fetch position ONLY for actively en-route flights missing position
     const faEnRoute = f.status === "En Route" || f.status === "Diverted";
+    const isLanded = f.actual_on != null || f.actual_in != null;
     if (
+      !isLanded &&
+      faEnRoute &&
       info.latitude == null &&
-      (f.actual_off != null || f.actual_out != null || faEnRoute) &&
-      f.actual_on == null &&
-      f.actual_in == null &&
       f.fa_flight_id
     ) {
       console.log(`[FA Poll] ${tail} ${f.fa_flight_id}: fetching position...`);

@@ -3001,6 +3001,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                               SWIM
                             </span>
                           )}
+                          {f.alerts?.some((a) => a.alert_type === "TIGHT_TURN" && !a.acknowledged_at) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-orange-100 text-orange-700">
+                              TIGHT TURN
+                            </span>
+                          )}
+                          {f.alerts?.some((a) => a.alert_type === "FBO_MISMATCH" && !a.acknowledged_at) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-yellow-100 text-yellow-700">
+                              FBO MISMATCH
+                            </span>
+                          )}
                           {(() => {
                             const schedMs = new Date(f.scheduled_departure).getTime();
                             const nowMs = Date.now();

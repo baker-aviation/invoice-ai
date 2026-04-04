@@ -183,6 +183,174 @@ def _is_oceanic_leg(dep_icao: str, arr_icao: str) -> bool:
     return False
 
 
+def _check_tight_turn_alerts(supa, now) -> int:
+    """
+    Check for tight turnarounds (< 50 min between consecutive legs on the same tail).
+    Queries the flights table after upsert so we have DB ids for flight_id linkage.
+    Returns count of alerts created/updated.
+    """
+    TIGHT_TURN_THRESHOLD = 50  # minutes
+    TIGHT_TURN_CRITICAL = 30   # minutes — high severity below this
+    alerts: List[Dict[str, Any]] = []
+
+    try:
+        # Fetch flights in a 48h-forward window
+        cutoff = (now - timedelta(hours=6)).isoformat()
+        lookahead = (now + timedelta(hours=48)).isoformat()
+        rows = supa.table(FLIGHTS_TABLE).select(
+            "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival"
+        ).gte("scheduled_departure", cutoff).lte("scheduled_departure", lookahead).execute()
+        flights = rows.data or []
+    except Exception as e:
+        print(f"tight_turn: fetch error: {repr(e)}", flush=True)
+        return 0
+
+    # Group by tail, sort by departure
+    by_tail: Dict[str, list] = {}
+    for f in flights:
+        tail = (f.get("tail_number") or "").upper()
+        if not tail:
+            continue
+        by_tail.setdefault(tail, []).append(f)
+
+    for tail, legs in by_tail.items():
+        legs.sort(key=lambda x: x.get("scheduled_departure") or "")
+        for i in range(len(legs) - 1):
+            arr_str = legs[i].get("scheduled_arrival")
+            dep_str = legs[i + 1].get("scheduled_departure")
+            if not arr_str or not dep_str:
+                continue
+            try:
+                arr_time = datetime.fromisoformat(arr_str.replace("Z", "+00:00"))
+                dep_time = datetime.fromisoformat(dep_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            gap_min = (dep_time - arr_time).total_seconds() / 60
+            if gap_min < 0 or gap_min >= TIGHT_TURN_THRESHOLD:
+                continue
+            severity = "high" if gap_min < TIGHT_TURN_CRITICAL else "medium"
+            airport = legs[i].get("arrival_icao") or legs[i + 1].get("departure_icao") or ""
+            flight_id = legs[i + 1].get("id")  # attach to the departing leg
+            source_id = f"tight-turn-{tail}-{legs[i].get('ics_uid', '')}-{legs[i + 1].get('ics_uid', '')}"
+            alerts.append({
+                "alert_type": "TIGHT_TURN",
+                "severity": severity,
+                "airport_icao": airport,
+                "tail_number": tail,
+                "flight_id": flight_id,
+                "subject": f"[{tail}] {int(gap_min)}min turn at {airport}",
+                "body": (
+                    f"{tail} arrives {airport} then departs {int(gap_min)} min later. "
+                    f"Threshold is {TIGHT_TURN_THRESHOLD} min."
+                ),
+                "source_message_id": source_id,
+                "created_at": _utc_now(),
+            })
+
+    if not alerts:
+        return 0
+
+    seen: set = set()
+    deduped: list = []
+    for a in alerts:
+        if a["source_message_id"] not in seen:
+            seen.add(a["source_message_id"])
+            deduped.append(a)
+
+    try:
+        res = supa.table(OPS_ALERTS_TABLE).upsert(
+            deduped, on_conflict="source_message_id"
+        ).execute()
+        created = len(res.data) if res.data else 0
+        if created:
+            print(f"tight_turn: created/updated {created} alerts", flush=True)
+        return created
+    except Exception as e:
+        print(f"tight_turn upsert error: {repr(e)}", flush=True)
+        return 0
+
+
+def _check_fbo_mismatch_alerts(supa, now) -> int:
+    """
+    Check for FBO mismatches between consecutive legs on the same tail at the same airport.
+    (Arrival FBO != next departure FBO at the connecting airport.)
+    Returns count of alerts created/updated.
+    """
+    alerts: List[Dict[str, Any]] = []
+
+    try:
+        cutoff = (now - timedelta(hours=6)).isoformat()
+        lookahead = (now + timedelta(days=30)).isoformat()
+        rows = supa.table(FLIGHTS_TABLE).select(
+            "id, ics_uid, tail_number, departure_icao, arrival_icao, "
+            "scheduled_departure, scheduled_arrival, origin_fbo, destination_fbo"
+        ).gte("scheduled_departure", cutoff).lte("scheduled_departure", lookahead).execute()
+        flights = rows.data or []
+    except Exception as e:
+        print(f"fbo_mismatch: fetch error: {repr(e)}", flush=True)
+        return 0
+
+    # Group by tail, sort by departure
+    by_tail: Dict[str, list] = {}
+    for f in flights:
+        tail = (f.get("tail_number") or "").upper()
+        if not tail:
+            continue
+        by_tail.setdefault(tail, []).append(f)
+
+    for tail, legs in by_tail.items():
+        legs.sort(key=lambda x: x.get("scheduled_departure") or "")
+        for i in range(len(legs) - 1):
+            arr_icao = (legs[i].get("arrival_icao") or "").upper()
+            dep_icao = (legs[i + 1].get("departure_icao") or "").upper()
+            if not arr_icao or arr_icao != dep_icao:
+                continue
+            dest_fbo = (legs[i].get("destination_fbo") or "").strip()
+            orig_fbo = (legs[i + 1].get("origin_fbo") or "").strip()
+            if not dest_fbo or not orig_fbo:
+                continue
+            if dest_fbo.lower() == orig_fbo.lower():
+                continue
+            flight_id = legs[i + 1].get("id")  # attach to the departing leg
+            source_id = f"fbo-mismatch-{tail}-{legs[i].get('ics_uid', '')}-{legs[i + 1].get('ics_uid', '')}"
+            alerts.append({
+                "alert_type": "FBO_MISMATCH",
+                "severity": "medium",
+                "airport_icao": arr_icao,
+                "tail_number": tail,
+                "flight_id": flight_id,
+                "subject": f"[{tail}] FBO mismatch at {arr_icao}",
+                "body": (
+                    f"Arriving at {dest_fbo} but departing from {orig_fbo} at {arr_icao}. "
+                    f"Crew/pax may need ground transport between FBOs."
+                ),
+                "source_message_id": source_id,
+                "created_at": _utc_now(),
+            })
+
+    if not alerts:
+        return 0
+
+    seen: set = set()
+    deduped: list = []
+    for a in alerts:
+        if a["source_message_id"] not in seen:
+            seen.add(a["source_message_id"])
+            deduped.append(a)
+
+    try:
+        res = supa.table(OPS_ALERTS_TABLE).upsert(
+            deduped, on_conflict="source_message_id"
+        ).execute()
+        created = len(res.data) if res.data else 0
+        if created:
+            print(f"fbo_mismatch: created/updated {created} alerts", flush=True)
+        return created
+    except Exception as e:
+        print(f"fbo_mismatch upsert error: {repr(e)}", flush=True)
+        return 0
+
+
 def _check_oceanic_hf_alerts(supa, flights_batch: List[Dict[str, Any]]) -> int:
     """
     Scan synced flights for HF-restricted tails on oceanic legs.
@@ -1562,11 +1730,17 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     # ── Oceanic HF radio check ──────────────────────────────────────────────
     oceanic_hf = _check_oceanic_hf_alerts(supa, batch)
 
-    t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created} oceanic_hf={oceanic_hf}", flush=True)
-    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created} oceanic_hf={oceanic_hf}")
+    # ── Tight turnaround check ───────────────────────────────────────────
+    tight_turns = _check_tight_turn_alerts(supa, now)
 
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "oceanic_hf": oceanic_hf, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    # ── FBO mismatch check ───────────────────────────────────────────────
+    fbo_mismatches = _check_fbo_mismatch_alerts(supa, now)
+
+    t_total = _time.monotonic() - t0
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created} oceanic_hf={oceanic_hf} tight_turns={tight_turns} fbo_mismatches={fbo_mismatches}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created} oceanic_hf={oceanic_hf} tight_turns={tight_turns} fbo_mismatches={fbo_mismatches}")
+
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "oceanic_hf": oceanic_hf, "tight_turns": tight_turns, "fbo_mismatches": fbo_mismatches, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -2788,6 +2962,8 @@ def cleanup():
       - flight_events        → 7 days (FA webhook events)
       - ops_alerts NOTAM_*   → 1 day  (rebuilt by check_notams every 30 min)
       - ops_alerts TFR_*     → 1 day  (rebuilt by check_notams every 30 min)
+      - ops_alerts TIGHT_TURN → 1 day  (rebuilt by sync_schedule every 30 min)
+      - ops_alerts FBO_MISMATCH → 1 day (rebuilt by sync_schedule every 30 min)
       - ops_alerts SWIM_*    → 7 days (flight events / diversions)
       - ops_alerts MX_NOTE   → 30 days (maintenance notes, kept for reference)
       - pipeline_runs        → 7 days (execution logs)
@@ -2824,6 +3000,18 @@ def cleanup():
         "alert_type", "SWIM_%"
     ).lt("created_at", cutoffs["swim_alerts_7d"].isoformat()).execute()
     deleted["ops_alerts_swim"] = len(r.data or [])
+
+    # ops_alerts TIGHT_TURN — 1 day (rebuilt by sync_schedule every 30 min)
+    r = supa.table("ops_alerts").delete().eq(
+        "alert_type", "TIGHT_TURN"
+    ).lt("created_at", cutoffs["notam_alerts_1d"].isoformat()).execute()
+    deleted["ops_alerts_tight_turn"] = len(r.data or [])
+
+    # ops_alerts FBO_MISMATCH — 1 day (rebuilt by sync_schedule every 30 min)
+    r = supa.table("ops_alerts").delete().eq(
+        "alert_type", "FBO_MISMATCH"
+    ).lt("created_at", cutoffs["notam_alerts_1d"].isoformat()).execute()
+    deleted["ops_alerts_fbo_mismatch"] = len(r.data or [])
 
     # ops_alerts MX_NOTE — 30 days
     r = supa.table("ops_alerts").delete().eq(

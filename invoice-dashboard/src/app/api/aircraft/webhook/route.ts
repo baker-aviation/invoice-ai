@@ -7,6 +7,7 @@ import {
   isDiversionDistanceReasonable,
   createPendingDiversion,
 } from "@/lib/diversionCheck";
+import { getFlightTrack } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
@@ -115,6 +116,49 @@ export async function POST(req: NextRequest) {
     } else if (eventCode === "arrival") {
       upsertData.status = "Landed";
       upsertData.actual_arrival = new Date().toISOString();
+
+      // Fire-and-forget: capture ADS-B track while data is fresh
+      if (faFlightId && registration) {
+        (async () => {
+          try {
+            // Wait 2 min for FA to finalize the track
+            await new Promise((r) => setTimeout(r, 120_000));
+            const positions = await getFlightTrack(faFlightId);
+            if (!positions?.length) return;
+            const altitudes = positions.map((p) => p.altitude ?? 0).filter((a) => a > 0);
+            const maxAlt = altitudes.length > 0 ? Math.max(...altitudes) : null;
+            let climbSec: number | null = null;
+            if (maxAlt && positions.length >= 2) {
+              const first = new Date(positions[0].timestamp).getTime();
+              const maxPos = positions.find((p) => (p.altitude ?? 0) >= maxAlt! - 5);
+              if (maxPos) climbSec = Math.round((new Date(maxPos.timestamp).getTime() - first) / 1000);
+            }
+            let totalSec: number | null = null;
+            if (positions.length >= 2) {
+              totalSec = Math.round((new Date(positions[positions.length - 1].timestamp).getTime() - new Date(positions[0].timestamp).getTime()) / 1000);
+            }
+            await supa.from("flightaware_tracks").upsert({
+              fa_flight_id: faFlightId,
+              tail_number: registration,
+              origin_icao: origin ?? null,
+              destination_icao: destination ?? null,
+              flight_date: new Date().toISOString().split("T")[0],
+              positions: positions.map((p) => ({
+                t: p.timestamp, alt: p.altitude, gs: p.groundspeed,
+                lat: Math.round((p.latitude ?? 0) * 10000) / 10000,
+                lon: Math.round((p.longitude ?? 0) * 10000) / 10000,
+              })),
+              position_count: positions.length,
+              max_altitude: maxAlt ? Math.round(maxAlt) : null,
+              climb_duration_sec: climbSec,
+              total_duration_sec: totalSec,
+            }, { onConflict: "fa_flight_id" });
+            console.log(`[FA Webhook] Track captured for ${faFlightId} (${positions.length} positions)`);
+          } catch (err) {
+            console.error(`[FA Webhook] Track capture failed for ${faFlightId}:`, err);
+          }
+        })();
+      }
     } else if (eventCode === "filed") {
       upsertData.status = "Filed";
     } else if (eventCode === "cancelled") {
