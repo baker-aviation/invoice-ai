@@ -75,6 +75,8 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   NOTAM_PPR: "PPR",
   NOTAM_OTHER: "NOTAM",
   OCEANIC_HF: "OCEANIC HF",
+  TIGHT_TURN: "TIGHT TURN",
+  FBO_MISMATCH: "FBO MISMATCH",
 };
 
 // ─── NOTAM helpers ────────────────────────────────────────────────────────────
@@ -314,13 +316,14 @@ function saveDismissed(dismissed: Set<string>): void {
 
 // ─── Filter categories ───────────────────────────────────────────────────────
 
-type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "OCEANIC" | "LATE";
+type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "OCEANIC" | "FBO_MISMATCH" | "LATE";
 
 const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[] = [
   { key: "ALL", label: "All Flights", description: "Every scheduled flight" },
   { key: "NOTAMS", label: "NOTAMs", description: "Flights with active NOTAMs" },
   { key: "PPR", label: "PPRs", description: "Prior permission required" },
   { key: "OCEANIC", label: "Oceanic HF", description: "Aircraft lacking dual HF on oceanic legs" },
+  { key: "FBO_MISMATCH", label: "FBO Mismatch", description: "Consecutive legs with different FBOs at the same airport" },
   { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local (excl. 24/7 airports)" },
 ];
 
@@ -359,7 +362,7 @@ const TIME_RANGES: { key: TimeRange; label: string; hours: number }[] = [
 
 const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_RUNWAY", "NOTAM_AERODROME", "NOTAM_AD_RESTRICTED",
-  "NOTAM_TFR", "NOTAM_PPR", "OCEANIC_HF",
+  "NOTAM_TFR", "NOTAM_PPR", "OCEANIC_HF", "FBO_MISMATCH",
 ]);
 
 // ─── EDCT expandable row (status box) ────────────────────────────────────────
@@ -1357,6 +1360,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
       );
     }
 
+    // FBO Mismatch filter — flights with FBO_MISMATCH alerts
+    if (activeFilter === "FBO_MISMATCH") {
+      return timeFiltered.filter((f) =>
+        f.alerts?.some((a) => a.alert_type === "FBO_MISMATCH")
+      );
+    }
+
     // After-hours filter (departure or arrival between 8 PM – 7 AM local, excl. 24/7 airports)
     if (activeFilter === "LATE") {
       return timeFiltered.filter((f) =>
@@ -1419,8 +1429,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
 
   // Alert counts per category (for pill badges)
   const alertCounts = useMemo(() => {
-    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, OCEANIC: 0, LATE: 0 };
-    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), OCEANIC: new Set<string>(), LATE: new Set<string>() };
+    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, OCEANIC: 0, FBO_MISMATCH: 0, LATE: 0 };
+    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), OCEANIC: new Set<string>(), FBO_MISMATCH: new Set<string>(), LATE: new Set<string>() };
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts (excluding suppressed runway NOTAMs)
       for (const a of f.alerts ?? []) {
@@ -1436,6 +1446,10 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
         if (a.alert_type === "OCEANIC_HF" && !flightsCounted.OCEANIC.has(f.id)) {
           counts.OCEANIC++;
           flightsCounted.OCEANIC.add(f.id);
+        }
+        if (a.alert_type === "FBO_MISMATCH" && !flightsCounted.FBO_MISMATCH.has(f.id)) {
+          counts.FBO_MISMATCH++;
+          flightsCounted.FBO_MISMATCH.add(f.id);
         }
       }
 
