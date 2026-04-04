@@ -87,7 +87,7 @@ export default function LoginPage() {
         <p className="text-sm text-gray-500 mb-6">
           {mode === "forgot"
             ? "Enter your email and we'll send a reset link."
-            : "Enter your credentials to continue."}
+            : "Use your Outlook account to sign in."}
         </p>
 
         {mode === "login" && (
@@ -96,7 +96,7 @@ export default function LoginPage() {
               type="button"
               onClick={handleMicrosoftLogin}
               disabled={oauthLoading}
-              className="w-full flex items-center justify-center gap-2 border border-gray-300 rounded-lg px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              className="w-full flex items-center justify-center gap-2 bg-slate-900 text-white rounded-lg px-4 py-3 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 transition-colors"
             >
               <svg className="w-5 h-5" viewBox="0 0 21 21" fill="none">
                 <rect x="1" y="1" width="9" height="9" fill="#F25022" />
@@ -106,9 +106,13 @@ export default function LoginPage() {
               </svg>
               {oauthLoading ? "Redirecting…" : "Sign in with Microsoft"}
             </button>
-            <div className="flex items-center gap-3 my-1">
+            <p className="text-xs text-center text-gray-400 mt-1.5">
+              Click above — you&apos;ll be redirected to Microsoft to log in with your Outlook account.
+              <br />Don&apos;t enter your password below.
+            </p>
+            <div className="flex items-center gap-3 my-3">
               <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-xs text-gray-400">or</span>
+              <span className="text-xs text-gray-400">admin only</span>
               <div className="flex-1 h-px bg-gray-200" />
             </div>
           </>
