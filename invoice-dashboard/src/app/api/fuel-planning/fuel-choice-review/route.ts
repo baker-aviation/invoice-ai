@@ -58,7 +58,8 @@ export async function GET(req: NextRequest) {
     .select("jetinsight_trip_id, departure_icao, tail_number, origin_fbo, scheduled_departure")
     .in("jetinsight_trip_id", tripIds);
 
-  const flightByTrip = new Map<string, typeof flights extends Array<infer T> ? T : never>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const flightByTrip = new Map<string, any>();
   for (const f of flights ?? []) {
     if (f.jetinsight_trip_id) {
       // Store by trip_id + airport for matching

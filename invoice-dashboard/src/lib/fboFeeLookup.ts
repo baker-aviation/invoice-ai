@@ -68,8 +68,9 @@ async function loadDbFees(): Promise<void> {
 
   dbLoadPromise = (async () => {
     try {
-      // Dynamic import to avoid pulling supabase into client bundles
-      const { createServiceClient } = await import("@/lib/supabase/service");
+      // Dynamic import — only runs on server (API routes), skipped in client bundles
+      if (typeof window !== "undefined") return; // skip on client
+      const { createServiceClient } = await import(/* webpackIgnore: true */ "@/lib/supabase/service");
       const supa = createServiceClient();
 
       const { data } = await supa
