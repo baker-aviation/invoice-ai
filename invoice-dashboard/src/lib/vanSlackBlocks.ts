@@ -53,17 +53,33 @@ export function buildVanSlackHeaderBlocks(
   ];
 }
 
-/** Per-aircraft message blocks — posted as thread replies. */
-export function buildAircraftSlackBlocks(item: VanSlackItem) {
+/** Per-aircraft button block — posted as a top-level message. Thread holds the details. */
+export function buildAircraftButtonBlock(item: VanSlackItem) {
   const airport = item.airport ?? item.route?.split("→").pop()?.trim() ?? "?";
-  const fboLabel = item.fbo ? ` · ${item.fbo}` : "";
+  const fboLabel = item.fbo ? ` ${item.fbo.toUpperCase()}` : "";
 
   let statusEmoji = "⏳";
   if (item.status === "~Landed" || item.status === "Landed") statusEmoji = "✅";
   else if (item.status.startsWith("En Route")) statusEmoji = "✈️";
   else if (item.status === "DIVERTED") statusEmoji = "🔴";
 
-  let body = `${statusEmoji} *${item.tail}* → ${airport}${fboLabel}\n`;
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `${statusEmoji} *${item.tail}  ${airport}${fboLabel}*\n_Click for details_`,
+      },
+    },
+  ];
+}
+
+/** Per-aircraft detail blocks — posted as a thread reply under the button. */
+export function buildAircraftDetailBlocks(item: VanSlackItem) {
+  const airport = item.airport ?? item.route?.split("→").pop()?.trim() ?? "?";
+  const fboLabel = item.fbo ? ` · ${item.fbo}` : "";
+
+  let body = `*${item.tail}* → ${airport}${fboLabel}\n`;
   body += `Arrival: ${item.arrivalTime}`;
   if (item.status !== "Scheduled") body += ` _(${item.status})_`;
   if (item.driveTime) body += `\nDrive: ${item.driveTime}`;

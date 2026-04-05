@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, buildVanChangeBlocks, buildVanChangeFallbackText, type VanSlackItem, type VanChangeDiff } from "@/lib/vanSlackBlocks";
+import { buildVanSlackHeaderBlocks, buildAircraftButtonBlock, buildAircraftDetailBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, buildVanChangeBlocks, buildVanChangeFallbackText, type VanSlackItem, type VanChangeDiff } from "@/lib/vanSlackBlocks";
 
 /**
  * POST /api/vans/share-slack-bulk
@@ -139,13 +139,21 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // 2) Each aircraft as its own top-level message (separate thread per aircraft)
+      // 2) Each aircraft: button as top-level message, details as thread reply
       for (const item of van.items) {
-        await postMessage({
+        const btnData = await postMessage({
           channel,
           text: buildAircraftFallbackText(item),
-          blocks: buildAircraftSlackBlocks(item),
+          blocks: buildAircraftButtonBlock(item),
         });
+        if (btnData.ok && btnData.ts) {
+          await postMessage({
+            channel,
+            thread_ts: btnData.ts,
+            text: buildAircraftFallbackText(item),
+            blocks: buildAircraftDetailBlocks(item),
+          });
+        }
       }
 
       results.push({ vanId: van.vanId, ok: true });
