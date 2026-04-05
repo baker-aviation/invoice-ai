@@ -1,5 +1,5 @@
 /**
- * FBO fee lookup from fbo-fees.json data.
+ * FBO fee lookup — combines static fbo-fees.json with live fbo_handling_fees DB data.
  * Maps (airport, vendor/chain, aircraft type) → handling fee waiver details.
  */
 
@@ -58,86 +58,149 @@ for (const raw of fboFeesRaw as FboFeeEntry[]) {
   fboIndex.get(key)!.push(raw);
 }
 
+// DB cache — loaded once on first call, then reused
+let dbIndex: Map<string, FboFeeEntry[]> | null = null;
+let dbLoadPromise: Promise<void> | null = null;
+
+async function loadDbFees(): Promise<void> {
+  if (dbIndex) return;
+  if (dbLoadPromise) { await dbLoadPromise; return; }
+
+  dbLoadPromise = (async () => {
+    try {
+      // Dynamic import to avoid pulling supabase into client bundles
+      const { createServiceClient } = await import("@/lib/supabase/service");
+      const supa = createServiceClient();
+
+      const { data } = await supa
+        .from("fbo_handling_fees")
+        .select("airport_code, fbo_name, chain, aircraft_type, facility_fee, gallons_to_waive, security_fee, landing_fee, overnight_fee, parking_info")
+        .eq("source", "jetinsight-scrape");
+
+      dbIndex = new Map();
+      for (const row of data ?? []) {
+        const key = `${row.airport_code.toUpperCase()}|${row.aircraft_type}`;
+        if (!dbIndex.has(key)) dbIndex.set(key, []);
+        dbIndex.get(key)!.push({
+          chain: row.chain ?? "",
+          airport_code: row.airport_code,
+          fbo_name: row.fbo_name,
+          aircraft_type: row.aircraft_type,
+          facility_fee: row.facility_fee,
+          gallons_to_waive: row.gallons_to_waive,
+          security_fee: row.security_fee,
+          landing_fee: row.landing_fee ?? null,
+          overnight_fee: row.overnight_fee ?? null,
+          parking_info: row.parking_info ?? "",
+        });
+      }
+    } catch {
+      // If DB lookup fails (e.g. client-side), fall back to JSON only
+      dbIndex = new Map();
+    }
+  })();
+  await dbLoadPromise;
+}
+
+function lookupEntries(airport: string, aircraftType: string): FboFeeEntry[] {
+  const ap = normalizeAirport(airport);
+  const acType = AIRCRAFT_TYPE_MAP[aircraftType] ?? aircraftType;
+  const key = `${ap}|${acType}`;
+
+  // Merge: DB entries take priority, then static JSON
+  const dbEntries = dbIndex?.get(key) ?? [];
+  const jsonEntries = fboIndex.get(key) ?? [];
+
+  if (dbEntries.length > 0) return dbEntries;
+  return jsonEntries;
+}
+
+function matchVendor(entries: FboFeeEntry[], vendor: string): FboFeeEntry | undefined {
+  const vLower = vendor.toLowerCase();
+  return entries.find(e => {
+    const chainLow = e.chain.toLowerCase();
+    const fboLow = e.fbo_name.toLowerCase();
+    return chainLow.includes(vLower) || vLower.includes(chainLow)
+      || fboLow.includes(vLower) || vLower.includes(fboLow)
+      || vLower.split(/\s+/)[0] === chainLow.split(/\s+/)[0]
+      || vLower.split(/\s+/)[0] === fboLow.split(/\s+/)[0];
+  });
+}
+
+function toWaiver(e: FboFeeEntry): FboWaiver {
+  return {
+    minGallons: e.gallons_to_waive!,
+    feeWaived: e.facility_fee!,
+    fboName: e.fbo_name,
+    landingFee: e.landing_fee ?? 0,
+    securityFee: e.security_fee ?? 0,
+    overnightFee: e.overnight_fee ?? 0,
+  };
+}
+
 /**
- * Look up FBO fee waiver info for a specific airport, vendor, and aircraft.
- * Tries to match vendor name against chain or fbo_name (fuzzy).
- * If no vendor match, returns the best (cheapest waiver) option at that airport.
+ * Look up FBO fee waiver info. Async version that checks DB first.
+ */
+export async function getFboWaiverAsync(
+  airport: string,
+  vendor: string | null,
+  aircraftType: string,
+): Promise<FboWaiver> {
+  await loadDbFees();
+  return getFboWaiver(airport, vendor, aircraftType);
+}
+
+/**
+ * Synchronous lookup — uses DB cache if loaded, otherwise JSON only.
  */
 export function getFboWaiver(
   airport: string,
   vendor: string | null,
   aircraftType: string,
 ): FboWaiver {
-  const ap = normalizeAirport(airport);
-  const acType = AIRCRAFT_TYPE_MAP[aircraftType] ?? aircraftType;
-  const key = `${ap}|${acType}`;
-  const entries = fboIndex.get(key);
-  if (!entries?.length) return NO_WAIVER;
+  const entries = lookupEntries(airport, aircraftType);
+  if (!entries.length) return NO_WAIVER;
 
   // Try to match by vendor name
   if (vendor) {
-    const vLower = vendor.toLowerCase();
-    const match = entries.find(e => {
-      const chainLow = e.chain.toLowerCase();
-      const fboLow = e.fbo_name.toLowerCase();
-      // Check if vendor contains chain or vice versa
-      return chainLow.includes(vLower) || vLower.includes(chainLow)
-        || fboLow.includes(vLower) || vLower.includes(fboLow)
-        // Also match first word (e.g. "Signature" matches "Signature Flight Support")
-        || vLower.split(/\s+/)[0] === chainLow.split(/\s+/)[0];
-    });
-
+    const match = matchVendor(entries, vendor);
     if (match && match.facility_fee != null && match.gallons_to_waive != null) {
-      return {
-        minGallons: match.gallons_to_waive,
-        feeWaived: match.facility_fee,
-        fboName: match.fbo_name,
-        landingFee: (match as FboFeeEntry).landing_fee ?? 0,
-        securityFee: match.security_fee ?? 0,
-        overnightFee: (match as FboFeeEntry).overnight_fee ?? 0,
-      };
+      return toWaiver(match);
     }
   }
 
-  // No vendor match — return the entry with the highest facility fee
-  // (conservative: assume worst-case fee if we don't know the FBO)
+  // No vendor match — return the entry with the highest facility fee (worst-case)
   const withFees = entries.filter(e => e.facility_fee != null && e.facility_fee > 0 && e.gallons_to_waive != null);
   if (!withFees.length) return NO_WAIVER;
 
-  // Pick the one with the highest fee (most impactful for tankering decision)
   const best = withFees.reduce((a, b) => (a.facility_fee! > b.facility_fee! ? a : b));
-  return {
-    minGallons: best.gallons_to_waive!,
-    feeWaived: best.facility_fee!,
-    fboName: best.fbo_name,
-    landingFee: (best as FboFeeEntry).landing_fee ?? 0,
-    securityFee: best.security_fee ?? 0,
-    overnightFee: (best as FboFeeEntry).overnight_fee ?? 0,
-  };
+  return toWaiver(best);
 }
 
 /**
  * Get all FBO options at an airport for a given aircraft type.
- * Useful for the UI to show a dropdown of FBOs with their fee details.
  */
+export async function getFboOptionsAtAirportAsync(
+  airport: string,
+  aircraftType: string,
+): Promise<FboWaiver[]> {
+  await loadDbFees();
+  return getFboOptionsAtAirport(airport, aircraftType);
+}
+
 export function getFboOptionsAtAirport(
   airport: string,
   aircraftType: string,
 ): FboWaiver[] {
-  const ap = normalizeAirport(airport);
-  const acType = AIRCRAFT_TYPE_MAP[aircraftType] ?? aircraftType;
-  const key = `${ap}|${acType}`;
-  const entries = fboIndex.get(key);
-  if (!entries?.length) return [];
-
+  const entries = lookupEntries(airport, aircraftType);
   return entries
     .filter(e => e.facility_fee != null && e.gallons_to_waive != null)
-    .map(e => ({
-      minGallons: e.gallons_to_waive!,
-      feeWaived: e.facility_fee!,
-      fboName: e.fbo_name,
-      landingFee: (e as FboFeeEntry).landing_fee ?? 0,
-      securityFee: e.security_fee ?? 0,
-      overnightFee: (e as FboFeeEntry).overnight_fee ?? 0,
-    }));
+    .map(toWaiver);
+}
+
+/**
+ * Preload DB fees cache. Call once at startup or before batch operations.
+ */
+export async function preloadDbFees(): Promise<void> {
+  await loadDbFees();
 }

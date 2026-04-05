@@ -21,6 +21,7 @@ export interface PostFlightSyncResult {
  */
 export async function syncPostFlightData(
   months: number = 3,
+  daysBack?: number,
 ): Promise<PostFlightSyncResult> {
   const result: PostFlightSyncResult = {
     inserted: 0,
@@ -45,16 +46,22 @@ export async function syncPostFlightData(
     return result;
   }
 
-  // Calculate date range
+  // Calculate date range — use MM/DD/YYYY format for search_startdate/search_enddate
+  // (the date_start/date_end params return paginated oldest-first and miss recent data)
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setMonth(startDate.getMonth() - months);
-  const startStr = startDate.toISOString().split("T")[0];
-  const endStr = endDate.toISOString().split("T")[0];
+  if (daysBack != null) {
+    startDate.setDate(startDate.getDate() - daysBack);
+  } else {
+    startDate.setMonth(startDate.getMonth() - months);
+  }
+  const fmtDate = (d: Date) => `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+  const startStr = fmtDate(startDate);
+  const endStr = fmtDate(endDate);
 
   // Paginate through all logged flights
   let url: string | null =
-    `${BASE_URL}/analytics/logged_flights?date_start=${startStr}&date_end=${endStr}`;
+    `${BASE_URL}/analytics/logged_flights?search_startdate=${startStr}&search_enddate=${endStr}&search_aircraft=all_active`;
 
   while (url) {
     try {

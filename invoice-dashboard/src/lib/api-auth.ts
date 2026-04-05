@@ -22,6 +22,15 @@ type AuthResult =
  * Returns the authenticated user or a 401 response.
  */
 export async function requireAuth(req: NextRequest): Promise<AuthResult> {
+  // Allow internal service-key auth (for cron → API calls within the same app)
+  const serviceKey = req.headers.get("x-service-key");
+  if (serviceKey && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    if (serviceKey.length === process.env.SUPABASE_SERVICE_ROLE_KEY.length &&
+        timingSafeEqual(Buffer.from(serviceKey), Buffer.from(process.env.SUPABASE_SERVICE_ROLE_KEY))) {
+      return { userId: "system", email: "cron@internal", role: "admin" };
+    }
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 

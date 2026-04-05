@@ -54,6 +54,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/cron/jetinsight-salespersons",
+      "schedule": "5,15,25,35,45,55 * * * *"
+    },
+    {
       "path": "/api/cron/jetinsight-docs",
       "schedule": "0 4 * * *"
     },
@@ -68,6 +72,10 @@
     {
       "path": "/api/cron/sync-tracks",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/sync-health",
+      "schedule": "0 21 * * *"
     }
   ]
 }

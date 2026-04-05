@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
-import { buildBestRateByAirport, airportVariants } from "@/lib/fuelLookup";
+import { buildBestRateByAirport, airportVariants, getBestRateAtFbo } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, STD_AIRCRAFT, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
-import { getFboWaiver } from "@/lib/fboFeeLookup";
+import { getFboWaiver, preloadDbFees } from "@/lib/fboFeeLookup";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -28,6 +28,7 @@ interface ScheduleLeg {
   scheduled_departure: string;
   scheduled_arrival: string | null;
   origin_fbo: string | null;
+  jetinsight_trip_id: string | null;
 }
 
 interface LegData {
@@ -39,6 +40,9 @@ interface LegData {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
+  priceSource: "trip_notes" | "contract" | "airport_fallback" | "none";
+  bestPriceAtFbo?: number | null;
+  bestVendorAtFbo?: string | null;
   ffSource: "foreflight" | "estimate";
   waiver: {
     fboName: string;
@@ -73,6 +77,9 @@ export async function POST(req: NextRequest) {
     const targetDate = (body.date as string) || tomorrow();
 
     const supa = createServiceClient();
+
+    // 0. Preload FBO fees from DB (jetinsight-scrape data)
+    await preloadDbFees();
 
     // 1. Get shutdown fuel + avg burn rates from post-flight data
     const { data: postFlightRows } = await supa
@@ -123,7 +130,7 @@ export async function POST(req: NextRequest) {
 
     const { data: flightRows } = await supa
       .from("flights")
-      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id")
       .gte("scheduled_departure", dayStart)
       .lte("scheduled_departure", dayEnd)
       .order("scheduled_departure", { ascending: true });
@@ -159,6 +166,7 @@ export async function POST(req: NextRequest) {
         scheduled_departure: f.scheduled_departure,
         scheduled_arrival: f.scheduled_arrival ?? null,
         origin_fbo: originFbo,
+        jetinsight_trip_id: f.jetinsight_trip_id ?? null,
       });
     }
 
@@ -170,6 +178,26 @@ export async function POST(req: NextRequest) {
       console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
     }
     const bestRates = buildBestRateByAirport(advertisedPrices);
+
+    // 3b. Get sales rep fuel choices from trip notes (if available for this date's trips)
+    const tripIds = [...new Set(
+      (flightRows ?? []).map((f) => f.jetinsight_trip_id).filter(Boolean) as string[]
+    )];
+    const fuelChoiceMap = new Map<string, { vendor: string; price: number; tier: string }>();
+    if (tripIds.length > 0) {
+      const { data: fuelChoices } = await supa
+        .from("trip_fuel_choices")
+        .select("jetinsight_trip_id, airport_code, fuel_vendor, price_per_gallon, volume_tier")
+        .in("jetinsight_trip_id", tripIds);
+      for (const fc of fuelChoices ?? []) {
+        // Key: trip_id|airport
+        fuelChoiceMap.set(`${fc.jetinsight_trip_id}|${fc.airport_code}`, {
+          vendor: fc.fuel_vendor,
+          price: Number(fc.price_per_gallon),
+          tier: fc.volume_tier,
+        });
+      }
+    }
 
     // 4. Build plans per tail (no ForeFlight calls — uses schedule times + burn rates)
     const plans: TailPlan[] = [];
@@ -210,17 +238,59 @@ export async function POST(req: NextRequest) {
         const fuelBurn = Math.round(burnRate * flightHrs);
         const totalFuel = fuelBurn + defaults.reserveLbs;
 
-        // Fuel price at departure
-        const depVariants = airportVariants(leg.departure_icao);
-        let depRate = 0;
-        let depVendor: string | null = null;
-        for (const v of depVariants) {
-          const r = bestRates.get(v);
-          if (r) { depRate = r.price; depVendor = r.vendor; break; }
-        }
-
         // FBO fee lookup: use origin_fbo from flights if available, else best match at airport
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
+        const fboName = leg.origin_fbo ?? (legWaiver.fboName || null);
+
+        // Fuel price at departure — priority:
+        // 1. Sales rep's pick from trip notes (what they actually chose)
+        // 2. Cheapest contract vendor at this specific FBO
+        // 3. Airport-wide best (only if no FBO name known)
+        let depRate = 0;
+        let depVendor: string | null = null;
+        let priceSource: "trip_notes" | "contract" | "airport_fallback" = "contract";
+
+        // 1. Check trip notes fuel choice
+        if (leg.jetinsight_trip_id) {
+          const fc = fuelChoiceMap.get(`${leg.jetinsight_trip_id}|${leg.departure_icao}`);
+          if (fc) {
+            depRate = fc.price;
+            depVendor = fc.vendor;
+            priceSource = "trip_notes";
+          }
+        }
+
+        // 2. Cheapest contract vendor at this FBO
+        if (!depRate && fboName) {
+          const estimatedGallons = Math.round(totalFuel / ppg);
+          const fboRate = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
+          if (fboRate) {
+            depRate = fboRate.price;
+            depVendor = fboRate.vendor;
+            priceSource = "contract";
+          }
+        }
+
+        // 3. Airport-wide best (only if no FBO known)
+        if (!depRate && !fboName) {
+          const depVariants = airportVariants(leg.departure_icao);
+          for (const v of depVariants) {
+            const r = bestRates.get(v);
+            if (r) { depRate = r.price; depVendor = r.vendor; priceSource = "airport_fallback"; break; }
+          }
+        }
+
+        // Compute best alternative at this FBO for comparison
+        let bestAtFbo: number | null = null;
+        let bestVendorAtFbo: string | null = null;
+        if (fboName && priceSource === "trip_notes") {
+          const estimatedGallons = Math.round(totalFuel / ppg);
+          const alt = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
+          if (alt && alt.price < depRate) {
+            bestAtFbo = alt.price;
+            bestVendorAtFbo = alt.vendor;
+          }
+        }
 
         return {
           from: leg.departure_icao,
@@ -230,7 +300,10 @@ export async function POST(req: NextRequest) {
           flightTimeHours: flightHrs,
           departurePricePerGal: depRate,
           departureFboVendor: depVendor,
-          departureFbo: leg.origin_fbo ?? (legWaiver.fboName || null),
+          departureFbo: fboName,
+          priceSource: depRate > 0 ? priceSource : "none" as const,
+          bestPriceAtFbo: bestAtFbo,
+          bestVendorAtFbo: bestVendorAtFbo,
           ffSource: "estimate" as const,
           waiver: {
             fboName: legWaiver.fboName,
