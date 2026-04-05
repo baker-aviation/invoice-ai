@@ -35,11 +35,7 @@ export function buildVanSlackHeaderBlocks(
       type: "header",
       text: { type: "plain_text", text: `🚐 Schedule Update for Today — ${date}`, emoji: true },
     },
-    {
-      type: "context",
-      elements: [{ type: "mrkdwn", text: "✨ *New Van Schedule Style* — each aircraft now has its own thread for details & conversation" }],
-    },
-    {
+{
       type: "section",
       text: { type: "mrkdwn", text: `*${vanName} (V${vanId})* — ${date}\nBase: ${homeAirport}\n${itemCount} aircraft assigned` },
     },
