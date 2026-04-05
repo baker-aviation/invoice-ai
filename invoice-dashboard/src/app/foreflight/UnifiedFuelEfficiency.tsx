@@ -4,6 +4,20 @@ import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 
 const AltitudeProfileChart = dynamic(() => import("./AltitudeProfileChart"), { ssr: false });
+const TrendChartInner = dynamic(() => import("recharts").then((m) => {
+  const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } = m;
+  return { default: ({ data }: { data: Array<{ month: string; avgLbsNm: number; avgGalHr: number; flights: number }> }) => (
+    <ResponsiveContainer width="100%" height={200}>
+      <LineChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#9ca3af" }} />
+        <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} domain={["auto", "auto"]} />
+        <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6, border: "1px solid #e5e7eb" }} />
+        <Line type="monotone" dataKey="avgLbsNm" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} name="lbs/NM" />
+      </LineChart>
+    </ResponsiveContainer>
+  )};
+}), { ssr: false });
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +31,7 @@ interface RecentFlight {
   climbMin: number | null; cruiseMin: number | null; descentMin: number | null;
   climbPct: number | null; initialAlt: number | null; maxAlt: number | null;
   stepClimbs: number | null; cruiseProfile: string | null; blockHrs: number;
+  excludedFromAvg?: boolean;
 }
 interface Pilot {
   name: string; flights: number; totalHrs: number;
@@ -25,6 +40,9 @@ interface Pilot {
   avgClimbMin: number | null; avgClimbPct: number | null;
   avgInitialAlt: number | null; avgMaxAlt: number | null; totalStepClimbs: number;
   avgCruiseFl: number | null;
+  avgAltEfficiency: number | null;
+  avgApuGal: number | null;
+  apuGaps: number;
   byType: ByType[]; insights: string[]; recentFlights: RecentFlight[];
   costImpact: number; extraLbs: number; extraGal: number;
 }
@@ -32,8 +50,9 @@ interface FleetTypeStats { avgBurnRate: number; avgLbsNm: number; avgClimbPct: n
 
 interface Tail { tail: string; type: string; flights: number; avgBurnRate: number; avgLbsNm: number; variancePct: number }
 interface Data {
-  fleetStats: { byType: Record<string, FleetTypeStats>; ffAccuracy: number; fleetCruiseFl: number | null; totalFlights: number; matchedFlights: number; dateRange: { start: string; end: string } };
+  fleetStats: { byType: Record<string, FleetTypeStats>; ffAccuracy: number; fleetCruiseFl: number | null; fleetAvgApuGal: number | null; totalFlights: number; matchedFlights: number; dateRange: { start: string; end: string } };
   pilots: Pilot[]; tails: Tail[];
+  trend: Array<{ month: string; avgLbsNm: number; avgGalHr: number; flights: number }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +88,7 @@ function Badge({ children, color }: { children: React.ReactNode; color: "red" | 
 export default function UnifiedFuelEfficiency() {
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
-  const [months, setMonths] = useState(3);
+  const [months, setMonths] = useState(0.5); // default 2 weeks
   const [typeFilter, setTypeFilter] = useState("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"lbsNm" | "burnRate" | "climbPct" | "ffVar">("lbsNm");
@@ -204,6 +223,7 @@ export default function UnifiedFuelEfficiency() {
           </select>
           <select value={months} onChange={(e) => setMonths(Number(e.target.value))}
             className="rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+            <option value={0.5}>2 weeks</option>
             <option value={1}>1 month</option>
             <option value={3}>3 months</option>
             <option value={6}>6 months</option>
@@ -266,6 +286,14 @@ export default function UnifiedFuelEfficiency() {
         })()}
       </div>
 
+      {/* ─── Fleet Trend Chart ─── */}
+      {data.trend.length > 1 && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Fleet Efficiency Trend (lbs/NM)</h4>
+          <TrendChartInner data={data.trend} />
+        </div>
+      )}
+
       {/* ─── Sort Controls ─── */}
       <div className="flex items-center justify-end">
         <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -301,7 +329,7 @@ export default function UnifiedFuelEfficiency() {
                   </div>
                 )}
               </div>
-              <div className="grid grid-cols-5 gap-1 text-sm shrink-0" style={{ width: 420 }}>
+              <div className="grid grid-cols-7 gap-1 text-sm shrink-0" style={{ width: 580 }}>
                 <div className="text-right">
                   <div className="text-[10px] text-gray-400 uppercase">lbs/NM</div>
                   <div className="font-bold">{p.avgLbsNm.toFixed(2)}</div>
@@ -318,6 +346,20 @@ export default function UnifiedFuelEfficiency() {
                     {p.avgCruiseFl != null ? `FL${p.avgCruiseFl}` : "—"}
                   </div>
                   <div className="text-xs text-gray-400">{p.avgCruiseFl != null ? `fleet FL${fleetStats.fleetCruiseFl}` : "no ADS-B"}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-gray-400 uppercase">Alt Eff</div>
+                  <div className={`font-bold ${p.avgAltEfficiency != null ? (p.avgAltEfficiency >= 70 ? "text-green-600" : p.avgAltEfficiency >= 40 ? "text-amber-600" : "text-red-600") : ""}`}>
+                    {p.avgAltEfficiency != null ? `${p.avgAltEfficiency}%` : "—"}
+                  </div>
+                  <div className="text-xs text-gray-400">{p.avgAltEfficiency != null ? "at optimal" : ""}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-gray-400 uppercase">APU</div>
+                  <div className={`font-bold ${p.avgApuGal != null && fleetStats.fleetAvgApuGal != null && p.avgApuGal > fleetStats.fleetAvgApuGal * 1.5 ? "text-red-600" : ""}`}>
+                    {p.avgApuGal != null ? `${p.avgApuGal}g` : "—"}
+                  </div>
+                  <div className="text-xs text-gray-400">{p.avgApuGal != null && fleetStats.fleetAvgApuGal != null ? `fleet ${fleetStats.fleetAvgApuGal}g` : ""}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-[10px] text-gray-400 uppercase">vs FF</div>
@@ -384,7 +426,7 @@ export default function UnifiedFuelEfficiency() {
                         <th className="pb-1 pt-1 font-medium">Tail</th>
                         <th className="pb-1 pt-1 font-medium">Route</th>
                         <th className="pb-1 pt-1 font-medium">NM</th>
-                        <th className="pb-1 pt-1 font-medium">Climb</th>
+                        <th className="pb-1 pt-1 font-medium">vs Plan</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Time</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Fuel</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Landing</th>
@@ -402,9 +444,11 @@ export default function UnifiedFuelEfficiency() {
                         const profileKey = `${p.name}:${i}`;
                         const showProfile = profileFlight === profileKey;
                         const [routeOrigin, routeDest] = f.route.split("-");
+                        const excluded = f.excludedFromAvg;
                         return (
-                          <tr key={i} className={`border-b border-gray-50 ${showProfile ? "bg-blue-50/30" : "hover:bg-gray-50/50 cursor-pointer"}`}
-                            onClick={() => setProfileFlight(showProfile ? null : profileKey)}>
+                          <tr key={i} className={`border-b border-gray-50 ${excluded ? "opacity-40" : ""} ${showProfile ? "bg-blue-50/30" : "hover:bg-gray-50/50 cursor-pointer"}`}
+                            onClick={() => setProfileFlight(showProfile ? null : profileKey)}
+                            title={excluded ? "< 45 min — excluded from averages" : ""}>
                             <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
                             <td className="py-1.5">{f.tail}</td>
                             <td className="py-1.5 font-medium">
@@ -412,16 +456,16 @@ export default function UnifiedFuelEfficiency() {
                               {showProfile && <span className="ml-1 text-blue-500 text-[10px]">▼</span>}
                             </td>
                             <td className="py-1.5">{Math.round(f.nm)}</td>
-                            {/* Climb */}
+                            {/* Climb delta: actual time minus FF planned */}
                             <td className="py-1.5">
-                              {f.climbMin != null ? (
-                                <span className={f.climbPct != null && f.climbPct > 15 ? "text-red-600 font-medium" : ""}>
-                                  {f.climbMin.toFixed(0)}m
-                                  <span className="text-gray-400 text-[10px] ml-0.5">
-                                    {f.climbPct != null ? `${Math.round(f.climbPct)}%` : ""}
+                              {f.ffTimeMin != null && f.hrs > 0 ? (() => {
+                                const deltaMin = Math.round((f.hrs - f.ffTimeMin / 60) * 60);
+                                return (
+                                  <span className={Math.abs(deltaMin) > 10 ? (deltaMin > 0 ? "text-red-600 font-medium" : "text-green-600 font-medium") : "text-gray-600"}>
+                                    {deltaMin > 0 ? "+" : ""}{deltaMin}m
                                   </span>
-                                </span>
-                              ) : "—"}
+                                );
+                              })() : "—"}
                             </td>
                             {/* FF Predicted */}
                             <td className="py-1.5 text-blue-600">{ffHrs != null ? fmtH(ffHrs) : "—"}</td>
@@ -449,7 +493,7 @@ export default function UnifiedFuelEfficiency() {
                         return (
                           <tr key={`profile-${i}`}>
                             <td colSpan={13} className="p-0">
-                              <AltitudeProfileChart tail={f.tail} origin={routeOrigin} dest={routeDest} date={f.date} type={f.type} actualBurn={f.actualBurn} />
+                              <AltitudeProfileChart tail={f.tail} origin={routeOrigin} dest={routeDest} date={f.date} type={f.type} actualBurn={f.actualBurn} flightHrs={f.hrs} />
                             </td>
                           </tr>
                         );

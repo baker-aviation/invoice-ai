@@ -153,6 +153,8 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
   const aircraftType = req.nextUrl.searchParams.get("type") ?? "CE-750";
   const actualBurn = Number(req.nextUrl.searchParams.get("actualBurn")) || 0;
+  const flightHrs = Number(req.nextUrl.searchParams.get("flightHrs")) || 0;
+  const flightDurationMin = flightHrs * 60;
 
   if (!tail || !date) {
     return NextResponse.json({ error: "tail and date required" }, { status: 400 });
@@ -235,13 +237,42 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Match track
+  // Match track — priority: airport match > duration match > skip
   let trackData = null;
   if (trackResult.data?.length) {
-    const exact = (trackResult.data as Record<string, unknown>[]).find(
+    const tracks = trackResult.data as Array<Record<string, unknown>>;
+
+    // 1. Try exact airport match
+    const exact = tracks.find(
       (t) => t.origin_icao === origin && t.destination_icao === dest,
     );
-    trackData = exact ?? (trackResult.data as Record<string, unknown>[])[0];
+    if (exact) {
+      trackData = exact;
+    } else if (flightDurationMin > 0) {
+      // 2. Match by flight duration — find the track whose duration is closest
+      // to the JetInsight flight time (within 30% tolerance)
+      let bestMatch: Record<string, unknown> | null = null;
+      let bestDiff = Infinity;
+
+      for (const t of tracks) {
+        const positions = t.positions as Array<{ t: string }> | null;
+        if (!positions?.length || positions.length < 5) continue;
+
+        const trackStart = new Date(positions[0].t).getTime();
+        const trackEnd = new Date(positions[positions.length - 1].t).getTime();
+        const trackDurationMin = (trackEnd - trackStart) / 60000;
+
+        const diff = Math.abs(trackDurationMin - flightDurationMin);
+        const tolerance = flightDurationMin * 0.3; // 30% tolerance
+
+        if (diff < tolerance && diff < bestDiff) {
+          bestDiff = diff;
+          bestMatch = t;
+        }
+      }
+      trackData = bestMatch;
+    }
+    // If no duration match either, don't show a mismatched track
   }
 
   let actual: Array<{ minutesFromDep: number; altitudeFl: number; groundspeed: number | null }> = [];
