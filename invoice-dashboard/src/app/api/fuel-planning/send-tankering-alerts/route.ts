@@ -95,24 +95,9 @@ export async function POST(req: NextRequest) {
     // Build the shareable URL
     const planUrl = `${origin}/tanker/plan/${token}`;
 
-    // Build route string
-    const route = plan.legs?.length
-      ? [plan.shutdownAirport, ...plan.legs.map((l: { to: string }) => l.to)].join(" → ")
-      : plan.shutdownAirport ?? plan.tail;
-
-    // Find which leg has tankering
-    const tankerLegs = (plan.plan?.tankerOutByStop ?? [])
-      .map((t: number, i: number) => ({ amount: t, airport: plan.legs?.[i]?.from ?? "?" }))
-      .filter((t: { amount: number }) => t.amount > 0);
-
-    const tankerDetail = tankerLegs.length > 0
-      ? tankerLegs.map((t: { airport: string; amount: number }) => `Tanker +${t.amount.toLocaleString()} lbs at ${t.airport}`).join("\n")
-      : "";
-
     const savings = Math.round(plan.tankerSavings);
-    const acLabel = plan.aircraftType === "CE-750" ? "Citation X" : "Challenger 300";
 
-    // Send Slack message
+    // Send Slack message — just the tail and a link
     const channel = channelByTail.get(plan.tail.toUpperCase()) ?? DEFAULT_FUEL_CHANNEL;
 
     if (slackToken) {
@@ -130,17 +115,16 @@ export async function POST(req: NextRequest) {
                 type: "section",
                 text: {
                   type: "mrkdwn",
-                  text: `*${plan.tail}* (${acLabel}) — ${route}\n*Saves ~$${savings.toLocaleString()}*`,
+                  text: `*${plan.tail}* — Tankering opportunity (~$${savings.toLocaleString()})`,
                 },
                 accessory: {
                   type: "button",
-                  text: { type: "plain_text", text: "View & Adjust Plan" },
+                  text: { type: "plain_text", text: "View Plan" },
                   url: planUrl,
-                  action_id: "view_plan",
                 },
               },
             ],
-            text: `${plan.tail} tankering opportunity: saves ~$${savings} — ${planUrl}`,
+            text: `${plan.tail} tankering opportunity — ${planUrl}`,
           }),
         });
 

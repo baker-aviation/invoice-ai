@@ -61,48 +61,36 @@ export async function POST(req: NextRequest) {
   // Optionally send to Slack
   if (body.send_slack && process.env.SLACK_BOT_TOKEN) {
     const channel = (body.slack_channel as string) || "C0ANTTQ6R96";
-    const acLabel = aircraftType === "CE-750" ? "Citation X" : aircraftType === "CL-30" ? "Challenger 300" : aircraftType;
     const savings = Math.round(planData.tankerSavings ?? 0);
+    const isPilotSummary = body.mode === "pilot_summary";
+
+    const strip = (c: string) => c.length === 4 && c.startsWith("K") ? c.slice(1) : c;
     const route = planData.legs?.length
-      ? [planData.shutdownAirport, ...planData.legs.map((l: { to: string }) => l.to)].join(" → ")
+      ? [strip(planData.shutdownAirport ?? ""), ...planData.legs.map((l: { to: string }) => strip(l.to))].join("-")
       : tail;
 
-    const tankerLegs = (planData.plan?.tankerOutByStop ?? [])
-      .map((t: number, i: number) => ({ amount: t, airport: planData.legs?.[i]?.from ?? "?" }))
-      .filter((t: { amount: number }) => t.amount > 0);
-
-    const tankerDetail = tankerLegs.length > 0
-      ? "\n" + tankerLegs.map((t: { airport: string; amount: number }) => `Tanker +${t.amount.toLocaleString()} lbs at ${t.airport}`).join("\n")
-      : "";
-
-    const savingsText = savings > 0 ? `\n*Saves ~$${savings.toLocaleString()}*` : "";
+    // Pilot summary: brief confirmation. Dispatch: opportunity with View Plan button.
+    const slackPayload = isPilotSummary
+      ? {
+          channel,
+          text: `${tail} ${route} $${savings} saved`,
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${tail}*  ${route} — *$${savings.toLocaleString()} saved*` } }],
+        }
+      : {
+          channel,
+          text: `${tail} tankering opportunity — ${planUrl}`,
+          blocks: [{
+            type: "section",
+            text: { type: "mrkdwn", text: `*${tail}* — Tankering opportunity (~$${savings.toLocaleString()})` },
+            accessory: { type: "button", text: { type: "plain_text", text: "View Plan" }, url: planUrl },
+          }],
+        };
 
     try {
       await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          channel,
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: `*${tail}* (${acLabel}) — ${route}${tankerDetail}${savingsText}`,
-              },
-              accessory: {
-                type: "button",
-                text: { type: "plain_text", text: "View & Adjust Plan" },
-                url: planUrl,
-                action_id: "view_fuel_plan",
-              },
-            },
-          ],
-          text: `${tail} fuel plan: ${planUrl}`,
-        }),
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(slackPayload),
       });
     } catch (err) {
       console.error("[create-plan-link] Slack error:", err);

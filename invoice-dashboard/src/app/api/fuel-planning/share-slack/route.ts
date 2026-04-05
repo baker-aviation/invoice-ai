@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { createServiceClient } from "@/lib/supabase/service";
+import { randomBytes } from "crypto";
 
 export const dynamic = "force-dynamic";
 
@@ -95,28 +97,33 @@ export async function POST(req: NextRequest) {
   const noSavings = plans
     .filter((tp) => tp.plan && !tp.error && tp.tankerSavings <= 0);
 
+  // Create plan links for tails with savings
+  const supa = createServiceClient();
+  const origin = req.nextUrl.origin;
+  const planLinks = new Map<string, string>();
+
+  for (const tp of withSavings) {
+    const linkToken = randomBytes(24).toString("base64url");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await supa.from("fuel_plan_links").insert({
+      token: linkToken,
+      tail_number: tp.tail,
+      aircraft_type: tp.aircraftType,
+      date,
+      plan_data: tp,
+      expires_at: expiresAt,
+    });
+    planLinks.set(tp.tail, `${origin}/tanker/plan/${linkToken}`);
+  }
+
   // Build clean message lines
   const lines: string[] = [];
 
   if (withSavings.length > 0) {
     for (const tp of withSavings) {
       const route = buildRoute(tp);
-      const fees = tp.plan!.totalFees > 0 ? `  (+${fmtDollars(tp.plan!.totalFees)} fees)` : "";
-      lines.push(`*${tp.tail}*  \`${acLabel(tp.aircraftType)}\`  ${route}  *${fmtDollars(tp.tankerSavings)}* saved${fees}`);
-
-      // Show tankering detail per leg
-      const tankerLegs = (tp.plan?.tankerOutByStop ?? [])
-        .map((t, i) => ({ lbs: t, from: tp.legs[i]?.from ?? "?" }))
-        .filter((t) => t.lbs > 0);
-      if (tankerLegs.length > 0) {
-        const detail = tankerLegs
-          .map((t) => {
-            const strip = (c: string) => c.length === 4 && c.startsWith("K") ? c.slice(1) : c;
-            return `+${Math.round(t.lbs).toLocaleString()} lbs at ${strip(t.from)}`;
-          })
-          .join(", ");
-        lines.push(`     _${detail}_`);
-      }
+      const link = planLinks.get(tp.tail);
+      lines.push(`*<${link}|${tp.tail}>*  \`${acLabel(tp.aircraftType)}\`  ${route}  *${fmtDollars(tp.tankerSavings)}* saved`);
     }
   }
 

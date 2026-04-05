@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import type { AircraftType, MultiLegPlan } from "@/app/tanker/model";
 
 // ─── Types matching the API response ───────────────────────────────────
@@ -17,6 +17,7 @@ interface LegWaiver {
 interface LegData {
   from: string;
   to: string;
+  departureDate?: string;
   fuelToDestLbs: number;
   totalFuelLbs: number;
   flightTimeHours: number;
@@ -120,7 +121,7 @@ export default function TankeringDashboard() {
   // ── Share to Slack handler (consolidated fleet summary) ──
   const handleShareSlack = useCallback(async () => {
     if (!result?.plans.length) return;
-    if (!window.confirm("This will post the tankering summary to the #fuel-planning Slack channel. Continue?")) return;
+    if (!window.confirm("Post daily tankering summary to #fuel-planning? Each tail will have a clickable plan link.")) return;
     setSharing(true);
     setShareResult(null);
     setError(null);
@@ -186,7 +187,7 @@ export default function TankeringDashboard() {
               disabled={sharing}
               className="px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-500 disabled:opacity-50 transition-colors"
             >
-              {sharing ? "Sending..." : "Share to Slack"}
+              {sharing ? "Sending..." : "Post Daily Summary"}
             </button>
           ) : null}
 
@@ -407,9 +408,18 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
                   const orderGal = plan.fuelOrderGalByStop[i] ?? 0;
                   const landingFuel = plan.landingFuelByStop[i] ?? 0;
                   const legCost = orderGal * leg.departurePricePerGal + (plan.feePaidByStop[i] ?? 0);
+                  const prevDate = i > 0 ? tp.legs[i - 1].departureDate : null;
+                  const showDayHeader = leg.departureDate && leg.departureDate !== prevDate;
 
-                  return (
-                    <tr key={i} className="border-b border-gray-50">
+                  return (<React.Fragment key={`leg-${i}`}>
+                    {showDayHeader && (
+                      <tr className="bg-gray-50">
+                        <td colSpan={10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                          {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="border-b border-gray-50">
                       <td className="py-2.5 pr-3">
                         <span className="font-medium text-gray-900">{leg.from}</span>
                         <span className="text-gray-400 mx-1">&rarr;</span>
@@ -491,7 +501,7 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
                         )}
                       </td>
                     </tr>
-                  );
+                  </React.Fragment>);
                 })}
               </tbody>
               <tfoot>
