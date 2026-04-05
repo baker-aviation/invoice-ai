@@ -104,11 +104,25 @@ export async function GET(req: NextRequest) {
   const rawFlights = [...dedupeMap.values()];
 
   // Build track lookups: tail+origin+dest+date AND tail+date (fallback for ADSBX tracks without airports)
+  // Uses time-weighted average cruise FL from segments, not just max altitude
   const trackCruiseFl = new Map<string, number>();
-  const trackByTailDate = new Map<string, number>(); // fallback: best cruise FL per tail+date
+  const trackByTailDate = new Map<string, Array<{ alt: number; min: number }>>();
+
   for (const t of tracks) {
-    const summary = t.segments_summary as { maxCruiseAlt?: number } | null;
-    const cruiseFl = summary?.maxCruiseAlt ?? (t.max_altitude ? Math.round(t.max_altitude / 1) : null);
+    const summary = t.segments_summary as { segments?: Array<{ phase: string; altitudeFl: number; durationMin: number }>; maxCruiseAlt?: number } | null;
+
+    // Compute weighted avg cruise FL from segments if available
+    let cruiseFl: number | null = null;
+    const cruiseSegs = summary?.segments?.filter((s) => s.phase === "cruise") ?? [];
+    if (cruiseSegs.length > 0) {
+      const totalMin = cruiseSegs.reduce((s, seg) => s + seg.durationMin, 0);
+      const weightedAlt = cruiseSegs.reduce((s, seg) => s + seg.altitudeFl * seg.durationMin, 0);
+      cruiseFl = totalMin > 0 ? Math.round(weightedAlt / totalMin) : null;
+    }
+    // Fallback to max_altitude if no segments
+    if (!cruiseFl) {
+      cruiseFl = t.max_altitude ? Math.round(t.max_altitude) : null;
+    }
     if (!cruiseFl || cruiseFl <= 50) continue;
 
     // Primary key: tail+origin+dest+date (for FA tracks with airports)
@@ -118,12 +132,16 @@ export async function GET(req: NextRequest) {
       trackCruiseFl.set(`${t.tail_number}:${dep}:${dest}:${t.flight_date}`, cruiseFl);
     }
 
-    // Fallback key: tail+date (for ADSBX tracks without airports — keep highest cruise FL for the day)
+    // Fallback: accumulate all cruise segments per tail+date for weighted avg
     const tdKey = `${t.tail_number}:${t.flight_date}`;
-    const existing = trackByTailDate.get(tdKey);
-    if (!existing || cruiseFl > existing) {
-      trackByTailDate.set(tdKey, cruiseFl);
+    const existing = trackByTailDate.get(tdKey) ?? [];
+    for (const seg of cruiseSegs) {
+      existing.push({ alt: seg.altitudeFl, min: seg.durationMin });
     }
+    if (existing.length === 0 && cruiseFl) {
+      existing.push({ alt: cruiseFl, min: 1 }); // fallback: treat as 1 min if no segments
+    }
+    trackByTailDate.set(tdKey, existing);
   }
 
   // ---------------------------------------------------------------------------
@@ -512,7 +530,16 @@ export async function GET(req: NextRequest) {
     const originNorm = (f.origin ?? "").replace(/^K/, "");
     const destNorm = (f.destination ?? "").replace(/^K/, "");
     const trackKey = `${f.tail_number}:${originNorm}:${destNorm}:${f.flight_date}`;
-    const cruiseFl = trackCruiseFl.get(trackKey) ?? trackByTailDate.get(`${f.tail_number}:${f.flight_date}`);
+    let cruiseFl = trackCruiseFl.get(trackKey);
+    if (!cruiseFl) {
+      // Fallback: weighted average from all cruise segments on this tail+date
+      const daySegs = trackByTailDate.get(`${f.tail_number}:${f.flight_date}`);
+      if (daySegs?.length) {
+        const totalMin = daySegs.reduce((s, seg) => s + seg.min, 0);
+        const weightedAlt = daySegs.reduce((s, seg) => s + seg.alt * seg.min, 0);
+        cruiseFl = totalMin > 0 ? Math.round(weightedAlt / totalMin) : undefined;
+      }
+    }
     if (cruiseFl) {
       pilot.cruiseFlSum += cruiseFl;
       pilot.cruiseFlCount++;
