@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
+import { buildVanSlackHeaderBlocks, buildAircraftButtonBlock, buildAircraftDetailBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
 
 
 /**
@@ -105,15 +105,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: headerData.error ?? "Slack API error" }, { status: 502 });
     }
 
-    // 2) Send each aircraft as a threaded reply under the header
-    const threadTs = headerData.ts;
+    // 2) Each aircraft: button as top-level message, details as thread reply
     for (const item of items) {
-      await postMessage({
+      const btnData = await postMessage({
         channel,
-        thread_ts: threadTs,
         text: buildAircraftFallbackText(item),
-        blocks: buildAircraftSlackBlocks(item),
+        blocks: buildAircraftButtonBlock(item),
       });
+      if (btnData.ok && btnData.ts) {
+        await postMessage({
+          channel,
+          thread_ts: btnData.ts,
+          text: buildAircraftFallbackText(item),
+          blocks: buildAircraftDetailBlocks(item),
+        });
+      }
     }
 
     // Note: van_published_schedules is managed by "Update Schedule" (POST /api/vans/publish)
