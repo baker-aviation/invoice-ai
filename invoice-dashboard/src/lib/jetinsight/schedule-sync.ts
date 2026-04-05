@@ -262,13 +262,14 @@ export async function syncSalespersons(): Promise<{
   const cookie = cookieRow?.config_value;
   if (!cookie) { result.errors.push("No cookie"); return result; }
 
-  // Find unique trip IDs missing salesperson — prioritize today and upcoming
+  // Find unique trip IDs missing salesperson — next 7 days only
   const { data: flights } = await supa
     .from("flights")
     .select("jetinsight_trip_id")
     .not("jetinsight_trip_id", "is", null)
     .is("salesperson", null)
     .gte("scheduled_departure", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    .lte("scheduled_departure", new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
     .order("scheduled_departure", { ascending: true })
     .limit(500);
 
