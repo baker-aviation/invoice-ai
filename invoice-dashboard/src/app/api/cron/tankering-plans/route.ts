@@ -179,7 +179,7 @@ export async function GET(req: NextRequest) {
       blocks,
     });
 
-    results.slack = { ok: slackResult.ok, withSavings: withSavings.length, noSavings: noSavings.length };
+    results.slack = { ok: slackResult?.ok, withSavings: withSavings.length, noSavings: noSavings.length };
   } catch (err) {
     results.slack = { error: String(err) };
   }
