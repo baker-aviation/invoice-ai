@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     const dayStart = new Date(`${dateStr}T00:00:00-05:00`);
     const dayEnd = new Date(`${dateStr}T23:59:59-05:00`);
 
-    // Query flights with salesperson directly — no trip_salespersons needed
+    // Query all flights for the day
     const { data: allDayFlights } = await supa
       .from("flights")
       .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url, jetinsight_trip_id, salesperson, customer_name")
@@ -94,8 +94,45 @@ export async function POST(req: NextRequest) {
       .not("tail_number", "is", null)
       .order("scheduled_departure", { ascending: true });
 
+    // Backfill missing salesperson from trip_salespersons table
+    const flights = allDayFlights ?? [];
+    const missingTripIds = [
+      ...new Set(
+        flights
+          .filter((f) => !f.salesperson && f.jetinsight_trip_id && LIVE_TYPES.includes(f.flight_type))
+          .map((f) => f.jetinsight_trip_id as string)
+      ),
+    ];
+
+    if (missingTripIds.length > 0) {
+      const { data: tripSP } = await supa
+        .from("trip_salespersons")
+        .select("trip_id, origin_icao, destination_icao, salesperson_name, customer")
+        .in("trip_id", missingTripIds);
+
+      if (tripSP && tripSP.length > 0) {
+        // Build lookup: trip_id + route → salesperson
+        const spLookup = new Map<string, { salesperson: string; customer: string }>();
+        for (const sp of tripSP) {
+          const key = `${sp.trip_id}|${sp.origin_icao}|${sp.destination_icao}`;
+          spLookup.set(key, { salesperson: sp.salesperson_name, customer: sp.customer ?? "" });
+        }
+
+        for (const f of flights) {
+          if (!f.salesperson && f.jetinsight_trip_id) {
+            const key = `${f.jetinsight_trip_id}|${f.departure_icao}|${f.arrival_icao}`;
+            const sp = spLookup.get(key);
+            if (sp) {
+              f.salesperson = sp.salesperson;
+              if (!f.customer_name) f.customer_name = sp.customer;
+            }
+          }
+        }
+      }
+    }
+
     // Filter to sold legs with salesperson
-    const filtered = (allDayFlights ?? [])
+    const filtered = flights
       .filter((f) => f.salesperson && LIVE_TYPES.includes(f.flight_type))
       .map((f) => ({
         trip_id: f.jetinsight_trip_id ?? "",
@@ -109,7 +146,7 @@ export async function POST(req: NextRequest) {
         jetinsight_url: f.jetinsight_url,
       }));
 
-    return { filtered, allDayFlights: allDayFlights ?? [] };
+    return { filtered, allDayFlights: flights };
   }
 
   const todayData = needsToday ? await loadLegsForDate(todayStr) : null;

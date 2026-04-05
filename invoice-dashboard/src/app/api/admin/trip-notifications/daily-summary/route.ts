@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     quotesLookup.set(m.salesperson_name.toLowerCase(), m.quotes_enabled ?? false);
   }
 
-  // 2. Query flights directly using salesperson field (from JetInsight sync)
+  // 2. Query flights for the day
   const tomorrowStart = new Date(`${tomorrowStr}T00:00:00-05:00`);
   const tomorrowEnd = new Date(`${tomorrowStr}T23:59:59-05:00`);
 
@@ -75,8 +75,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to query flights", detail: legsErr.message }, { status: 500 });
   }
 
+  const flights = allTomorrowFlights ?? [];
+
+  // Backfill missing salesperson from trip_salespersons table
+  const missingTripIds = [
+    ...new Set(
+      flights
+        .filter((f) => !f.salesperson && f.jetinsight_trip_id && LIVE_TYPES.includes(f.flight_type))
+        .map((f) => f.jetinsight_trip_id as string)
+    ),
+  ];
+
+  if (missingTripIds.length > 0) {
+    const { data: tripSP } = await supa
+      .from("trip_salespersons")
+      .select("trip_id, origin_icao, destination_icao, salesperson_name, customer")
+      .in("trip_id", missingTripIds);
+
+    if (tripSP && tripSP.length > 0) {
+      const spLookup = new Map<string, { salesperson: string; customer: string }>();
+      for (const sp of tripSP) {
+        const key = `${sp.trip_id}|${sp.origin_icao}|${sp.destination_icao}`;
+        spLookup.set(key, { salesperson: sp.salesperson_name, customer: sp.customer ?? "" });
+      }
+
+      for (const f of flights) {
+        if (!f.salesperson && f.jetinsight_trip_id) {
+          const key = `${f.jetinsight_trip_id}|${f.departure_icao}|${f.arrival_icao}`;
+          const sp = spLookup.get(key);
+          if (sp) {
+            f.salesperson = sp.salesperson;
+            if (!f.customer_name) f.customer_name = sp.customer;
+          }
+        }
+      }
+    }
+  }
+
   // Filter to sold legs with salesperson
-  const filteredLegs = (allTomorrowFlights ?? [])
+  const filteredLegs = flights
     .filter((f) => f.salesperson && LIVE_TYPES.includes(f.flight_type))
     .map((f) => ({
       trip_id: f.jetinsight_trip_id ?? "",
@@ -134,7 +171,7 @@ export async function POST(req: NextRequest) {
         legLines.push(`• ${dep}-${arr} ${time} ${leg.tail_number} Broker - ${broker}`);
 
         // Prior leg alert
-        const priorLeg = findPriorLeg(allTomorrowFlights ?? [], leg.tail_number, leg.origin_icao, leg.scheduled_departure);
+        const priorLeg = findPriorLeg(flights, leg.tail_number, leg.origin_icao, leg.scheduled_departure);
         if (priorLeg) {
           const pDep = formatIcao(priorLeg.departure_icao);
           const pArr = formatIcao(priorLeg.arrival_icao);
