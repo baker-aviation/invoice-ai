@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getFlightTrack } from "@/lib/flightaware";
+import { fetchAdsbxTrace, FLEET_HEX } from "@/lib/adsbExchange";
 
 export const maxDuration = 300;
 
@@ -123,7 +124,20 @@ export async function GET(req: NextRequest) {
     for (const [fid, flight] of toFetch) {
       await sleep(DELAY_MS);
       try {
-        const positions = await getFlightTrack(fid);
+        let positions = await getFlightTrack(fid);
+
+        // Fallback: try ADS-B Exchange if FlightAware returns empty
+        if (!positions?.length && flight.tail && flight.date && FLEET_HEX[flight.tail]) {
+          const adsbxFlights = await fetchAdsbxTrace(flight.tail, flight.date);
+          if (adsbxFlights.length > 0) {
+            // Use the longest flight from that day
+            const best = adsbxFlights.sort((a, b) => (b.positions.length) - (a.positions.length))[0];
+            positions = best.positions.map((p) => ({
+              latitude: p.lat, longitude: p.lon, altitude: p.alt,
+              groundspeed: p.gs, heading: null, timestamp: p.t,
+            }));
+          }
+        }
 
         if (!positions?.length) {
           await supa.from("flightaware_tracks").upsert({
