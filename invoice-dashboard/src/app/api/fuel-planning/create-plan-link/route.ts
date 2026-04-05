@@ -60,7 +60,16 @@ export async function POST(req: NextRequest) {
 
   // Optionally send to Slack
   if (body.send_slack && process.env.SLACK_BOT_TOKEN) {
-    const channel = (body.slack_channel as string) || "C0ANTTQ6R96";
+    // Look up per-tail Slack channel, fall back to #fuel-planning
+    let channel = (body.slack_channel as string) || "";
+    if (!channel) {
+      const { data: src } = await supa
+        .from("ics_sources")
+        .select("slack_channel_id")
+        .eq("label", tail.toUpperCase())
+        .single();
+      channel = src?.slack_channel_id || "C0ANTTQ6R96";
+    }
     const savings = Math.round(planData.tankerSavings ?? 0);
     const isPilotSummary = body.mode === "pilot_summary";
 
