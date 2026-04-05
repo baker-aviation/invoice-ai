@@ -6493,11 +6493,16 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         if (cancelled) return;
         const map = new Map<string, FlightInfoEntry>();
         const positions: AircraftPosition[] = [];
+        const faPriority = (f: { status?: string | null; arrival_time?: string | null }) => {
+          if (f.status?.includes("En Route")) return 3;
+          if (f.status?.includes("Landed")) return 1;
+          return 2; // Scheduled / unknown — the upcoming flight
+        };
         for (const f of (data.flights ?? [])) {
-          // Prioritise en-route flights so they aren't overwritten by scheduled/completed ones
+          // Keep the highest-priority flight per tail for van scheduling:
+          // En Route (3) > Scheduled/future (2) > Landed/past (1)
           const existing = map.get(f.tail);
-          const fIsEnRoute = f.status?.includes("En Route");
-          if (!existing || fIsEnRoute || (!existing.status?.includes("En Route") && !existing.status?.includes("Landed"))) {
+          if (!existing || faPriority(f) > faPriority(existing)) {
             map.set(f.tail, f);
           }
           // Synthesize map positions from en-route flights with position data

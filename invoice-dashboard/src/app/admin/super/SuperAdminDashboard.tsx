@@ -132,6 +132,15 @@ export default function SuperAdminDashboard() {
   const [triggerResult, setTriggerResult] = useState<{ slug: string; ok: boolean } | null>(null);
   const [roleUpdating, setRoleUpdating] = useState<string | null>(null);
 
+  // Code stats
+  const [codeStats, setCodeStats] = useState<{
+    currentLines: number;
+    totalAdded: number;
+    totalDeleted: number;
+    totalCommits: number;
+    contributors: { name: string; commits: number; added: number; deleted: number }[];
+  } | null>(null);
+
   // ICS Sources state
   const [icsSources, setIcsSources] = useState<IcsSource[]>([]);
   const [icsLoading, setIcsLoading] = useState(true);
@@ -173,6 +182,7 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     fetchData();
+    fetch("/api/admin/code-stats").then(r => r.ok ? r.json() : null).then(d => d && setCodeStats(d)).catch(() => {});
     const jitter = () => 60_000 + Math.random() * 10_000; // 1 min + 0-10s jitter
     let tid: ReturnType<typeof setTimeout>;
     const tick = () => { fetchData(); tid = setTimeout(tick, jitter()); };
@@ -386,6 +396,44 @@ export default function SuperAdminDashboard() {
           <div className="text-xs text-gray-500 mt-1">Total Users</div>
         </div>
       </div>
+
+      {/* Code Stats Tracker */}
+      {codeStats && (codeStats.totalAdded > 0 || codeStats.currentLines > 0) && (
+        <div className="rounded-xl border bg-gradient-to-r from-slate-50 to-indigo-50 border-indigo-200 p-4">
+          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Codebase Stats</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="rounded-lg bg-white/80 p-3 text-center shadow-sm">
+              <div className="text-2xl font-bold text-indigo-700">{fmtNum(codeStats.totalAdded)}</div>
+              <div className="text-xs text-gray-500 mt-1">Lines Written</div>
+            </div>
+            <div className="rounded-lg bg-white/80 p-3 text-center shadow-sm">
+              <div className="text-2xl font-bold text-emerald-700">{fmtNum(codeStats.currentLines)}</div>
+              <div className="text-xs text-gray-500 mt-1">Lines Surviving</div>
+            </div>
+            <div className="rounded-lg bg-white/80 p-3 text-center shadow-sm">
+              <div className="text-2xl font-bold text-red-600">{fmtNum(codeStats.totalDeleted)}</div>
+              <div className="text-xs text-gray-500 mt-1">Lines Deleted</div>
+            </div>
+            <div className="rounded-lg bg-white/80 p-3 text-center shadow-sm">
+              <div className="text-2xl font-bold text-gray-800">{fmtNum(codeStats.totalCommits)}</div>
+              <div className="text-xs text-gray-500 mt-1">Total Commits</div>
+            </div>
+          </div>
+          {codeStats.contributors.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-3">
+              {codeStats.contributors.map((c) => (
+                <div key={c.name} className="flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-xs shadow-sm">
+                  <span className="font-semibold text-gray-800">{c.name}</span>
+                  <span className="text-gray-400">|</span>
+                  <span className="text-indigo-600">{fmtNum(c.commits)} commits</span>
+                  <span className="text-emerald-600">+{fmtNum(c.added)}</span>
+                  <span className="text-red-500">-{fmtNum(c.deleted)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Cloud Run Services */}

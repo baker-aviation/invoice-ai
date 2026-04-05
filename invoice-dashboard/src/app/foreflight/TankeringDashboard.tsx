@@ -23,7 +23,7 @@ interface LegData {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
-  priceSource?: "trip_notes" | "contract" | "airport_fallback" | "none";
+  priceSource?: "trip_notes" | "contract" | "retail" | "airport_fallback" | "none";
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
   ffSource: "foreflight" | "estimate";
@@ -442,6 +442,9 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
                           <div className="text-[10px] text-blue-400 truncate">
                             Fuel: {leg.departureFboVendor}
                           </div>
+                        )}
+                        {leg.priceSource === "retail" && (
+                          <div className="text-[10px] text-amber-500 font-medium">Retail price (no contract)</div>
                         )}
                         {leg.priceSource === "none" && (
                           <div className="text-[10px] text-amber-500 font-medium">No pricing data</div>

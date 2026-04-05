@@ -139,12 +139,10 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // 2) Each aircraft as a threaded reply under the header
-      const threadTs = headerData.ts;
+      // 2) Each aircraft as its own top-level message (separate thread per aircraft)
       for (const item of van.items) {
         await postMessage({
           channel,
-          thread_ts: threadTs,
           text: buildAircraftFallbackText(item),
           blocks: buildAircraftSlackBlocks(item),
         });
