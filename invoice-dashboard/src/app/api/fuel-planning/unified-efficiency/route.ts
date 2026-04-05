@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
         .select(
           "pic, sic, aircraft_type, origin, destination, flight_hrs, block_hrs, " +
             "fuel_burn_lbs, fuel_burn_lbs_hour, takeoff_wt_lbs, fuel_start_lbs, " +
-            "fuel_end_lbs, flight_date, tail_number, nautical_miles",
+            "fuel_end_lbs, flight_date, tail_number, nautical_miles, " +
+            "gals_pre, gals_post, segment_number",
         )
         .gte("flight_date", cutoff)
         .not("fuel_burn_lbs", "is", null)
@@ -107,6 +108,7 @@ export async function GET(req: NextRequest) {
   // Uses time-weighted average cruise FL from segments, not just max altitude
   const trackCruiseFl = new Map<string, number>();
   const trackByTailDate = new Map<string, Array<{ alt: number; min: number }>>();
+  const trackAltEfficiency = new Map<string, number>(); // tail+date → timeAtOptimalPct
 
   for (const t of tracks) {
     const summary = t.segments_summary as { segments?: Array<{ phase: string; altitudeFl: number; durationMin: number }>; maxCruiseAlt?: number } | null;
@@ -142,6 +144,12 @@ export async function GET(req: NextRequest) {
       existing.push({ alt: cruiseFl, min: 1 }); // fallback: treat as 1 min if no segments
     }
     trackByTailDate.set(tdKey, existing);
+
+    // Alt efficiency: timeAtOptimalPct from segments_summary
+    const fullSummary = t.segments_summary as { timeAtOptimalPct?: number; totalCruiseMin?: number } | null;
+    if (fullSummary?.timeAtOptimalPct != null && (fullSummary.totalCruiseMin ?? 0) > 5) {
+      trackAltEfficiency.set(tdKey, fullSummary.timeAtOptimalPct);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -277,6 +285,9 @@ export async function GET(req: NextRequest) {
     if (!burnLbs || burnLbs <= 0 || !f.flight_hrs || f.flight_hrs <= 0)
       continue;
 
+    // Only include flights ≥ 45 min in fleet averages (short hops are all climb/descent)
+    if (f.flight_hrs < 0.75) continue;
+
     const entry = fleetByType.get(f.aircraft_type) ?? {
       totalBurn: 0,
       totalHrs: 0,
@@ -378,6 +389,9 @@ export async function GET(req: NextRequest) {
     // ADS-B cruise altitude
     cruiseFlSum: number;
     cruiseFlCount: number;
+    // Alt efficiency (time at optimal %)
+    altEfficiencySum: number;
+    altEfficiencyCount: number;
     // Per type
     byType: Map<
       string,
@@ -414,6 +428,7 @@ export async function GET(req: NextRequest) {
     stepClimbs: number | null;
     cruiseProfile: string | null;
     blockHrs: number;
+    excludedFromAvg: boolean;
   };
 
   const pilotMap = new Map<string, PilotAccum>();
@@ -496,28 +511,36 @@ export async function GET(req: NextRequest) {
         climbFlights: 0,
         cruiseFlSum: 0,
         cruiseFlCount: 0,
+        altEfficiencySum: 0,
+        altEfficiencyCount: 0,
         byType: new Map(),
         recentFlights: [],
       };
       pilotMap.set(name, pilot);
     }
 
+    // Only count flights ≥ 45 min in pilot averages
+    // Short hops are included in recentFlights but excluded from stats
+    const countsForAvg = hrs >= 0.75;
+
     pilot.flights++;
-    pilot.totalHrs += hrs;
-    pilot.totalBurn += actualBurn;
-    pilot.totalStartFuel += f.fuel_start_lbs ?? 0;
-    if (nm > 0) {
-      pilot.totalNm += nm;
-      pilot.nmFlights++;
+    if (countsForAvg) {
+      pilot.totalHrs += hrs;
+      pilot.totalBurn += actualBurn;
+      pilot.totalStartFuel += f.fuel_start_lbs ?? 0;
+      if (nm > 0) {
+        pilot.totalNm += nm;
+        pilot.nmFlights++;
+      }
     }
 
-    if (pred) {
+    if (pred && countsForAvg) {
       pilot.matchedPredictions++;
       pilot.totalPredictedBurn += pred.fuelToDest;
       pilot.totalActualBurnOnMatched += actualBurn;
     }
 
-    if (phase) {
+    if (phase && countsForAvg) {
       pilot.climbMinSum += phase.climbMin;
       pilot.climbPctSum += phase.climbPct;
       pilot.initialAltSum += phase.initialAlt;
@@ -526,13 +549,12 @@ export async function GET(req: NextRequest) {
       pilot.climbFlights++;
     }
 
-    // ADS-B actual cruise altitude
+    // ADS-B actual cruise altitude (only for ≥ 45 min flights)
     const originNorm = (f.origin ?? "").replace(/^K/, "");
     const destNorm = (f.destination ?? "").replace(/^K/, "");
     const trackKey = `${f.tail_number}:${originNorm}:${destNorm}:${f.flight_date}`;
     let cruiseFl = trackCruiseFl.get(trackKey);
     if (!cruiseFl) {
-      // Fallback: weighted average from all cruise segments on this tail+date
       const daySegs = trackByTailDate.get(`${f.tail_number}:${f.flight_date}`);
       if (daySegs?.length) {
         const totalMin = daySegs.reduce((s, seg) => s + seg.min, 0);
@@ -540,23 +562,32 @@ export async function GET(req: NextRequest) {
         cruiseFl = totalMin > 0 ? Math.round(weightedAlt / totalMin) : undefined;
       }
     }
-    if (cruiseFl) {
+    if (cruiseFl && countsForAvg) {
       pilot.cruiseFlSum += cruiseFl;
       pilot.cruiseFlCount++;
     }
 
-    // Per type
+    // Alt efficiency (only for ≥ 45 min)
+    const altEff = trackAltEfficiency.get(`${f.tail_number}:${f.flight_date}`);
+    if (altEff != null && countsForAvg) {
+      pilot.altEfficiencySum += altEff;
+      pilot.altEfficiencyCount++;
+    }
+
+    // Per type (only ≥ 45 min)
     let typeEntry = pilot.byType.get(f.aircraft_type);
     if (!typeEntry) {
       typeEntry = { hrs: 0, burn: 0, nm: 0, nmCount: 0, count: 0 };
       pilot.byType.set(f.aircraft_type, typeEntry);
     }
-    typeEntry.hrs += hrs;
-    typeEntry.burn += actualBurn;
-    typeEntry.count++;
-    if (nm > 0) {
-      typeEntry.nm += nm;
-      typeEntry.nmCount++;
+    if (countsForAvg) {
+      typeEntry.hrs += hrs;
+      typeEntry.burn += actualBurn;
+      typeEntry.count++;
+      if (nm > 0) {
+        typeEntry.nm += nm;
+        typeEntry.nmCount++;
+      }
     }
 
     // Recent flights (last 20 per pilot, already sorted desc by flight_date)
@@ -589,6 +620,7 @@ export async function GET(req: NextRequest) {
         stepClimbs: phase ? phase.stepClimbs : null,
         cruiseProfile: phase ? phase.cruiseProfile : null,
         blockHrs: f.block_hrs ?? 0,
+        excludedFromAvg: !countsForAvg,
       });
     }
 
@@ -613,6 +645,38 @@ export async function GET(req: NextRequest) {
     if (nm > 0) {
       tail.totalNm += nm;
       tail.nmCount++;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // APU ground burn per pilot (consecutive legs, same tail+date+PIC)
+  // ---------------------------------------------------------------------------
+  const apuByPilot = new Map<string, { totalLbs: number; count: number }>();
+  const legsByGroup = new Map<string, typeof flights>();
+  for (const f of flights) {
+    if (!f.pic || !f.fuel_start_lbs || !f.fuel_end_lbs) continue;
+    const gk = `${f.tail_number}:${f.flight_date}:${f.pic}`;
+    const existing = legsByGroup.get(gk) ?? [];
+    existing.push(f);
+    legsByGroup.set(gk, existing);
+  }
+  for (const [, legs] of legsByGroup) {
+    legs.sort((a, b) => (a.segment_number ?? 0) - (b.segment_number ?? 0));
+    for (let i = 0; i < legs.length - 1; i++) {
+      const endFuel = Number(legs[i].fuel_end_lbs);
+      const startNext = Number(legs[i + 1].fuel_start_lbs);
+      const galsPost = Number(legs[i].gals_post ?? 0);
+      const galsPre = Number(legs[i + 1].gals_pre ?? 0);
+      const fuelAdded = (galsPost + galsPre) * 6.7;
+      const apuBurn = endFuel + fuelAdded - startNext;
+      // Only count reasonable values (gauge noise to ~800 lbs = ~2hr APU)
+      if (apuBurn >= -50 && apuBurn <= 800) {
+        const pic = legs[i].pic;
+        const entry = apuByPilot.get(pic) ?? { totalLbs: 0, count: 0 };
+        entry.totalLbs += Math.max(0, apuBurn);
+        entry.count++;
+        apuByPilot.set(pic, entry);
+      }
     }
   }
 
@@ -703,6 +767,10 @@ export async function GET(req: NextRequest) {
         ? Math.round(p.cruiseFlSum / p.cruiseFlCount)
         : null;
 
+      const avgAltEfficiency = p.altEfficiencyCount > 0
+        ? Math.round(p.altEfficiencySum / p.altEfficiencyCount * 10) / 10
+        : null;
+
       // Per-type breakdown
       const byType = [...p.byType.entries()].map(([type, data]) => ({
         type,
@@ -748,6 +816,12 @@ export async function GET(req: NextRequest) {
         );
       }
 
+      if (avgAltEfficiency !== null && avgAltEfficiency < 50) {
+        insights.push(
+          `Only ${avgAltEfficiency}% of cruise time at optimal altitude. Getting to and staying at optimal FL saves significant fuel.`,
+        );
+      }
+
       if (ffVariancePct !== null && ffVariancePct > 15) {
         insights.push(
           `Consistently burns ${ffVariancePct}% more than ForeFlight plans. Review speed management.`,
@@ -760,6 +834,55 @@ export async function GET(req: NextRequest) {
         insights.push(
           `Averages ${avgSteps} step climbs per flight — each reset costs climb fuel.`,
         );
+      }
+
+      // Flight time vs planned — are they consistently slower?
+      const flightsWithTime = p.recentFlights.filter((f) => f.ffTimeMin && f.hrs > 0);
+      if (flightsWithTime.length >= 3) {
+        const avgTimeDelta = flightsWithTime.reduce((s, f) => {
+          const ffHrs = (f.ffTimeMin ?? 0) / 60;
+          return s + (f.hrs - ffHrs) * 60;
+        }, 0) / flightsWithTime.length;
+        if (avgTimeDelta > 12) {
+          insights.push(
+            `Flights average ${Math.round(avgTimeDelta)} min longer than planned. Faster climb to cruise altitude and direct routing requests can reduce this.`,
+          );
+        }
+      }
+
+      // Excess fuel loading
+      if (avgStartFuel > 0 && p.flights >= 5) {
+        const avgEndFuel = p.recentFlights.reduce((s, f) => s + (f.endFuel ?? 0), 0) / p.recentFlights.filter((f) => f.endFuel > 0).length;
+        if (avgEndFuel > 4000) {
+          insights.push(
+            `Avg landing fuel ${Math.round(avgEndFuel).toLocaleString()} lbs — carrying extra weight burns more fuel. Consider optimizing fuel load.`,
+          );
+        }
+      }
+
+      // Short leg penalty awareness
+      const shortLegs = p.recentFlights.filter((f) => f.nm > 0 && f.nm < 200);
+      const longLegs = p.recentFlights.filter((f) => f.nm >= 500);
+      if (shortLegs.length >= 3 && longLegs.length >= 3) {
+        const shortLbsNm = shortLegs.reduce((s, f) => s + f.lbsNm, 0) / shortLegs.length;
+        const longLbsNm = longLegs.reduce((s, f) => s + f.lbsNm, 0) / longLegs.length;
+        if (shortLbsNm > longLbsNm * 1.5) {
+          insights.push(
+            `Short legs (<200 NM) avg ${shortLbsNm.toFixed(1)} lbs/NM vs ${longLbsNm.toFixed(1)} on longer legs — climb/descent dominates short hops, not pilot technique.`,
+          );
+        }
+      }
+
+      // Best and worst flights
+      const scoredFlights = p.recentFlights.filter((f) => f.predictedVariance !== null && f.nm > 100);
+      if (scoredFlights.length >= 3) {
+        const best = scoredFlights.reduce((b, f) => (f.predictedVariance ?? 999) < (b.predictedVariance ?? 999) ? f : b);
+        const worst = scoredFlights.reduce((w, f) => (f.predictedVariance ?? -999) > (w.predictedVariance ?? -999) ? f : w);
+        if ((worst.predictedVariance ?? 0) - (best.predictedVariance ?? 0) > 20) {
+          insights.push(
+            `Best flight: ${best.route} (${best.predictedVariance! > 0 ? "+" : ""}${best.predictedVariance}% vs plan). Worst: ${worst.route} (${worst.predictedVariance! > 0 ? "+" : ""}${worst.predictedVariance}%). Review what was different.`,
+          );
+        }
       }
 
       // Cost impact vs fleet average
@@ -796,6 +919,12 @@ export async function GET(req: NextRequest) {
         avgInitialAlt,
         avgMaxAlt,
         avgCruiseFl,
+        avgAltEfficiency,
+        avgApuGal: (() => {
+          const apu = apuByPilot.get(p.name);
+          return apu && apu.count >= 2 ? Math.round(apu.totalLbs / apu.count / 6.7 * 10) / 10 : null;
+        })(),
+        apuGaps: apuByPilot.get(p.name)?.count ?? 0,
         totalStepClimbs: p.totalStepClimbs,
         byType,
         insights,
@@ -844,6 +973,32 @@ export async function GET(req: NextRequest) {
       : 0;
 
   // ---------------------------------------------------------------------------
+  // Monthly trend data
+  // ---------------------------------------------------------------------------
+  const trendMap = new Map<string, { burn: number; nm: number; hrs: number; flights: number }>();
+  for (const f of flights) {
+    const burn = f.fuel_burn_lbs ?? (f.fuel_start_lbs && f.fuel_end_lbs ? f.fuel_start_lbs - f.fuel_end_lbs : 0);
+    const nm = f.nautical_miles ?? 0;
+    const hrs = f.flight_hrs ?? 0;
+    if (!burn || burn <= 0 || !f.flight_date) continue;
+    const month = f.flight_date.substring(0, 7); // YYYY-MM
+    const entry = trendMap.get(month) ?? { burn: 0, nm: 0, hrs: 0, flights: 0 };
+    entry.burn += burn;
+    if (nm > 0) entry.nm += nm;
+    entry.hrs += hrs;
+    entry.flights++;
+    trendMap.set(month, entry);
+  }
+  const trend = [...trendMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, d]) => ({
+      month,
+      avgLbsNm: d.nm > 0 ? Math.round((d.burn / d.nm) * 100) / 100 : 0,
+      avgGalHr: d.hrs > 0 ? Math.round(d.burn / d.hrs / 6.7) : 0,
+      flights: d.flights,
+    }));
+
+  // ---------------------------------------------------------------------------
   // Response
   // ---------------------------------------------------------------------------
   return NextResponse.json({
@@ -851,6 +1006,11 @@ export async function GET(req: NextRequest) {
       byType: byTypeResponse,
       ffAccuracy,
       fleetCruiseFl: fleetCruiseFlAll,
+      fleetAvgApuGal: (() => {
+        let total = 0, count = 0;
+        for (const [, a] of apuByPilot) { total += a.totalLbs; count += a.count; }
+        return count > 0 ? Math.round(total / count / 6.7 * 10) / 10 : null;
+      })(),
       totalFlights: flights.filter(
         (f) =>
           f.fuel_burn_lbs ||
@@ -861,5 +1021,6 @@ export async function GET(req: NextRequest) {
     },
     pilots: pilotsResult,
     tails,
+    trend,
   });
 }

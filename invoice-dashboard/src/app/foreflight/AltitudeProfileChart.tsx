@@ -12,6 +12,7 @@ interface AltitudeProfileProps {
   date: string;
   type?: string;
   actualBurn?: number;
+  flightHrs?: number;
 }
 
 interface DataPoint { minutesFromDep: number; planned?: number; actual?: number }
@@ -46,7 +47,7 @@ function altTextColor(fl: number, optimal: number): string {
   return "text-orange-600";
 }
 
-export default function AltitudeProfileChart({ tail, origin, dest, date, type, actualBurn }: AltitudeProfileProps) {
+export default function AltitudeProfileChart({ tail, origin, dest, date, type, actualBurn, flightHrs }: AltitudeProfileProps) {
   const [data, setData] = useState<DataPoint[] | null>(null);
   const [attribution, setAttribution] = useState<Attribution | null>(null);
   const [segments, setSegments] = useState<SegmentsSummary | null>(null);
@@ -63,6 +64,7 @@ export default function AltitudeProfileChart({ tail, origin, dest, date, type, a
     if (dest) params.set("dest", dest);
     if (type) params.set("type", type);
     if (actualBurn) params.set("actualBurn", String(Math.round(actualBurn)));
+    if (flightHrs) params.set("flightHrs", String(flightHrs));
 
     fetch(`/api/fuel-planning/altitude-profile?${params}`)
       .then((r) => r.json())
