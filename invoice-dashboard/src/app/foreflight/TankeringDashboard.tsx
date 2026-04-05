@@ -23,6 +23,9 @@ interface LegData {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
+  priceSource?: "trip_notes" | "contract" | "airport_fallback" | "none";
+  bestPriceAtFbo?: number | null;
+  bestVendorAtFbo?: string | null;
   ffSource: "foreflight" | "estimate";
   waiver?: LegWaiver;
 }
@@ -50,17 +53,6 @@ interface GenerateResponse {
   error?: string;
 }
 
-interface UploadResponse {
-  ok: boolean;
-  inserted: number;
-  skipped: number;
-  totalParsed: number;
-  dates: string[];
-  tails: string[];
-  shutdownByTail: Record<string, { fuel: number; airport: string }>;
-  error?: string;
-}
-
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function fmtNum(n: number, decimals = 0): string {
@@ -82,8 +74,6 @@ function fmtHrs(h: number): string {
 const FUEL_PLANNING_SLACK_CHANNEL = "C0ANTTQ6R96";
 
 export default function TankeringDashboard() {
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [generating, setGenerating] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareResult, setShareResult] = useState<string | null>(null);
@@ -94,35 +84,6 @@ export default function TankeringDashboard() {
     d.setDate(d.getDate() + 1);
     return d.toISOString().split("T")[0];
   });
-
-  // ── Upload handler ──
-  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadResult(null);
-    setError(null);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/fuel-planning/post-flight/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? `Upload failed: HTTP ${res.status}`);
-        return;
-      }
-      setUploadResult(data);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
-  }, []);
 
   // ── Generate plan handler ──
   const handleGenerate = useCallback(async () => {
@@ -156,31 +117,31 @@ export default function TankeringDashboard() {
     }
   }, [targetDate]);
 
-  // ── Share to Slack handler (creates links for each plan) ──
+  // ── Share to Slack handler (consolidated fleet summary) ──
   const handleShareSlack = useCallback(async () => {
     if (!result?.plans.length) return;
+    if (!window.confirm("This will post the tankering summary to the #fuel-planning Slack channel. Continue?")) return;
     setSharing(true);
     setShareResult(null);
     setError(null);
 
     try {
-      let sentCount = 0;
-      for (const plan of result.plans) {
-        if (plan.error && !plan.plan) continue;
-        const res = await fetch("/api/fuel-planning/create-plan-link", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tail: plan.tail,
-            aircraftType: plan.aircraftType,
-            date: result.date,
-            plan: plan,
-            send_slack: true,
-          }),
-        });
-        if (res.ok) sentCount++;
+      const res = await fetch("/api/fuel-planning/share-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: FUEL_PLANNING_SLACK_CHANNEL,
+          date: result.date,
+          plans: result.plans,
+          fleetTotals: result.fleetTotals,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed to share to Slack");
+        return;
       }
-      setShareResult(`Sent ${sentCount} plans to Slack (with links)`);
+      setShareResult(`Tankering summary sent to Slack (${data.sent} with savings)`);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -194,31 +155,10 @@ export default function TankeringDashboard() {
       <div className="rounded-lg border border-gray-200 bg-white p-5">
         <h2 className="text-lg font-semibold text-gray-900 mb-1">Automated Tankering Planner</h2>
         <p className="text-sm text-gray-500 mb-4">
-          Upload tonight&apos;s post-flight data, then generate optimal fuel plans for tomorrow&apos;s schedule.
+          Generate optimal fuel plans using JetInsight post-flight data and tomorrow&apos;s schedule.
         </p>
 
         <div className="flex flex-wrap items-end gap-4">
-          {/* Upload */}
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Post-Flight CSV</label>
-            <label
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium cursor-pointer transition-colors ${
-                uploading
-                  ? "bg-gray-100 text-gray-400 cursor-wait"
-                  : "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              {uploading ? "Uploading..." : "Upload CSV"}
-              <input
-                type="file"
-                accept=".csv"
-                onChange={handleUpload}
-                disabled={uploading}
-                className="hidden"
-              />
-            </label>
-          </div>
-
           {/* Date picker */}
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Plan Date</label>
@@ -259,23 +199,6 @@ export default function TankeringDashboard() {
         {shareResult && (
           <div className="mt-3 rounded-md bg-purple-50 border border-purple-200 px-4 py-3">
             <p className="text-sm font-medium text-purple-800">{shareResult}</p>
-          </div>
-        )}
-
-        {/* Upload result */}
-        {uploadResult && (
-          <div className="mt-3 rounded-md bg-green-50 border border-green-200 px-4 py-3">
-            <p className="text-sm font-medium text-green-800">
-              Uploaded {uploadResult.inserted} rows ({uploadResult.tails.length} tails) for {uploadResult.dates.join(", ")}
-            </p>
-            <div className="mt-2 flex flex-wrap gap-3">
-              {Object.entries(uploadResult.shutdownByTail).map(([tail, info]) => (
-                <span key={tail} className="inline-flex items-center gap-1.5 text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                  <span className="font-semibold">{tail}</span>
-                  <span>{fmtNum(info.fuel)} lbs @ {info.airport}</span>
-                </span>
-              ))}
-            </div>
           </div>
         )}
 
@@ -520,6 +443,14 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
                             Fuel: {leg.departureFboVendor}
                           </div>
                         )}
+                        {leg.priceSource === "none" && (
+                          <div className="text-[10px] text-amber-500 font-medium">No pricing data</div>
+                        )}
+                        {leg.bestPriceAtFbo != null && leg.bestVendorAtFbo && (
+                          <div className="text-[10px] text-red-500 font-medium">
+                            Better: {leg.bestVendorAtFbo} @ {fmtDollars(leg.bestPriceAtFbo)}/gal
+                          </div>
+                        )}
                       </td>
                       <td className="py-2.5 pr-3 text-right text-xs">
                         {leg.waiver && leg.waiver.feeWaived > 0 ? (
@@ -633,6 +564,7 @@ function SendAlertsButton({ date }: { date: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const handleSend = async () => {
+    if (!window.confirm("This will send tankering alerts to Slack for all aircraft with savings. Continue?")) return;
     setSending(true);
     setError(null);
     setResult(null);
