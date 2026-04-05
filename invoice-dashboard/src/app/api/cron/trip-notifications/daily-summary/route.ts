@@ -3,6 +3,7 @@ import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
 import { getRandomQuote } from "@/lib/quotes";
+import { backfillSalesperson } from "@/lib/salespersonBackfill";
 
 /**
  * POST /api/cron/trip-notifications/daily-summary
@@ -94,42 +95,9 @@ export async function POST(req: NextRequest) {
       .not("tail_number", "is", null)
       .order("scheduled_departure", { ascending: true });
 
-    // Backfill missing salesperson from trip_salespersons table
+    // Backfill missing salesperson from trip_salespersons
     const flights = allDayFlights ?? [];
-    const missingTripIds = [
-      ...new Set(
-        flights
-          .filter((f) => !f.salesperson && f.jetinsight_trip_id && LIVE_TYPES.includes(f.flight_type))
-          .map((f) => f.jetinsight_trip_id as string)
-      ),
-    ];
-
-    if (missingTripIds.length > 0) {
-      const { data: tripSP } = await supa
-        .from("trip_salespersons")
-        .select("trip_id, origin_icao, destination_icao, salesperson_name, customer")
-        .in("trip_id", missingTripIds);
-
-      if (tripSP && tripSP.length > 0) {
-        // Build lookup: trip_id + route → salesperson
-        const spLookup = new Map<string, { salesperson: string; customer: string }>();
-        for (const sp of tripSP) {
-          const key = `${sp.trip_id}|${sp.origin_icao}|${sp.destination_icao}`;
-          spLookup.set(key, { salesperson: sp.salesperson_name, customer: sp.customer ?? "" });
-        }
-
-        for (const f of flights) {
-          if (!f.salesperson && f.jetinsight_trip_id) {
-            const key = `${f.jetinsight_trip_id}|${f.departure_icao}|${f.arrival_icao}`;
-            const sp = spLookup.get(key);
-            if (sp) {
-              f.salesperson = sp.salesperson;
-              if (!f.customer_name) f.customer_name = sp.customer;
-            }
-          }
-        }
-      }
-    }
+    await backfillSalesperson(supa, flights);
 
     // Filter to sold legs with salesperson
     const filtered = flights

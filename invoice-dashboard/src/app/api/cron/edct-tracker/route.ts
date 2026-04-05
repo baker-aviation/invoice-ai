@@ -3,6 +3,7 @@ import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
 import { postSlackMessage } from "@/lib/slack";
+import { backfillSalesperson } from "@/lib/salespersonBackfill";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -229,7 +230,7 @@ export async function GET(req: NextRequest) {
   // 1. Get today's undeparted flights
   const { data: flightRows } = await supa
     .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, salesperson")
+    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, salesperson, jetinsight_trip_id, flight_type, customer_name")
     .gte("scheduled_departure", oneHourAgo)
     .lte("scheduled_departure", tomorrowStart)
     .order("scheduled_departure", { ascending: true });
@@ -237,6 +238,9 @@ export async function GET(req: NextRequest) {
   if (!flightRows?.length) {
     return NextResponse.json({ ok: true, message: "No flights to check", checked: 0, found: 0 });
   }
+
+  // Backfill missing salesperson from trip_salespersons
+  await backfillSalesperson(supa, flightRows, null);
 
   // 2. Get callsign map
   const { data: icsSources } = await supa
