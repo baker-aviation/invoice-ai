@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { toIcao } from "@/lib/iataToIcao";
 import { getRunwaySuppressedIds, detectAllRunwaysClosed, type AllRwysClosedAlert } from "@/lib/runwayData";
+import { backfillSalesperson } from "@/lib/salespersonBackfill";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -233,6 +234,9 @@ export async function fetchFlightsLite(params: {
   if (error) throw new Error(`fetchFlightsLite failed: ${error.message}`);
   if (!flightRows?.length) return { ok: true, flights: [], count: 0 };
 
+  // Backfill missing salesperson from trip_salespersons
+  await backfillSalesperson(supa, flightRows, null);
+
   // Deduplicate cross-feed flights
   const seen = new Map<string, number>();
   const flights: Flight[] = [];
@@ -292,6 +296,9 @@ export async function fetchFlights(params: {
   if (!flightRows || flightRows.length === 0) {
     return { ok: true, flights: [], count: 0 };
   }
+
+  // Backfill missing salesperson from trip_salespersons
+  await backfillSalesperson(supa, flightRows, null);
 
   // Fetch alerts for these flights (all batches in parallel)
   const flightIds = flightRows.map((f) => f.id as string);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
+import { backfillSalesperson } from "@/lib/salespersonBackfill";
 
 /**
  * POST /api/admin/trip-notifications/check
@@ -61,6 +62,9 @@ export async function POST(req: NextRequest) {
   if (!liveTodayFlights || liveTodayFlights.length === 0) {
     return NextResponse.json({ ok: true, checked: 0, sent: 0, skipped: 0, message: "No live flights today" });
   }
+
+  // Backfill missing salesperson from trip_salespersons
+  await backfillSalesperson(supa, liveTodayFlights);
 
   // 2. Load all salesperson-slack mappings
   const { data: slackMap } = await supa

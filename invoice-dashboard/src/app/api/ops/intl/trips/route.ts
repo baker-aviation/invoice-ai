@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { detectOverflightsFromIcao } from "@/lib/overflightDetector";
+import { backfillSalesperson } from "@/lib/salespersonBackfill";
 
 // Allow up to 300s for cron-triggered trip detection
 export const maxDuration = 300;
@@ -639,15 +640,16 @@ export async function GET(req: NextRequest) {
   }
   if (snapshotBackfills.length > 0) await Promise.all(snapshotBackfills);
 
-  // Build salesperson map from flights data (populated by JetInsight scraper)
+  // Build salesperson map from flights data (with trip_salespersons backfill)
   const salespersonMap = new Map<string, string>();
   if (allFlightIds.size > 0) {
     const { data: spRows } = await supa
       .from("flights")
-      .select("id, tail_number, salesperson")
-      .in("id", [...allFlightIds])
-      .not("salesperson", "is", null);
-    for (const f of spRows ?? []) {
+      .select("id, tail_number, departure_icao, arrival_icao, salesperson, customer_name, flight_type, jetinsight_trip_id")
+      .in("id", [...allFlightIds]);
+    const spFlights = spRows ?? [];
+    await backfillSalesperson(supa, spFlights, null);
+    for (const f of spFlights) {
       if (f.salesperson && f.tail_number && !salespersonMap.has(f.tail_number)) {
         salespersonMap.set(f.tail_number, f.salesperson);
       }
