@@ -34,6 +34,7 @@ interface ScheduleLeg {
 interface LegData {
   from: string;
   to: string;
+  departureDate: string; // YYYY-MM-DD for day grouping
   fuelToDestLbs: number;
   totalFuelLbs: number;
   flightTimeHours: number;
@@ -325,6 +326,7 @@ export async function POST(req: NextRequest) {
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
+          departureDate: leg.scheduled_departure.split("T")[0],
           fuelToDestLbs: fuelBurn,
           totalFuelLbs: totalFuel,
           flightTimeHours: flightHrs,

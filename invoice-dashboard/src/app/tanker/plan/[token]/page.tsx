@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { STD_AIRCRAFT, type AircraftType } from "@/app/tanker/model";
-
-// No auth required — public page with token-based access
 
 type LegData = {
   from: string;
   to: string;
+  departureDate?: string;
   fuelToDestLbs: number;
   totalFuelLbs: number;
   flightTimeHours: number;
@@ -48,8 +47,8 @@ type PlanData = {
   tankerSavings: number;
 };
 
-function fmtNum(n: number, decimals = 0): string {
-  return n.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+function fmtNum(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
 }
 
 function fmtDollars(n: number): string {
@@ -71,6 +70,8 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const [expiresAt, setExpiresAt] = useState<string>("");
   const [recalculating, setRecalculating] = useState(false);
   const [showOverrides, setShowOverrides] = useState(false);
+  const [slackSending, setSlackSending] = useState(false);
+  const [slackSent, setSlackSent] = useState(false);
 
   const [mlwOverrides, setMlwOverrides] = useState<Record<string, number>>({});
   const [zfwOverrides, setZfwOverrides] = useState<Record<string, number>>({});
@@ -140,22 +141,21 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="max-w-6xl mx-auto px-6 py-6 space-y-5">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5">
 
-        {/* Header — matches dashboard TailPlanCard header */}
+        {/* Header */}
         <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
-          <div className="px-5 py-3 flex items-center justify-between bg-gray-50">
-            <div className="flex items-center gap-3">
+          <div className="px-4 sm:px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-gray-50">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <span className="text-base font-bold text-gray-900">{plan.tail}</span>
               <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
                 {acLabel}
               </span>
               <span className="text-xs text-gray-500">
-                Shutdown: {fmtNum(plan.shutdownFuel)} lbs @ {plan.shutdownAirport}
+                {fmtNum(plan.shutdownFuel)} lbs @ {plan.shutdownAirport}
               </span>
-              <span className="text-xs text-gray-400">{date}</span>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {savings > 0 && (
                 <span className="text-sm font-semibold text-green-600">
                   Save {fmtDollars(savings)}
@@ -166,13 +166,34 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                   {fmtDollars(optimized.totalTripCost)}
                 </span>
               )}
+              <button
+                onClick={async () => {
+                  setSlackSending(true);
+                  try {
+                    const res = await fetch("/api/fuel-planning/create-plan-link", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tail: plan.tail, aircraftType: plan.aircraftType, date, plan, send_slack: true, mode: "pilot_summary" }),
+                    });
+                    if (res.ok) setSlackSent(true);
+                  } catch { /* ignore */ }
+                  setSlackSending(false);
+                }}
+                disabled={slackSending || slackSent}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  slackSent ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
+                }`}
+              >
+                {slackSent ? "Sent" : slackSending ? "..." : "Post to Slack"}
+              </button>
             </div>
           </div>
 
-          {/* Legs table — matches dashboard layout */}
           {optimized && plan.legs.length > 0 && (
-            <div className="px-5 py-4">
-              <div className="overflow-x-auto">
+            <div className="px-4 sm:px-5 py-4">
+
+              {/* Desktop table — hidden on mobile */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
@@ -195,8 +216,17 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       const landingFuel = optimized.landingFuelByStop[i] ?? 0;
                       const feePaid = optimized.feePaidByStop[i] ?? 0;
                       const legCost = orderGal * leg.departurePricePerGal + feePaid;
+                      const prevDate = i > 0 ? plan.legs[i - 1].departureDate : null;
+                      const showDayHeader = leg.departureDate && leg.departureDate !== prevDate;
 
-                      return (
+                      return (<>
+                        {showDayHeader && (
+                          <tr key={`day-${i}`} className="bg-gray-50">
+                            <td colSpan={10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                              {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                            </td>
+                          </tr>
+                        )}
                         <tr key={i} className="border-b border-gray-50">
                           <td className="py-2.5 pr-3">
                             <span className="font-medium text-gray-900">{leg.from}</span>
@@ -206,45 +236,25 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                               <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-600">EST</span>
                             )}
                           </td>
-                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">
-                            {fmtNum(leg.fuelToDestLbs)}
-                          </td>
-                          <td className="py-2.5 pr-3 text-right text-gray-600">
-                            {fmtHrs(leg.flightTimeHours)}
-                          </td>
+                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">{fmtNum(leg.fuelToDestLbs)}</td>
+                          <td className="py-2.5 pr-3 text-right text-gray-600">{fmtHrs(leg.flightTimeHours)}</td>
                           <td className="py-2.5 pr-3 text-right font-mono">
-                            {leg.departurePricePerGal > 0 ? fmtDollars(leg.departurePricePerGal) : (
-                              <span className="text-gray-400">N/A</span>
-                            )}
+                            {leg.departurePricePerGal > 0 ? fmtDollars(leg.departurePricePerGal) : <span className="text-gray-400">N/A</span>}
                           </td>
                           <td className="py-2.5 pr-3 text-xs max-w-[180px]">
-                            <div className="text-gray-700 truncate font-medium">
-                              {leg.departureFbo || leg.waiver?.fboName || "—"}
-                            </div>
-                            {leg.waiver && leg.waiver.minGallons > 0 && (
-                              <div className="text-[10px] text-gray-400">
-                                Waive at {fmtNum(leg.waiver.minGallons)} gal
-                              </div>
-                            )}
+                            <div className="text-gray-700 truncate font-medium">{leg.departureFbo || leg.waiver?.fboName || "—"}</div>
+                            {leg.waiver?.minGallons > 0 && <div className="text-[10px] text-gray-400">Waive at {fmtNum(leg.waiver.minGallons)} gal</div>}
                             {leg.departureFboVendor && leg.departureFboVendor !== leg.departureFbo && (
-                              <div className="text-[10px] text-blue-400 truncate">
-                                Fuel: {leg.departureFboVendor}
-                              </div>
+                              <div className="text-[10px] text-blue-400 truncate">Fuel: {leg.departureFboVendor}</div>
                             )}
                           </td>
                           <td className="py-2.5 pr-3 text-right text-xs">
-                            {leg.waiver && leg.waiver.feeWaived > 0 ? (
+                            {leg.waiver?.feeWaived > 0 ? (
                               <div>
-                                <span className={`font-mono font-semibold ${feePaid > 0 ? "text-red-600" : "text-green-600"}`}>
-                                  {fmtDollars(leg.waiver.feeWaived)}
-                                </span>
-                                <div className={`text-[10px] ${feePaid > 0 ? "text-red-400" : "text-green-500"}`}>
-                                  {feePaid > 0 ? "not waived" : "waived"}
-                                </div>
+                                <span className={`font-mono font-semibold ${feePaid > 0 ? "text-red-600" : "text-green-600"}`}>{fmtDollars(leg.waiver.feeWaived)}</span>
+                                <div className={`text-[10px] ${feePaid > 0 ? "text-red-400" : "text-green-500"}`}>{feePaid > 0 ? "not waived" : "waived"}</div>
                               </div>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
+                            ) : <span className="text-gray-400">—</span>}
                           </td>
                           <td className={`py-2.5 pr-3 text-right font-mono font-semibold ${orderLbs > 0 ? "text-blue-700" : "text-gray-400"}`}>
                             {orderLbs > 0 ? fmtNum(orderLbs) : "—"}
@@ -252,44 +262,137 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                           <td className={`py-2.5 pr-3 text-right font-mono ${orderGal > 0 ? "text-blue-600" : "text-gray-400"}`}>
                             {orderGal > 0 ? fmtNum(orderGal) : "—"}
                           </td>
-                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">
-                            {fmtNum(landingFuel)}
-                          </td>
+                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">{fmtNum(landingFuel)}</td>
                           <td className="py-2.5 text-right">
                             {legCost > 0 ? (
                               <div>
                                 <span className="font-mono font-semibold text-gray-900">{fmtDollars(legCost)}</span>
-                                {feePaid > 0 && (
-                                  <div className="text-[10px] text-red-500">+{fmtDollars(feePaid)} fee</div>
-                                )}
+                                {feePaid > 0 && <div className="text-[10px] text-red-500">+{fmtDollars(feePaid)} fee</div>}
                               </div>
-                            ) : (
-                              <span className="font-mono text-gray-400">—</span>
-                            )}
+                            ) : <span className="font-mono text-gray-400">—</span>}
                           </td>
                         </tr>
-                      );
+                      </>);
                     })}
                   </tbody>
                   <tfoot>
                     <tr className="border-t border-gray-200">
                       <td colSpan={6} className="py-2.5 text-xs text-gray-500 font-medium">TOTALS</td>
-                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">
-                        {fmtNum(optimized.fuelOrderLbsByStop.reduce((a, b) => a + b, 0))}
-                      </td>
-                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">
-                        {fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}
-                      </td>
+                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderLbsByStop.reduce((a, b) => a + b, 0))}</td>
+                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}</td>
                       <td className="py-2.5 pr-3"></td>
-                      <td className="py-2.5 text-right font-mono font-bold text-gray-900">
-                        {fmtDollars(optimized.totalTripCost)}
-                      </td>
+                      <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(optimized.totalTripCost)}</td>
                     </tr>
                   </tfoot>
                 </table>
               </div>
 
-              {/* Tankering recommendations */}
+              {/* Mobile cards — hidden on desktop */}
+              <div className="md:hidden space-y-3">
+                {plan.legs.map((leg, i) => {
+                  const orderLbs = optimized.fuelOrderLbsByStop[i] ?? 0;
+                  const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
+                  const landingFuel = optimized.landingFuelByStop[i] ?? 0;
+                  const prevDate = i > 0 ? plan.legs[i - 1].departureDate : null;
+                  const showDayHeader = leg.departureDate && leg.departureDate !== prevDate;
+                  const feePaid = optimized.feePaidByStop[i] ?? 0;
+                  const tankerOut = optimized.tankerOutByStop[i] ?? 0;
+                  const legCost = orderGal * leg.departurePricePerGal + feePaid;
+
+                  return (<React.Fragment key={i}>
+                    {showDayHeader && (
+                      <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide pt-1">
+                        {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                      </div>
+                    )}
+                    <div className={`rounded-lg border p-3 ${tankerOut > 0 ? "border-emerald-200 bg-emerald-50/50" : "border-gray-200 bg-white"}`}>
+                      {/* Leg header */}
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-gray-900">{leg.from}</span>
+                          <span className="text-gray-400">&rarr;</span>
+                          <span className="font-bold text-gray-900">{leg.to}</span>
+                          {leg.ffSource === "estimate" && (
+                            <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-600">EST</span>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-500">{fmtHrs(leg.flightTimeHours)}</span>
+                      </div>
+
+                      {/* FBO */}
+                      <div className="text-xs text-gray-600 mb-2">
+                        <span className="font-medium">{leg.departureFbo || leg.waiver?.fboName || "—"}</span>
+                        {leg.departureFboVendor && leg.departureFboVendor !== leg.departureFbo && (
+                          <span className="text-blue-500 ml-1">via {leg.departureFboVendor}</span>
+                        )}
+                      </div>
+
+                      {/* Stats grid */}
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="bg-gray-50 rounded px-2 py-1.5">
+                          <div className="text-[10px] text-gray-500 uppercase">Price</div>
+                          <div className="text-sm font-mono font-semibold">
+                            {leg.departurePricePerGal > 0 ? `$${leg.departurePricePerGal.toFixed(2)}` : "N/A"}
+                          </div>
+                        </div>
+                        <div className="bg-gray-50 rounded px-2 py-1.5">
+                          <div className="text-[10px] text-gray-500 uppercase">Order</div>
+                          <div className={`text-sm font-mono font-semibold ${orderGal > 0 ? "text-blue-700" : "text-gray-400"}`}>
+                            {orderGal > 0 ? `${fmtNum(orderGal)} gal` : "—"}
+                          </div>
+                        </div>
+                        <div className="bg-gray-50 rounded px-2 py-1.5">
+                          <div className="text-[10px] text-gray-500 uppercase">Landing</div>
+                          <div className="text-sm font-mono font-semibold text-gray-700">{fmtNum(landingFuel)}</div>
+                        </div>
+                      </div>
+
+                      {/* Tanker badge */}
+                      {tankerOut > 0 && (
+                        <div className="mt-2 text-xs font-semibold text-emerald-700">
+                          Tanker +{fmtNum(tankerOut)} lbs
+                        </div>
+                      )}
+
+                      {/* Fee + cost row */}
+                      <div className="mt-2 flex items-center justify-between text-xs">
+                        <div>
+                          {leg.waiver?.feeWaived > 0 ? (
+                            <span className={feePaid > 0 ? "text-red-600 font-semibold" : "text-green-600 font-semibold"}>
+                              {fmtDollars(leg.waiver.feeWaived)} {feePaid > 0 ? "not waived" : "waived"}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">No handling fee</span>
+                          )}
+                        </div>
+                        {legCost > 0 && (
+                          <span className="font-mono font-bold text-gray-900">{fmtDollars(legCost)}</span>
+                        )}
+                      </div>
+                    </div>
+                  </React.Fragment>);
+                })}
+
+                {/* Mobile totals */}
+                <div className="rounded-lg border border-gray-200 bg-white p-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600 font-medium">Total Fuel</span>
+                    <span className="font-mono font-bold">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))} gal</span>
+                  </div>
+                  <div className="flex justify-between text-sm mt-1">
+                    <span className="text-gray-600 font-medium">Total Cost</span>
+                    <span className="font-mono font-bold">{fmtDollars(optimized.totalTripCost)}</span>
+                  </div>
+                  {savings > 0 && (
+                    <div className="flex justify-between text-sm mt-1 pt-1 border-t border-gray-100">
+                      <span className="text-green-700 font-semibold">Savings</span>
+                      <span className="text-green-700 font-bold">{fmtDollars(savings)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Tankering recommendations — responsive */}
               {optimized.tankerOutByStop.some((t) => t > 0) && (
                 <div className="mt-3 pt-3 border-t border-gray-100">
                   <p className="text-xs font-medium text-gray-500 mb-2">TANKERING RECOMMENDATIONS</p>
@@ -303,17 +406,13 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       const isFeeWaiver = leg.departurePricePerGal >= nextPrice && nextPrice > 0;
                       return (
                         <div key={i} className={`text-xs rounded-md px-3 py-1.5 border ${
-                          isFeeWaiver
-                            ? "bg-blue-50 text-blue-700 border-blue-200"
-                            : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          isFeeWaiver ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
                         }`}>
                           <span className="font-semibold">{leg.from}</span>: carry +{fmtNum(tankerOut)} lbs
                           <span className={`ml-1 ${isFeeWaiver ? "text-blue-500" : "text-emerald-500"}`}>
-                            ({fmtNum(tankerIn)} lbs on arrival at {leg.to})
+                            ({fmtNum(tankerIn)} lbs at {leg.to})
                           </span>
-                          {isFeeWaiver && (
-                            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600">FEE WAIVER</span>
-                          )}
+                          {isFeeWaiver && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600">FEE WAIVER</span>}
                         </div>
                       );
                     })}
@@ -323,7 +422,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
               {plan.legs.some((l) => l.ffSource === "estimate") && (
                 <p className="mt-2 text-xs text-amber-600">
-                  Legs marked EST used estimated fuel burns (ForeFlight unavailable). Actual numbers may differ.
+                  Legs marked EST used estimated fuel burns. Actual numbers may differ.
                 </p>
               )}
             </div>
@@ -332,10 +431,8 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
         {/* Adjust overrides — collapsible */}
         <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
-          <button
-            onClick={() => setShowOverrides(!showOverrides)}
-            className="w-full px-5 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors"
-          >
+          <button onClick={() => setShowOverrides(!showOverrides)}
+            className="w-full px-4 sm:px-5 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors">
             <span className="text-sm font-medium text-gray-700">Adjust Weights & Fees</span>
             <svg className={`w-4 h-4 text-gray-400 transition-transform ${showOverrides ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -343,56 +440,51 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
           </button>
 
           {showOverrides && (
-            <div className="px-5 py-4 border-t border-gray-200">
-              <p className="text-xs text-gray-500 mb-3">
-                Override values per leg if our data is wrong, then hit Recalculate.
-              </p>
+            <div className="px-4 sm:px-5 py-4 border-t border-gray-200">
+              <p className="text-xs text-gray-500 mb-3">Override values per leg, then hit Recalculate.</p>
               <div className="space-y-3">
                 {plan.legs.map((leg, i) => (
-                  <div key={i} className="border border-gray-100 rounded-lg px-3 py-2 space-y-2">
-                    <span className="text-sm text-gray-700 font-semibold">{leg.from} &rarr; {leg.to}</span>
-                    <span className="text-xs text-gray-400 ml-2">{leg.waiver?.fboName || leg.departureFbo || ""}</span>
-                    <div className="flex flex-wrap items-center gap-4">
+                  <div key={i} className="border border-gray-100 rounded-lg px-3 py-2">
+                    <div className="text-sm text-gray-700 font-semibold mb-2">{leg.from} &rarr; {leg.to}</div>
+                    <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3">
                       <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-8">MLW</label>
+                        <label className="text-xs text-gray-500 w-10">MLW</label>
                         <input type="number" value={mlwOverrides[String(i)] ?? acDefaults.mlw}
                           onChange={(e) => setMlwOverrides({ ...mlwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.mlw })}
-                          className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right" />
+                          className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
                       </div>
                       <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-8">ZFW</label>
+                        <label className="text-xs text-gray-500 w-10">ZFW</label>
                         <input type="number" value={zfwOverrides[String(i)] ?? acDefaults.zfw}
                           onChange={(e) => setZfwOverrides({ ...zfwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.zfw })}
-                          className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right" />
+                          className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
                       </div>
                       <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-16">Fee ($)</label>
+                        <label className="text-xs text-gray-500 w-10">Fee $</label>
                         <input type="number" value={feeOverrides[String(i)] ?? (leg.waiver?.feeWaived ?? 0)}
                           onChange={(e) => setFeeOverrides({ ...feeOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
-                          className="w-20 text-xs border border-gray-300 rounded px-2 py-1 text-right" />
+                          className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
                       </div>
                       <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-16">Waive @</label>
+                        <label className="text-xs text-gray-500 w-10">Waive</label>
                         <input type="number" value={waiverGalOverrides[String(i)] ?? (leg.waiver?.minGallons ?? 0)}
                           onChange={(e) => setWaiverGalOverrides({ ...waiverGalOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
-                          className="w-20 text-xs border border-gray-300 rounded px-2 py-1 text-right" />
-                        <span className="text-xs text-gray-400">gal</span>
+                          className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
               <button onClick={recalculate} disabled={recalculating}
-                className="mt-4 px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors">
+                className="mt-4 w-full sm:w-auto px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors">
                 {recalculating ? "Recalculating..." : "Recalculate Plan"}
               </button>
             </div>
           )}
         </div>
 
-        {/* Footer */}
         <p className="text-center text-xs text-gray-400">
-          Baker Aviation Fuel Planning &mdash; link expires {new Date(expiresAt).toLocaleString()}
+          Baker Aviation Fuel Planning &mdash; expires {new Date(expiresAt).toLocaleString()}
         </p>
       </div>
     </div>

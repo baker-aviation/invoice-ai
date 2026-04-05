@@ -153,11 +153,25 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   const optimized = optimizeMultiLeg(inputs, ppg);
 
+  if (!optimized) {
+    return NextResponse.json({
+      ok: true,
+      plan: { ...plan, plan: null, error: "Optimizer could not find a valid plan (check weight constraints)" },
+    });
+  }
+
+  // Use the original naive cost from the stored plan as baseline
+  // Savings = original naive cost - new optimized trip cost
+  const originalNaiveCost = (data.plan_data as { naiveCost?: number }).naiveCost ?? 0;
+  const tankerSavings = Math.max(0, originalNaiveCost - optimized.totalTripCost);
+
   return NextResponse.json({
     ok: true,
     plan: {
       ...plan,
       plan: optimized,
+      naiveCost: originalNaiveCost,
+      tankerSavings,
     },
     mlw_overrides: mlwOverrides,
     zfw_overrides: zfwOverrides,
