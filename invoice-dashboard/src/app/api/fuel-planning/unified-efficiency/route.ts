@@ -103,16 +103,27 @@ export async function GET(req: NextRequest) {
   }
   const rawFlights = [...dedupeMap.values()];
 
-  // Build track lookup: tail+origin+dest+date → max cruise FL from ADS-B
+  // Build track lookups: tail+origin+dest+date AND tail+date (fallback for ADSBX tracks without airports)
   const trackCruiseFl = new Map<string, number>();
+  const trackByTailDate = new Map<string, number>(); // fallback: best cruise FL per tail+date
   for (const t of tracks) {
-    const dep = (t.origin_icao ?? "").replace(/^K/, "");
-    const dest = (t.destination_icao ?? "").replace(/^K/, "");
-    const key = `${t.tail_number}:${dep}:${dest}:${t.flight_date}`;
-    // Use segments_summary if available, otherwise max_altitude
     const summary = t.segments_summary as { maxCruiseAlt?: number } | null;
     const cruiseFl = summary?.maxCruiseAlt ?? (t.max_altitude ? Math.round(t.max_altitude / 1) : null);
-    if (cruiseFl && cruiseFl > 50) trackCruiseFl.set(key, cruiseFl);
+    if (!cruiseFl || cruiseFl <= 50) continue;
+
+    // Primary key: tail+origin+dest+date (for FA tracks with airports)
+    const dep = (t.origin_icao ?? "").replace(/^K/, "");
+    const dest = (t.destination_icao ?? "").replace(/^K/, "");
+    if (dep && dest) {
+      trackCruiseFl.set(`${t.tail_number}:${dep}:${dest}:${t.flight_date}`, cruiseFl);
+    }
+
+    // Fallback key: tail+date (for ADSBX tracks without airports — keep highest cruise FL for the day)
+    const tdKey = `${t.tail_number}:${t.flight_date}`;
+    const existing = trackByTailDate.get(tdKey);
+    if (!existing || cruiseFl > existing) {
+      trackByTailDate.set(tdKey, cruiseFl);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -501,7 +512,7 @@ export async function GET(req: NextRequest) {
     const originNorm = (f.origin ?? "").replace(/^K/, "");
     const destNorm = (f.destination ?? "").replace(/^K/, "");
     const trackKey = `${f.tail_number}:${originNorm}:${destNorm}:${f.flight_date}`;
-    const cruiseFl = trackCruiseFl.get(trackKey);
+    const cruiseFl = trackCruiseFl.get(trackKey) ?? trackByTailDate.get(`${f.tail_number}:${f.flight_date}`);
     if (cruiseFl) {
       pilot.cruiseFlSum += cruiseFl;
       pilot.cruiseFlCount++;
