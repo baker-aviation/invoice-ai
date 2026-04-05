@@ -82,7 +82,7 @@ export default function PushToScreeningButton({
       <button
         type="button"
         disabled={status === "loading"}
-        onClick={() => callStageApi("prd_faa_review")}
+        onClick={() => callStageApi("screening")}
         className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
       >
         {status === "loading" ? "Sending..." : "Send to Pipeline"}

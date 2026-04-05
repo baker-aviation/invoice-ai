@@ -339,6 +339,7 @@ export async function scrapeFboAirports(
                 landing_fee: landingFee,
                 overnight_fee: fbo.overnight_fee,
                 parking_info: fbo.parking_info || null,
+                jet_a_price: fbo.jet_a_price,
                 source: "jetinsight-scrape",
               },
               { onConflict: "airport_code,fbo_name,aircraft_type" },

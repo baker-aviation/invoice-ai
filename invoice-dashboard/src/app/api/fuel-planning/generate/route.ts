@@ -40,7 +40,7 @@ interface LegData {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
-  priceSource: "trip_notes" | "contract" | "airport_fallback" | "none";
+  priceSource: "trip_notes" | "contract" | "retail" | "airport_fallback" | "none";
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
   ffSource: "foreflight" | "estimate";
@@ -124,15 +124,17 @@ export async function POST(req: NextRequest) {
         : AIRCRAFT_DEFAULTS["CL-30"].defaultBurnRate,
     };
 
-    // 2. Get schedule from flights table
+    // 2. Get schedule from flights table — include next day for multi-day tankering
     const dayStart = `${targetDate}T00:00:00Z`;
-    const dayEnd = `${targetDate}T23:59:59Z`;
+    const nextDay = new Date(targetDate + "T12:00:00Z");
+    nextDay.setDate(nextDay.getDate() + 1);
+    const dayEndExtended = `${nextDay.toISOString().split("T")[0]}T23:59:59Z`;
 
     const { data: flightRows } = await supa
       .from("flights")
       .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id")
       .gte("scheduled_departure", dayStart)
-      .lte("scheduled_departure", dayEnd)
+      .lte("scheduled_departure", dayEndExtended)
       .order("scheduled_departure", { ascending: true });
 
     if (!flightRows?.length) {
@@ -199,6 +201,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 3c. Get JetInsight retail Jet A prices as last-resort fallback
+    const { data: retailRows } = await supa
+      .from("fbo_handling_fees")
+      .select("airport_code, fbo_name, jet_a_price")
+      .eq("source", "jetinsight-scrape")
+      .not("jet_a_price", "is", null);
+    const retailPriceMap = new Map<string, number>();
+    for (const r of retailRows ?? []) {
+      if (r.jet_a_price) {
+        // Key by airport + lowercase FBO name
+        retailPriceMap.set(`${r.airport_code.toUpperCase()}|${r.fbo_name.toLowerCase()}`, Number(r.jet_a_price));
+      }
+    }
+
     // 4. Build plans per tail (no ForeFlight calls — uses schedule times + burn rates)
     const plans: TailPlan[] = [];
     const ppg = calcPpg(15);
@@ -245,10 +261,11 @@ export async function POST(req: NextRequest) {
         // Fuel price at departure — priority:
         // 1. Sales rep's pick from trip notes (what they actually chose)
         // 2. Cheapest contract vendor at this specific FBO
-        // 3. Airport-wide best (only if no FBO name known)
+        // 3. JetInsight retail Jet A price at this FBO
+        // 4. Airport-wide best (only if no FBO name known)
         let depRate = 0;
         let depVendor: string | null = null;
-        let priceSource: "trip_notes" | "contract" | "airport_fallback" = "contract";
+        let priceSource: "trip_notes" | "contract" | "retail" | "airport_fallback" = "contract";
 
         // 1. Check trip notes fuel choice
         if (leg.jetinsight_trip_id) {
@@ -271,7 +288,20 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 3. Airport-wide best (only if no FBO known)
+        // 3. JetInsight retail Jet A price at this FBO
+        if (!depRate && fboName) {
+          const normAp = leg.departure_icao.length === 4 && leg.departure_icao.startsWith("K")
+            ? leg.departure_icao.slice(1) : leg.departure_icao;
+          const retailKey = `${normAp.toUpperCase()}|${fboName.toLowerCase()}`;
+          const retail = retailPriceMap.get(retailKey);
+          if (retail) {
+            depRate = retail;
+            depVendor = fboName + " (retail)";
+            priceSource = "retail";
+          }
+        }
+
+        // 4. Airport-wide best (only if no FBO known)
         if (!depRate && !fboName) {
           const depVariants = airportVariants(leg.departure_icao);
           for (const v of depVariants) {

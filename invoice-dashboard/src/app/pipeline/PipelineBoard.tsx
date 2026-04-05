@@ -342,7 +342,7 @@ function CreateModal({
       location,
       category,
       notes,
-      hiring_stage: "prd_faa_review",
+      hiring_stage: "screening",
     });
     setSaving(false);
   };

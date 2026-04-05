@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
-import { runScheduleSync, syncSalespersons } from "@/lib/jetinsight/schedule-sync";
+import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 /**
- * GET /api/cron/jetinsight-schedule — 10-min cron to enrich flights from JetInsight JSON
+ * GET /api/cron/jetinsight-schedule — 10-min cron to sync flights from JetInsight JSON.
+ * Salesperson sync runs separately via /api/cron/jetinsight-salespersons.
  */
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
@@ -15,10 +16,7 @@ export async function GET(req: NextRequest) {
   try {
     const result = await runScheduleSync();
 
-    // Also sync salespersons for new trips
-    const salResult = await syncSalespersons();
-
-    if (result.sessionExpired || salResult.sessionExpired) {
+    if (result.sessionExpired) {
       return NextResponse.json({
         ok: false,
         error: "Session expired — Slack DM sent",

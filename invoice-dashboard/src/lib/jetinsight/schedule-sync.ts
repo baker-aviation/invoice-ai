@@ -113,7 +113,18 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
 
   const flights = existingFlights ?? [];
 
-  // Process events
+  // Build UUID index for fast lookups (avoids O(n²) matching)
+  const uuidIndex = new Map<string, (typeof flights)[number]>();
+  const icsUidIndex = new Map<string, (typeof flights)[number]>();
+  for (const f of flights) {
+    if (f.jetinsight_event_uuid) uuidIndex.set(f.jetinsight_event_uuid, f);
+    if (f.ics_uid) icsUidIndex.set(f.ics_uid, f);
+  }
+
+  // Classify events: updates vs inserts vs maintenance
+  const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
+  const inserts: Array<Record<string, unknown>> = [];
+
   for (const event of events) {
     if (event.eventType === "maintenance") {
       try {
@@ -157,57 +168,59 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
       jetinsight_event_uuid: event.uuid,
     };
 
-    // Try to match to existing flight
-    const matched = findMatchingFlight(flights, event);
+    // Try to match to existing flight (using indexes for O(1) lookups)
+    const matched = findMatchingFlight(flights, event, uuidIndex, icsUidIndex);
 
     if (matched) {
-      // Update existing flight (preserve ics_uid and diverted flag)
-      try {
-        const { error } = await supa
-          .from("flights")
-          .update(flightData)
-          .eq("id", matched.id);
-
-        if (error) {
-          result.errors.push(`Update ${matched.id}: ${error.message}`);
-        } else {
-          result.flightsUpdated++;
-        }
-      } catch (err) {
-        result.errors.push(
-          `Update ${matched.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      updates.push({ id: matched.id, data: flightData });
     } else {
-      // Create new flight — JSON is the primary source
-      try {
-        const { error } = await supa.from("flights").insert({
-          ...flightData,
-          ics_uid: `ji:${event.uuid}`, // Synthetic ics_uid so ICS sync can match later
-        });
+      inserts.push({
+        ...flightData,
+        ics_uid: `ji:${event.uuid}`,
+      });
+    }
+  }
 
-        if (error) {
-          // Might be a duplicate — ignore unique constraint violations
-          if (!error.message.includes("duplicate") && !error.message.includes("unique")) {
-            result.errors.push(`Insert ${event.tailNumber} ${event.departureIcao}-${event.arrivalIcao}: ${error.message}`);
-          }
-        } else {
-          result.flightsCreated++;
-          // Add to local array so subsequent events can match against it
-          flights.push({
-            id: "", // unknown but we won't need to update it again this cycle
-            ics_uid: `ji:${event.uuid}`,
-            tail_number: event.tailNumber,
-            departure_icao: event.departureIcao,
-            arrival_icao: event.arrivalIcao,
-            scheduled_departure: event.start,
-            jetinsight_event_uuid: event.uuid,
-          });
+  // Execute updates in parallel batches of 50
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+    const batch = updates.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(({ id, data }) =>
+        supa.from("flights").update(data).eq("id", id),
+      ),
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled" && !r.value.error) {
+        result.flightsUpdated++;
+      } else {
+        const msg =
+          r.status === "rejected"
+            ? String(r.reason)
+            : r.value.error?.message ?? "unknown";
+        result.errors.push(`Update batch: ${msg}`);
+      }
+    }
+  }
+
+  // Execute inserts in parallel batches of 50
+  for (let i = 0; i < inserts.length; i += BATCH_SIZE) {
+    const batch = inserts.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map((row) => supa.from("flights").insert(row)),
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled" && !r.value.error) {
+        result.flightsCreated++;
+      } else {
+        const msg =
+          r.status === "rejected"
+            ? String(r.reason)
+            : r.value.error?.message ?? "unknown";
+        // Ignore duplicate key errors — ICS may have already created these
+        if (!msg.includes("duplicate") && !msg.includes("unique")) {
+          result.errors.push(`Insert batch: ${msg}`);
         }
-      } catch (err) {
-        result.errors.push(
-          `Insert ${event.tailNumber}: ${err instanceof Error ? err.message : String(err)}`,
-        );
       }
     }
   }
@@ -264,7 +277,7 @@ export async function syncSalespersons(): Promise<{
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  for (const tripId of tripIds.slice(0, 30)) { // Cap at 30 per run
+  for (const tripId of tripIds.slice(0, 80)) { // Cap at 80 per run
     await sleep(1000);
     try {
       const res = await fetch(`${BASE_URL}/trips/${tripId}`, {
@@ -331,20 +344,23 @@ function findMatchingFlight(
     jetinsight_event_uuid: string | null;
   }>,
   event: ScheduleEvent,
+  uuidIndex: Map<string, { id: string }>,
+  icsUidIndex: Map<string, { id: string }>,
 ): { id: string } | null {
-  // 1. Exact event UUID match
-  const uuidMatch = flights.find(
-    (f) => f.jetinsight_event_uuid === event.uuid,
-  );
+  // 1. Exact event UUID match (O(1))
+  const uuidMatch = uuidIndex.get(event.uuid);
   if (uuidMatch) return uuidMatch;
 
-  // 2. Synthetic ics_uid match (from previous JSON sync)
-  const syntheticMatch = flights.find(
-    (f) => f.ics_uid === `ji:${event.uuid}`,
-  );
+  // 2. Synthetic ics_uid match from previous JSON sync (O(1))
+  const syntheticMatch = icsUidIndex.get(`ji:${event.uuid}`);
   if (syntheticMatch) return syntheticMatch;
 
-  // 3. Route + time signature match (catches ICS-created flights)
+  // 3. ICS ics_uid match — ICS stores UUID without hyphens (O(1))
+  const uuidNoHyphens = event.uuid.replace(/-/g, "");
+  const icsMatch = icsUidIndex.get(uuidNoHyphens);
+  if (icsMatch) return icsMatch;
+
+  // 4. Route + time signature match (catches remaining ICS-created flights)
   const eventTime = new Date(event.start).getTime();
   return (
     flights.find((f) => {
