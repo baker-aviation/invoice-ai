@@ -123,7 +123,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       fboName: "", minGallons: 0, feeWaived: 0, landingFee: 0, securityFee: 0, overnightFee: 0,
     };
 
-    const defaultFee = waiver.feeWaived + waiver.landingFee + waiver.securityFee;
+    const defaultFee = waiver.feeWaived;
     const fee = feeOverrides[String(i)] ?? defaultFee;
     const waiverGal = waiverGalOverrides[String(i)] ?? waiver.minGallons;
 

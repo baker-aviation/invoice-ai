@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
                 type: "section",
                 text: {
                   type: "mrkdwn",
-                  text: `*${plan.tail}* (${acLabel}) — ${route}\n${tankerDetail}\n*Saves ~$${savings.toLocaleString()}*`,
+                  text: `*${plan.tail}* (${acLabel}) — ${route}\n*Saves ~$${savings.toLocaleString()}*`,
                 },
                 accessory: {
                   type: "button",
