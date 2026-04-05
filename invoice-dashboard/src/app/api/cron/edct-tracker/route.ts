@@ -148,6 +148,7 @@ function buildEdctSlackBlocks(
   salesperson: string | null,
   type: "new" | "updated",
   previousEdctTime?: string | null,
+  tailChannelId?: string | null,
 ): Record<string, unknown>[] {
   const depIcao = edct.origin;
   const dept = stripK(edct.origin);
@@ -159,10 +160,15 @@ function buildEdctSlackBlocks(
 
   const blocks: Record<string, unknown>[] = [];
 
+  // Make tail a clickable link to its Slack channel if we have the channel ID
+  const tailLink = tailChannelId
+    ? `<https://slack.com/app_redirect?channel=${tailChannelId}|${edct.tail}>`
+    : edct.tail;
+
   if (type === "new") {
     // New EDCT message
     const isCallsign = edct.callsign !== edct.tail;
-    const tailPart = isCallsign ? `*${edct.tail}* (${edct.callsign}✱)` : `*${edct.tail}*✱ (${edct.callsign})`;
+    const tailPart = isCallsign ? `*${tailLink}* (${edct.callsign}✱)` : `*${tailLink}*✱ (${edct.callsign})`;
     let text = `${tailPart}  ${dept} → ${arr}`;
     if (edct.cancelled) text += `  ~cancelled~`;
     text += `\nFiled: ${filedLocal}  →  EDCT: *${edctLocal}*  (${delay})`;
@@ -182,7 +188,7 @@ function buildEdctSlackBlocks(
     // Updated EDCT message
     const prevLocal = fmtLocal(previousEdctTime ?? null, depIcao);
     const isCallsign = edct.callsign !== edct.tail;
-    const tailPart = isCallsign ? `*${edct.tail}* (${edct.callsign}✱)` : `*${edct.tail}*✱ (${edct.callsign})`;
+    const tailPart = isCallsign ? `*${tailLink}* (${edct.callsign}✱)` : `*${tailLink}*✱ (${edct.callsign})`;
     let text = `${tailPart}  ${dept} → ${arr}`;
     text += `\nEDCT Updated: ${prevLocal} → *${edctLocal}*`;
     if (edct.edct_time && previousEdctTime) {
@@ -243,7 +249,20 @@ export async function GET(req: NextRequest) {
     if (s.label && s.callsign) callsignMap.set(s.label.toUpperCase(), s.callsign.toUpperCase());
   }
 
-  // 3. Build salesperson map from flights data: "TAIL|DEPT_ICAO" → salesperson name
+  // 3. Build tail → Slack channel map from aircraft_tracker
+  const { data: aircraftRows } = await supa
+    .from("aircraft_tracker")
+    .select("tail_number, slack_channel_id")
+    .not("slack_channel_id", "is", null);
+
+  const tailChannelMap = new Map<string, string>();
+  for (const a of aircraftRows ?? []) {
+    if (a.tail_number && a.slack_channel_id) {
+      tailChannelMap.set(a.tail_number.toUpperCase(), a.slack_channel_id);
+    }
+  }
+
+  // 4. Build salesperson map from flights data: "TAIL|DEPT_ICAO" → salesperson name
   const salespersonMap = new Map<string, string>();
   for (const f of flightRows ?? []) {
     if (f.tail_number && f.departure_icao && f.salesperson) {
@@ -251,7 +270,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 4. Build deduplicated flight list — check both KOW callsign AND N-number
+  // 5. Build deduplicated flight list — check both KOW callsign AND N-number
   // Pilots sometimes file under N-number to shop for better EDCT slots
   // toFaaCode() handles territory conversion (KSJU→TJSJ) at query time
   const seen = new Set<string>();
@@ -278,7 +297,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 5. Check FAA in batches
+  // 6. Check FAA in batches
   const results: FaaEdctResult[] = [];
   for (let i = 0; i < flights.length; i += BATCH_SIZE) {
     const batch = flights.slice(i, i + BATCH_SIZE);
@@ -286,7 +305,7 @@ export async function GET(req: NextRequest) {
     results.push(...batchResults);
   }
 
-  // 6. Filter to current — require edct_time unless cancelled (pilots shop for slots)
+  // 7. Filter to current — require edct_time unless cancelled (pilots shop for slots)
   // Deduplicate by tail+destination — territory variants (KSJU/TJSJ) and callsign/N-number
   // produce multiple hits for the same physical flight. Keep the KOW callsign version if available.
   const todayStartMs = new Date(todayStart).getTime();
@@ -311,7 +330,7 @@ export async function GET(req: NextRequest) {
   }
   const found = [...dedupMap.values()];
 
-  // 7. Get existing FAA EDCT alerts to detect new vs updated
+  // 8. Get existing FAA EDCT alerts to detect new vs updated
   // Look back 48h — an EDCT detected yesterday evening (before UTC midnight)
   // would have yesterday's created_at and get missed by a todayStart filter,
   // causing the same alert to re-post to Slack every cron cycle.
@@ -330,7 +349,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // 8. Store EDCTs + track new/updated for Slack
+  // 9. Store EDCTs + track new/updated for Slack
   const newEdcts: FaaEdctResult[] = [];
   const updatedEdcts: { edct: FaaEdctResult; previousEdctTime: string | null }[] = [];
 
@@ -369,18 +388,20 @@ export async function GET(req: NextRequest) {
     if (isUpdated) updatedEdcts.push({ edct, previousEdctTime: existing.edct_time });
   }
 
-  // 9. Send Slack messages — one per EDCT (new or updated), respects kill switch
+  // 10. Send Slack messages — one per EDCT (new or updated), respects kill switch
   if (newEdcts.length > 0 || updatedEdcts.length > 0) {
     for (const edct of newEdcts) {
       const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
-      const blocks = buildEdctSlackBlocks(edct, sp, "new");
+      const chId = tailChannelMap.get(edct.tail) ?? null;
+      const blocks = buildEdctSlackBlocks(edct, sp, "new", undefined, chId);
       const fallback = `New FAA EDCT: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} EDCT ${fmtLocal(edct.edct_time, edct.origin)}`;
       await postSlackMessage({ channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
     }
 
     for (const { edct, previousEdctTime } of updatedEdcts) {
       const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
-      const blocks = buildEdctSlackBlocks(edct, sp, "updated", previousEdctTime);
+      const chId = tailChannelMap.get(edct.tail) ?? null;
+      const blocks = buildEdctSlackBlocks(edct, sp, "updated", previousEdctTime, chId);
       const fallback = `EDCT Updated: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} ${fmtLocal(previousEdctTime ?? null, edct.origin)} → ${fmtLocal(edct.edct_time, edct.origin)}`;
       await postSlackMessage({ channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
     }
