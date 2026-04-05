@@ -160,9 +160,9 @@ function buildEdctSlackBlocks(
 
   const blocks: Record<string, unknown>[] = [];
 
-  // Make tail a clickable link to its Slack channel if we have the channel ID
+  // Link tail to its Slack channel (native channel mention = instant navigation)
   const tailLink = tailChannelId
-    ? `<https://slack.com/app_redirect?channel=${tailChannelId}|${edct.tail}>`
+    ? `<#${tailChannelId}>`
     : edct.tail;
 
   if (type === "new") {
