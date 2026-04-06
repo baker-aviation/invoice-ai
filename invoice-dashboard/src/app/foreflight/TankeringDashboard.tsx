@@ -2,6 +2,11 @@
 
 import React, { useState, useCallback } from "react";
 import type { AircraftType, MultiLegPlan } from "@/app/tanker/model";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // ─── Types matching the API response ───────────────────────────────────
 
@@ -151,113 +156,108 @@ export default function TankeringDashboard() {
   }, [result]);
 
   return (
-    <div className="px-6 py-4 space-y-5 max-w-6xl mx-auto">
+    <div className="px-6 py-3 space-y-4 max-w-6xl mx-auto">
       {/* ── Controls ── */}
-      <div className="rounded-lg border border-gray-200 bg-white p-5">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Automated Tankering Planner</h2>
-        <p className="text-sm text-gray-500 mb-4">
-          Generate optimal fuel plans using JetInsight post-flight data and tomorrow&apos;s schedule.
-        </p>
+      <Card size="sm">
+        <CardHeader className="pb-0">
+          <CardTitle>Automated Tankering Planner</CardTitle>
+          <CardDescription>
+            Generate optimal fuel plans using JetInsight post-flight data and tomorrow&apos;s schedule.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="plan-date" className="text-xs">Plan Date</Label>
+              <Input
+                id="plan-date"
+                type="date"
+                value={targetDate}
+                onChange={(e) => setTargetDate(e.target.value)}
+                className="w-auto h-9"
+              />
+            </div>
 
-        <div className="flex flex-wrap items-end gap-4">
-          {/* Date picker */}
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Plan Date</label>
-            <input
-              type="date"
-              value={targetDate}
-              onChange={(e) => setTargetDate(e.target.value)}
-              className="rounded-md border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
+            <Button onClick={handleGenerate} disabled={generating} size="lg" className="h-9">
+              {generating ? "Generating Plans..." : "Generate Fuel Plans"}
+            </Button>
+
+            {result?.plans.length ? (
+              <Button onClick={handleShareSlack} disabled={sharing} variant="secondary" size="lg" className="h-9">
+                {sharing ? "Sending..." : "Post Daily Summary"}
+              </Button>
+            ) : null}
+
+            {result?.plans.length ? (
+              <SendAlertsButton date={result.date} />
+            ) : null}
           </div>
 
-          {/* Generate */}
-          <button
-            onClick={handleGenerate}
-            disabled={generating}
-            className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors"
-          >
-            {generating ? "Generating Plans..." : "Generate Fuel Plans"}
-          </button>
+          {shareResult && (
+            <div className="mt-3 rounded-md bg-purple-50 border border-purple-200 px-4 py-3">
+              <p className="text-sm font-medium text-purple-800">{shareResult}</p>
+            </div>
+          )}
 
-          {/* Share to Slack */}
-          {result?.plans.length ? (
-            <button
-              onClick={handleShareSlack}
-              disabled={sharing}
-              className="px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-500 disabled:opacity-50 transition-colors"
-            >
-              {sharing ? "Sending..." : "Post Daily Summary"}
-            </button>
-          ) : null}
-
-          {/* Send Tankering Alerts (with links) */}
-          {result?.plans.length ? (
-            <SendAlertsButton date={result.date} />
-          ) : null}
-        </div>
-
-        {shareResult && (
-          <div className="mt-3 rounded-md bg-purple-50 border border-purple-200 px-4 py-3">
-            <p className="text-sm font-medium text-purple-800">{shareResult}</p>
-          </div>
-        )}
-
-        {error && (
-          <div className="mt-3 rounded-md bg-red-50 border border-red-200 px-4 py-3">
-            <p className="text-sm text-red-700">{error}</p>
-          </div>
-        )}
-      </div>
+          {error && (
+            <div className="mt-3 rounded-md bg-red-50 border border-red-200 px-4 py-3">
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── No-flight message ── */}
       {result?.message && !result.plans.length && (
-        <div className="rounded-lg border border-gray-200 bg-white p-6 text-center text-gray-500">
-          <p className="text-sm">{result.message}</p>
-        </div>
+        <Card>
+          <CardContent className="text-center text-muted-foreground py-2">
+            <p className="text-sm">{result.message}</p>
+          </CardContent>
+        </Card>
       )}
 
       {/* ── Fleet Summary ── */}
       {result?.plans.length ? (
         <>
-          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <span className="text-lg font-bold text-blue-900">
-                  Fleet Fuel Plan — {result.date}
-                </span>
-                <span className="ml-3 text-sm text-blue-600">
-                  {result.fleetTotals.planCount} aircraft
-                </span>
-              </div>
-              <div className="flex items-center gap-6 text-sm">
-                <span className="text-blue-700">
-                  <span className="text-xs text-blue-500 uppercase mr-1">Total Fuel</span>
-                  {fmtDollars(result.fleetTotals.totalFuelCost)}
-                </span>
-                {result.fleetTotals.totalFees > 0 && (
+          <Card className="bg-blue-50 ring-blue-200">
+            <CardContent>
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg font-bold text-blue-900">
+                    Fleet Fuel Plan — {result.date}
+                  </span>
+                  <Badge variant="secondary" className="bg-blue-100 text-blue-700">
+                    {result.fleetTotals.planCount} aircraft
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-6 text-sm">
                   <span className="text-blue-700">
-                    <span className="text-xs text-blue-500 uppercase mr-1">Fees</span>
-                    {fmtDollars(result.fleetTotals.totalFees)}
+                    <span className="text-xs text-blue-500 uppercase mr-1">Total Fuel</span>
+                    {fmtDollars(result.fleetTotals.totalFuelCost)}
                   </span>
-                )}
-                <span className="text-blue-900 font-semibold">
-                  <span className="text-xs text-blue-500 uppercase mr-1">Total</span>
-                  {fmtDollars(result.fleetTotals.totalTripCost)}
-                </span>
-                {result.fleetTotals.tankerSavings > 0 && (
-                  <span className="text-green-700 font-semibold">
-                    <span className="text-xs text-green-500 uppercase mr-1">Savings</span>
-                    {fmtDollars(result.fleetTotals.tankerSavings)}
+                  {result.fleetTotals.totalFees > 0 && (
+                    <span className="text-blue-700">
+                      <span className="text-xs text-blue-500 uppercase mr-1">Fees</span>
+                      {fmtDollars(result.fleetTotals.totalFees)}
+                    </span>
+                  )}
+                  <span className="text-blue-900 font-semibold">
+                    <span className="text-xs text-blue-500 uppercase mr-1">Total</span>
+                    {fmtDollars(result.fleetTotals.totalTripCost)}
                   </span>
-                )}
+                  {result.fleetTotals.tankerSavings > 0 && (
+                    <Badge className="bg-green-100 text-green-700 border-green-200">
+                      Savings {fmtDollars(result.fleetTotals.tankerSavings)}
+                    </Badge>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="mt-2 text-xs text-blue-500">
-              {result.fuelPriceCount} advertised fuel prices loaded
-              {result.shutdownDataDate && <> &middot; Post-flight data from {result.shutdownDataDate}</>}
-            </div>
-          </div>
+              <div className="mt-2 text-xs text-blue-500">
+                {result.fuelPriceCount} advertised fuel prices loaded
+                {result.shutdownDataDate && <> &middot; Post-flight data from {result.shutdownDataDate}</>}
+              </div>
+            </CardContent>
+          </Card>
 
           {/* ── Per-Tail Plans — savings first (expanded), no savings (collapsed) ── */}
           {(() => {
@@ -338,37 +338,35 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
           <span className="text-base font-bold text-gray-900">{tp.tail}</span>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
+          <Badge variant="secondary">
             {tp.aircraftType === "CE-750" ? "Citation X" : "Challenger 300"}
-          </span>
+          </Badge>
           <span className="text-xs text-gray-500">
             Shutdown: {fmtNum(tp.shutdownFuel)} lbs @ {tp.shutdownAirport}
           </span>
         </div>
         <div className="flex items-center gap-4">
           {tp.tankerSavings > 0 && (
-            <span className="text-sm font-semibold text-green-600">
+            <Badge className="bg-green-100 text-green-700 border-green-200">
               Save {fmtDollars(tp.tankerSavings)}
-            </span>
+            </Badge>
           )}
           {plan && (
-            <span className="text-sm font-semibold text-gray-900">
+            <span className="text-sm font-semibold text-foreground">
               {fmtDollars(plan.totalTripCost)}
             </span>
           )}
           {plan && (
-            <button
+            <Button
               onClick={(e) => { e.stopPropagation(); handleSendToSlack(); }}
               disabled={sending || sent}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                sent
-                  ? "bg-green-100 text-green-700 cursor-default"
-                  : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
-              }`}
+              variant={sent ? "ghost" : "outline"}
+              size="sm"
               title={linkSent ?? "Send plan to Slack with shareable link"}
+              className={sent ? "text-green-700 bg-green-50" : ""}
             >
               {sent ? "Sent" : sending ? "Sending..." : "Send to Slack"}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -425,7 +423,7 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
                         <span className="text-gray-400 mx-1">&rarr;</span>
                         <span className="font-medium text-gray-900">{leg.to}</span>
                         {leg.ffSource === "estimate" && (
-                          <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-600">EST</span>
+                          <Badge variant="outline" className="ml-1.5 text-[10px] bg-amber-50 text-amber-600 border-amber-200">EST</Badge>
                         )}
                       </td>
                       <td className="py-2.5 pr-3 text-right font-mono text-gray-700">
@@ -587,13 +585,14 @@ function SendAlertsButton({ date }: { date: string }) {
 
   return (
     <div className="flex items-center gap-3">
-      <button
+      <Button
         onClick={handleSend}
         disabled={sending}
-        className="px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-500 disabled:opacity-50 transition-colors"
+        size="lg"
+        className="bg-green-600 hover:bg-green-500 text-white"
       >
         {sending ? "Sending Alerts..." : "Send Tankering Alerts"}
-      </button>
+      </Button>
       {result && (
         <span className="text-sm text-green-700 font-medium">
           {result.savingsPlans} aircraft with savings, {result.sent} alerts sent
