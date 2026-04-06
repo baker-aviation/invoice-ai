@@ -54,10 +54,6 @@
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/cron/jetinsight-salespersons",
-      "schedule": "5,15,25,35,45,55 * * * *"
-    },
-    {
       "path": "/api/cron/jetinsight-docs",
       "schedule": "0 4 * * *"
     },
@@ -67,27 +63,7 @@
     },
     {
       "path": "/api/cron/tail-summary",
-      "schedule": "0 10 * * *"
-    },
-    {
-      "path": "/api/cron/sync-tracks",
-      "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/sync-health",
-      "schedule": "0 21 * * *"
-    },
-    {
-      "path": "/api/cron/foreflight-preflight-sync",
-      "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/cron/tankering-plans",
-      "schedule": "0 0,12 * * *"
-    },
-    {
-      "path": "/api/cron/samsara-vehicle-sync",
-      "schedule": "0 12 * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }

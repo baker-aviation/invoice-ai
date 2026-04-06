@@ -312,10 +312,11 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
  */
 export async function syncSalespersons(): Promise<{
   updated: number;
+  remaining: number;
   errors: string[];
   sessionExpired: boolean;
 }> {
-  const result = { updated: 0, errors: [] as string[], sessionExpired: false };
+  const result = { updated: 0, remaining: 0, errors: [] as string[], sessionExpired: false };
   const supa = createServiceClient();
 
   const { data: cookieRow } = await supa
@@ -355,10 +356,11 @@ export async function syncSalespersons(): Promise<{
   if (tripIds.length === 0) return result;
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const deadline = Date.now() + 4.5 * 60 * 1000; // 4.5 min hard stop (within 5 min maxDuration)
+  const BATCH_SIZE = 80; // Safe batch per invocation (~40s at 0.5s/req)
+  const batch = tripIds.slice(0, BATCH_SIZE);
+  result.remaining = Math.max(0, tripIds.length - BATCH_SIZE);
 
-  for (const tripId of tripIds) {
-    if (Date.now() > deadline) break;
+  for (const tripId of batch) {
     await sleep(500);
     try {
       const res = await fetch(`${BASE_URL}/trips/${tripId}`, {
