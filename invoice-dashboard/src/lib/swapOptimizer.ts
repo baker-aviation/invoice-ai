@@ -2193,27 +2193,70 @@ export function buildSwapPlan(params: {
         // Bonus: 0mi avg = +120, 500mi avg = +60, 1000mi+ = 0
         const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
-        // ── Hard reject: if the aircraft departs this swap point before any
-        // oncoming crew could realistically arrive, skip it entirely.
-        // "before_live" time = departure of the next leg. If that's before ~09:00L,
-        // most commercial flights can't arrive in time (earliest arrivals are 07-08L).
-        // For "between_legs", use window_end (next departure).
+        // ── before_live / between_legs: penalize based on how tight the timing is.
+        // The aircraft departs this swap point at a specific time — oncoming crew
+        // must arrive FBO_ARRIVAL_BUFFER (60min) before. If most oncoming crew
+        // can't realistically make it, this swap point should lose to after_live.
         let hardReject = false;
         if (sp.position === "before_live" || sp.position === "between_legs") {
           const depTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+          const depMs = new Date(depTime).getTime();
           const spTz = getAirportTimezone(sp.icao) ?? "America/New_York";
           const depLocalHour = parseFloat(
             new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: spTz })
           );
-          // Heavy penalty (not hard reject) for early departures — commercial flights
-          // can't make it but ground transport (uber/rental) still can. The per-candidate
-          // filter in buildCandidates rejects commercial when < GROUND_ONLY_CUTOFF_HOUR.
+
           if (depLocalHour < GROUND_ONLY_CUTOFF_HOUR) {
-            // Only ground transport viable — heavy penalty but not impossible
+            // Before 6 AM — only ground transport viable
             timingPenalty += 100;
           } else if (depLocalHour < 10) {
-            // Tight for commercial — penalize but allow
             timingPenalty += 50;
+          }
+
+          // Check how many oncoming pool members can actually make this departure.
+          // If fewer than half the pool can arrive in time, add heavy penalty.
+          // This catches cases like SFO 10am departure where DEN/GEG crew can't make it
+          // even though the local hour looks reasonable.
+          const deadlineMs = depMs - ms(FBO_ARRIVAL_BUFFER);
+          let canMakeIt = 0;
+          let totalChecked = 0;
+          const poolToCheck = picPool.length > 0 ? picPool : (oncomingPool?.sic ?? []);
+          for (const p of poolToCheck) {
+            totalChecked++;
+            let reachable = false;
+            for (const home of p.home_airports) {
+              // Check ground transport
+              const drive = estimateDriveTime(toIcao(home), sp.icao);
+              if (drive && drive.estimated_drive_minutes <= UBER_MAX_MINUTES) {
+                reachable = true; break;
+              }
+              // Check if any commercial flight arrives before deadline
+              if (commercialFlights) {
+                const homeIata = toIata(home);
+                for (const commDest of commAirports) {
+                  const destIata = toIata(commDest);
+                  const flights = lookupFlights(commercialFlights, homeIata, destIata, swapDate);
+                  for (const offer of flights) {
+                    const segs = offer.itineraries?.[0]?.segments ?? [];
+                    const lastSeg = segs[segs.length - 1];
+                    if (lastSeg) {
+                      const arrMs = new Date(lastSeg.arrival.at).getTime();
+                      // Arrival + deplane (30min) + drive to FBO must be before deadline
+                      const fboArrMs = arrMs + 30 * 60_000 + (estimateDriveTime(toIcao(destIata), sp.icao)?.estimated_drive_minutes ?? 0) * 60_000;
+                      if (fboArrMs <= deadlineMs) { reachable = true; break; }
+                    }
+                  }
+                  if (reachable) break;
+                }
+              }
+              if (reachable) break;
+            }
+            if (reachable) canMakeIt++;
+          }
+          // If fewer than half the oncoming pool can make this departure, heavy penalty
+          if (totalChecked > 0 && canMakeIt < totalChecked * 0.5) {
+            const unreachablePenalty = canMakeIt === 0 ? 300 : 150;
+            timingPenalty += unreachablePenalty;
           }
         }
 
