@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const isServiceAuth = serviceKey && envKey && serviceKey.trim() === envKey.trim();
   if (!isServiceAuth) {
-    console.log(`[Optimizer] Service key auth failed: header=${serviceKey?.slice(0,10) ?? 'null'} env=${envKey?.slice(0,10) ?? 'null'}`);
+    console.log("[Optimize] Service key auth:", "invalid");
     const auth = await requireAdmin(req);
     if (!isAuthed(auth)) return auth.error;
   }

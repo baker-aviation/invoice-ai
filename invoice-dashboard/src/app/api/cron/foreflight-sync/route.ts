@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +23,9 @@ function apiKey(): string {
  * re-processing. Falls back to 10 minutes ago if no events exist.
  */
 export async function GET(req: NextRequest) {
-  // Cron routes are already exempted by middleware — no extra auth needed
+  if (!verifyCronSecret(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const supa = createServiceClient();
 
