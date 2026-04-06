@@ -99,8 +99,8 @@ export async function POST(req: NextRequest) {
 
     const savings = Math.round(plan.tankerSavings);
 
-    // Send Slack message — just the tail and a link
-    const channel = channelByTail.get(plan.tail.toUpperCase()) ?? DEFAULT_FUEL_CHANNEL;
+    // Send all to #fuel-planning for now (testing new format)
+    const channel = DEFAULT_FUEL_CHANNEL;
 
     if (slackToken) {
       try {

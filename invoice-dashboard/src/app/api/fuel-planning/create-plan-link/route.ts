@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
         .select("slack_channel_id")
         .eq("label", tail.toUpperCase())
         .single();
-      channel = src?.slack_channel_id || "C0ANTTQ6R96";
+      channel = "C0ANTTQ6R96"; // Force #fuel-planning for testing
     }
     const savings = Math.round(planData.tankerSavings ?? 0);
     const isPilotSummary = body.mode === "pilot_summary";
