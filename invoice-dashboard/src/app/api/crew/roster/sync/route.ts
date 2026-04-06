@@ -102,27 +102,23 @@ export async function POST(req: NextRequest) {
   let deactivatedCount = 0;
   let slackMatchedCount = 0;
 
-  // Preserve grades, restrictions, and checkairman_types before wiping.
-  // These are set manually in the app UI and should survive re-syncs.
+  // Fetch ALL existing crew with every column so we can preserve manually-set fields
+  // (jetinsight_name, slack_user_id, slack_display_name, grade, restrictions, notes, etc.)
   const { data: existingCrew } = await supa
     .from("crew_members")
-    .select("name, role, grade, restrictions, checkairman_types");
-  const preservedData = new Map<string, { grade: number; restrictions: Record<string, boolean>; checkairman_types: string[] }>();
-  for (const c of existingCrew ?? []) {
-    preservedData.set(`${c.name}|${c.role}`, {
-      grade: c.grade ?? 3,
-      restrictions: c.restrictions ?? {},
-      checkairman_types: c.checkairman_types ?? [],
-    });
-  }
+    .select("*");
 
-  // Clean slate: delete all existing crew_members, then insert fresh from Excel.
-  // The Excel is the sole source of truth — no merge, no duplicates.
-  await supa.from("crew_members").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all rows
-  console.log(`[Roster Sync] Cleared crew_members table — inserting fresh from ${dataSource}. Preserved grades for ${preservedData.size} crew.`);
+  // Build lookup by normalized "name|role" key for matching
+  const existingByKey = new Map<string, Record<string, unknown>>();
+  for (const c of existingCrew ?? []) {
+    const key = `${(c.name as string).trim().toLowerCase()}|${(c.role as string).trim().toLowerCase()}`;
+    existingByKey.set(key, c);
+  }
+  console.log(`[Roster Sync] Found ${existingByKey.size} existing crew_members — will upsert from ${dataSource}, preserving manually-set fields.`);
 
   // JetInsight legal name mappings — these differ from roster display names.
-  const JETINSIGHT_NAMES: Record<string, string> = {
+  // Used as FALLBACK only for new crew members who don't already have a jetinsight_name set.
+  const JETINSIGHT_NAME_DEFAULTS: Record<string, string> = {
     "Wilder Ponte": "Wilder Ponte-Vela",
     "Jesus Olmos": "Jesus Enrique Olmos Arias",
     "Robert Lankford": "Robert Donald Lankford Jr",
@@ -238,22 +234,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // No existing map needed — everything is new
-  const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
-
-  // Track which names are in the new roster (to deactivate removed ones)
+  // Track which normalized keys are in the new roster (to deactivate removed crew)
   const rosterKeys = new Set<string>();
 
   for (const entry of result.roster) {
-    const key = `${entry.name}|${entry.role}`;
+    const key = `${entry.name.trim().toLowerCase()}|${entry.role.trim().toLowerCase()}`;
     rosterKeys.add(key);
 
     // Check if this crew member is a checkairman (from parsed checkairmen data)
     const caEntry = checkairmanTypeMap.get(entry.name);
     const isCA = !!caEntry || result.checkairmen.some((ca) => ca.name === entry.name);
 
-    // Restore preserved grade and restrictions from previous sync
-    const preserved = preservedData.get(`${entry.name}|${entry.role}`);
+    // Look up existing crew member by normalized key
+    const existing = existingByKey.get(key);
 
     // Build checkairman_types from parsed Excel data
     const caTypes: string[] = [];
@@ -262,9 +255,11 @@ export async function POST(req: NextRequest) {
       if (caEntry.challenger) caTypes.push("challenger");
     }
     // If no parsed CA types but we had them before, keep the old ones
-    const finalCaTypes = caTypes.length > 0 ? caTypes : (preserved?.checkairman_types ?? []);
+    const existingCaTypes = (existing?.checkairman_types as string[] | null) ?? [];
+    const finalCaTypes = caTypes.length > 0 ? caTypes : existingCaTypes;
 
-    const record: Record<string, unknown> = {
+    // --- Sheet-sourced fields (always updated from Excel/Sheets) ---
+    const sheetFields: Record<string, unknown> = {
       name: entry.name,
       role: entry.role,
       home_airports: entry.home_airports,
@@ -273,46 +268,69 @@ export async function POST(req: NextRequest) {
       is_skillbridge: entry.is_skillbridge,
       is_checkairman: isCA,
       checkairman_types: finalCaTypes,
-      grade: preserved?.grade ?? 3,
-      restrictions: preserved?.restrictions ?? {},
       active: !entry.is_terminated,
       updated_at: new Date().toISOString(),
     };
 
-    // Store Slack display name if matched
+    // Store Slack display name if matched from the sheet parse
     if (entry.slack_display_name) {
-      record.slack_display_name = entry.slack_display_name;
+      sheetFields.slack_display_name = entry.slack_display_name;
       slackMatchedCount++;
     }
 
-    // Store JetInsight legal name if different from display name
-    if (JETINSIGHT_NAMES[entry.name]) {
-      record.jetinsight_name = JETINSIGHT_NAMES[entry.name];
-    }
-
-    // Store Slack user ID for volunteer matching
-    const slackId = rosterToSlackId.get(entry.name);
-    if (slackId) {
-      record.slack_user_id = slackId;
-    }
-
-    // Add notes for SkillBridge end date and termination
+    // Auto-generated notes from sheet data (SkillBridge, termination, part-time)
     const notesParts: string[] = [];
     if (entry.skillbridge_end) notesParts.push(`SB ends ${entry.skillbridge_end}`);
     if (entry.terminated_on) notesParts.push(`Terminated ${entry.terminated_on}`);
     if (entry.rotation === "part_time") notesParts.push("Part-time / Non-standard rotation");
-    if (notesParts.length > 0) record.notes = notesParts.join("; ");
 
     try {
-      const existing = existingMap.get(key);
       if (existing) {
-        // Don't overwrite existing slack_display_name if we didn't get a new one
+        // ── UPDATE existing crew member ──
+        // Only update sheet-sourced fields; preserve manually-set fields:
+        //   jetinsight_name, slack_user_id, grade, restrictions, notes (if manually edited)
+        const updateRecord = { ...sheetFields };
+
+        // Preserve slack_display_name if we didn't get a new one from the sheet
         if (!entry.slack_display_name && existing.slack_display_name) {
-          delete record.slack_display_name;
+          delete updateRecord.slack_display_name;
         }
-        await supa.from("crew_members").update(record).eq("id", existing.id);
+
+        // Only overwrite notes if the sheet has auto-notes; otherwise keep existing
+        if (notesParts.length > 0) {
+          updateRecord.notes = notesParts.join("; ");
+        }
+        // If no auto-notes, leave existing notes untouched (don't set to null)
+
+        // Preserve grade — don't reset to default
+        // Preserve restrictions — don't reset to empty
+        // Preserve jetinsight_name — NEVER overwrite from sheet
+        // Preserve slack_user_id — NEVER overwrite from sheet
+
+        await supa.from("crew_members").update(updateRecord).eq("id", existing.id as string);
       } else {
-        await supa.from("crew_members").insert(record);
+        // ── INSERT new crew member ──
+        // Set all fields including defaults for manually-set fields
+        const insertRecord: Record<string, unknown> = {
+          ...sheetFields,
+          grade: 3,
+          restrictions: {},
+        };
+
+        if (notesParts.length > 0) insertRecord.notes = notesParts.join("; ");
+
+        // Set JetInsight name from defaults if we have one
+        if (JETINSIGHT_NAME_DEFAULTS[entry.name]) {
+          insertRecord.jetinsight_name = JETINSIGHT_NAME_DEFAULTS[entry.name];
+        }
+
+        // Set Slack user ID from hardcoded lookup
+        const slackId = rosterToSlackId.get(entry.name);
+        if (slackId) {
+          insertRecord.slack_user_id = slackId;
+        }
+
+        await supa.from("crew_members").insert(insertRecord);
       }
       upsertedCount++;
     } catch (e) {
@@ -320,9 +338,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // No deactivation needed — we wiped and re-inserted from Excel.
-  // Terminated crew are already marked active: false in the insert above.
-  {
+  // Deactivate crew in DB but NOT in the current sheet (don't delete — preserve data)
+  for (const [key, existing] of existingByKey) {
+    if (!rosterKeys.has(key) && existing.active !== false) {
+      try {
+        await supa.from("crew_members")
+          .update({ active: false, updated_at: new Date().toISOString() })
+          .eq("id", existing.id as string);
+        deactivatedCount++;
+      } catch {
+        syncErrors.push(`Deactivate ${existing.name}: failed`);
+      }
+    }
   }
 
   // ═══ 2. Checkairman flags already set during insert (from parsed checkairmen data) ════

@@ -36,6 +36,7 @@ export async function GET(req: NextRequest) {
       airports: airportGaps,
       cache: cacheGaps,
       has_issues: airportGaps.new_airports.length > 0 || (cacheGaps?.missing_pairs.length ?? 0) > 0,
+      auto_aliased_count: airportGaps.auto_aliased.length,
     });
   } catch (e) {
     return NextResponse.json(

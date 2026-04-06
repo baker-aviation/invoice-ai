@@ -539,6 +539,7 @@ export async function detectNewAirports(options?: {
   lookAheadDays?: number;  // default 14 — scan flights this many days ahead
 }): Promise<{
   new_airports: NewAirportAlert[];
+  auto_aliased: { fbo: string; commercial: string; distance: number }[];
   total_flight_airports: number;
   already_aliased: number;
   commercial: number;
@@ -582,6 +583,7 @@ export async function detectNewAirports(options?: {
 
   // Find gaps
   const newAirports: NewAirportAlert[] = [];
+  const autoAliased: { fbo: string; commercial: string; distance: number }[] = [];
   let commercial = 0;
   let aliased = 0;
 
@@ -597,19 +599,36 @@ export async function detectNewAirports(options?: {
       continue;
     }
 
-    // This airport has no alias — find nearest commercial
+    // This airport has no alias — find nearest commercial (150mi radius)
     let suggested: string | null = null;
     let suggestedIata: string | null = null;
     let distance: number | null = null;
 
     if (hasCoords(icao)) {
-      // Search within 100 miles
-      const nearby = findNearbyCommercialAirports(icao, 100);
+      const nearby = findNearbyCommercialAirports(icao, 150);
       if (nearby.length > 0) {
         suggested = nearby[0].icao;
         suggestedIata = suggested.length === 4 && suggested.startsWith("K") ? suggested.slice(1) : suggested;
         distance = nearby[0].distanceMiles;
       }
+    }
+
+    // Auto-alias if a commercial airport is within 80mi (~1hr drive)
+    if (suggested && distance != null && distance <= 80) {
+      const { error: upsertErr } = await supa.from("airport_aliases").upsert({
+        fbo_icao: icao,
+        commercial_icao: suggested,
+        preferred: true,
+      }, { onConflict: "fbo_icao" });
+
+      if (!upsertErr) {
+        autoAliased.push({ fbo: icao, commercial: suggested, distance: Math.round(distance) });
+        aliasedSet.add(icao); // prevent re-processing
+        console.log(`[DetectAirports] Auto-aliased ${icao} → ${suggested} (${Math.round(distance)}mi)`);
+        continue; // don't add to new_airports — it's handled
+      }
+      // If upsert failed, fall through to report as new_airport
+      console.error(`[DetectAirports] Failed to auto-alias ${icao} → ${suggested}: ${upsertErr.message}`);
     }
 
     newAirports.push({
@@ -629,6 +648,7 @@ export async function detectNewAirports(options?: {
 
   return {
     new_airports: newAirports,
+    auto_aliased: autoAliased,
     total_flight_airports: airportFlightCount.size,
     already_aliased: aliased,
     commercial,

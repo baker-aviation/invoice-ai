@@ -101,8 +101,15 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
     return result;
   }
 
-  // Parse events
-  const events = parseScheduleJson(rawJson);
+  // Parse events and deduplicate (same tail + route + time = same flight)
+  const rawEvents = parseScheduleJson(rawJson);
+  const seenEventKeys = new Set<string>();
+  const events = rawEvents.filter((e) => {
+    const key = `${e.tailNumber}|${e.departureIcao}|${e.arrivalIcao}|${e.start}`;
+    if (seenEventKeys.has(key)) return false;
+    seenEventKeys.add(key);
+    return true;
+  });
 
   // Load existing flights for matching (include diverted flag for route protection)
   const { data: existingFlights } = await supa

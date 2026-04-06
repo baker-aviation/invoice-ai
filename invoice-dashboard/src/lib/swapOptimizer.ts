@@ -1479,6 +1479,10 @@ type OptimizeTailResult = {
   violationGapMs: number;
   /** The aircraft-coverage auto-fix resolved the oncoming/offgoing overlap but NOT the departure constraint */
   coverageFixed: boolean;
+  /** True if offgoing crew leaves before oncoming arrives (aircraft unattended gap) */
+  unattendedGap: boolean;
+  /** How many ms the aircraft is unattended (offgoing leaves before oncoming arrives). 0 if no gap. */
+  unattendedGapMs: number;
 };
 
 /** Check if any oncoming crew arrives after aircraft departs at a departure-constrained swap point.
@@ -1506,6 +1510,38 @@ function checkDepartureTimingViolation(tasks: CrewTask[]): { violation: boolean;
     const arrivalMs = task.best.fboArrivalTime?.getTime();
     if (arrivalMs && arrivalMs > deadlineMs) {
       const gap = arrivalMs - deadlineMs;
+      worstGapMs = Math.max(worstGapMs, gap);
+    }
+  }
+
+  return { violation: worstGapMs > 0, gapMs: worstGapMs };
+}
+
+/** Check if offgoing crew leaves the FBO before oncoming arrives — aircraft unattended.
+ *  This catches after_live and idle positions where there's no departure constraint
+ *  but the aircraft still can't be left unattended. */
+function checkUnattendedGap(tasks: CrewTask[]): { violation: boolean; gapMs: number } {
+  const oncoming = tasks.filter((t) => t.direction === "oncoming");
+  const offgoing = tasks.filter((t) => t.direction === "offgoing");
+  let worstGapMs = 0;
+
+  for (const onTask of oncoming) {
+    const offTask = offgoing.find((t) => t.role === onTask.role);
+    if (!offTask) continue;
+
+    // Offgoing's departure time (when they physically leave the FBO)
+    const offLeaveMs = offTask.best?.fboLeaveTime?.getTime()
+      ?? offTask.best?.depTime?.getTime();
+    // Oncoming's arrival time (when they arrive at the FBO)
+    const onArriveMs = onTask.best?.fboArrivalTime?.getTime();
+
+    if (!offLeaveMs || !onArriveMs) continue;
+
+    // Gap = how long the aircraft would be unattended
+    // Positive means oncoming arrives AFTER offgoing leaves
+    const gap = onArriveMs - offLeaveMs;
+    if (gap > HANDOFF_BUFFER_MINUTES * 60_000) {
+      // Oncoming arrives more than HANDOFF_BUFFER after offgoing leaves
       worstGapMs = Math.max(worstGapMs, gap);
     }
   }
@@ -1911,10 +1947,99 @@ function optimizeTail(
 
   // ── Check departure timing violation (oncoming arrives after aircraft departs) ──
   const depCheck = checkDepartureTimingViolation(tasks);
+
+  // ── Check unattended gap (offgoing leaves before oncoming arrives) ──
+  // This catches after_live/idle positions where there's no departure constraint
+  // but the aircraft still can't be left unattended.
+  const gapCheck = checkUnattendedGap(tasks);
+
+  // Auto-fix unattended gaps: try later offgoing or earlier oncoming
+  if (gapCheck.violation) {
+    for (const [onTask, offTask] of [
+      [oncomingPic, offgoingPic],
+      [oncomingSic, offgoingSic],
+    ] as [CrewTask | undefined, CrewTask | undefined][]) {
+      if (!onTask?.best || !offTask?.best) continue;
+      if (onTask.best.type === "none" || offTask.best.type === "none") continue;
+
+      const onArriveMs = onTask.best.fboArrivalTime?.getTime();
+      const offLeaveMs = offTask.best.fboLeaveTime?.getTime()
+        ?? offTask.best.depTime?.getTime();
+      if (!onArriveMs || !offLeaveMs) continue;
+
+      const gap = onArriveMs - offLeaveMs;
+      if (gap <= HANDOFF_BUFFER_MINUTES * 60_000) continue; // no gap for this pair
+
+      console.log(
+        `[UnattendedGap] ${onTask.tail} ${onTask.role}: gap=${Math.round(gap / 60_000)}min — ` +
+        `oncoming arrives ${new Date(onArriveMs).toISOString().slice(11, 16)}Z, ` +
+        `offgoing leaves ${new Date(offLeaveMs).toISOString().slice(11, 16)}Z`
+      );
+
+      // Option A: find later offgoing transport (hold at FBO until oncoming arrives)
+      const requiredOffLeave = onArriveMs + ms(HANDOFF_BUFFER_MINUTES);
+      const laterOffgoing = offTask.candidates
+        .filter((c) => {
+          if (c.type === "none") return false;
+          const leave = (c.fboLeaveTime ?? c.depTime)?.getTime();
+          return leave != null && leave >= requiredOffLeave;
+        })
+        .sort((a, b) => a.cost - b.cost);
+
+      // Option B: find earlier oncoming transport
+      const requiredOnArrive = offLeaveMs - ms(HANDOFF_BUFFER_MINUTES);
+      const earlierOncoming = onTask.candidates
+        .filter((c) => {
+          if (c.type === "none") return false;
+          const arr = c.fboArrivalTime?.getTime();
+          return arr != null && arr <= requiredOnArrive;
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const optionA = laterOffgoing[0] ?? null;
+      const optionB = earlierOncoming[0] ?? null;
+
+      if (optionA && optionB) {
+        const costA = optionA.cost + (onTask.best.cost ?? 0);
+        const costB = (offTask.best.cost ?? 0) + optionB.cost;
+        if (costA <= costB) {
+          console.log(`[UnattendedGap] ${onTask.tail} ${onTask.role}: Option A — later offgoing ${optionA.flightNumber ?? optionA.type}`);
+          offTask.best = optionA;
+        } else {
+          console.log(`[UnattendedGap] ${onTask.tail} ${onTask.role}: Option B — earlier oncoming ${optionB.flightNumber ?? optionB.type}`);
+          onTask.best = optionB;
+        }
+      } else if (optionA) {
+        console.log(`[UnattendedGap] ${onTask.tail} ${onTask.role}: Option A — later offgoing ${optionA.flightNumber ?? optionA.type}`);
+        offTask.best = optionA;
+      } else if (optionB) {
+        console.log(`[UnattendedGap] ${onTask.tail} ${onTask.role}: Option B — earlier oncoming ${optionB.flightNumber ?? optionB.type}`);
+        onTask.best = optionB;
+      } else {
+        const warningMsg = `Aircraft unattended for ${Math.round(gap / 60_000)}min — offgoing leaves before oncoming arrives (need ${HANDOFF_BUFFER_MINUTES}min handoff)`;
+        onTask.warnings.push(warningMsg);
+        offTask.warnings.push(warningMsg);
+        console.log(`[UnattendedGap] ${onTask.tail} ${onTask.role}: UNSOLVED — ${warningMsg}`);
+      }
+    }
+
+    // Re-check after auto-fix attempts
+    const gapRecheck = checkUnattendedGap(tasks);
+    return {
+      timingViolation: depCheck.violation,
+      violationGapMs: depCheck.gapMs,
+      coverageFixed: true,
+      unattendedGap: gapRecheck.violation,
+      unattendedGapMs: gapRecheck.gapMs,
+    };
+  }
+
   return {
     timingViolation: depCheck.violation,
     violationGapMs: depCheck.gapMs,
     coverageFixed: true, // The auto-fix above ran; caller checks depCheck separately
+    unattendedGap: false,
+    unattendedGapMs: 0,
   };
 }
 
@@ -2578,44 +2703,60 @@ export function buildSwapPlan(params: {
       return { tasks, result };
     }
 
-    // ── Try primary swap point, then retry alternatives on timing violation ──
+    // ── Try primary swap point, then retry alternatives on timing violation or unattended gap ──
     let { tasks: tailTasks, result: optimizeResult } = buildAndOptimizeTasks(picSwapPoint);
 
-    // Only retry if there's a departure timing violation at a before_live/between_legs point.
-    // after_live and idle swap points have no departure constraint — no retry needed.
-    if (optimizeResult.timingViolation) {
+    // Retry if there's a departure timing violation OR an unattended gap.
+    // Timing violations apply to before_live/between_legs (hard departure constraint).
+    // Unattended gaps apply to after_live/idle (offgoing leaves before oncoming arrives).
+    const needsRetry = optimizeResult.timingViolation || optimizeResult.unattendedGap;
+
+    if (needsRetry && swapPoints.length > 1) {
       const primaryPosition = picSwapPoint.position;
       const hasDepartureConstraint = primaryPosition === "before_live" || primaryPosition === "between_legs";
+      const hasUnattendedGap = optimizeResult.unattendedGap;
 
-      if (hasDepartureConstraint && swapPointScores.length > 1) {
+      // Retry on EITHER departure constraint violation OR unattended gap
+      if (hasDepartureConstraint || hasUnattendedGap) {
+        const reason = hasDepartureConstraint
+          ? `timing violation, crew arrives ${Math.round(optimizeResult.violationGapMs / 60_000)}min after deadline`
+          : `unattended gap of ${Math.round(optimizeResult.unattendedGapMs / 60_000)}min`;
         console.log(
-          `[SwapPointRetry] ${tail}: timing violation at ${toIata(picSwapPoint.icao)} (${primaryPosition}), ` +
-          `crew arrives ${Math.round(optimizeResult.violationGapMs / 60_000)}min after deadline. Trying alternatives...`
+          `[SwapPointRetry] ${tail}: ${reason} at ${toIata(picSwapPoint.icao)} (${primaryPosition}). Trying alternatives...`
         );
 
-        // Sort alternatives by ease score (best first), skip the already-tried one
-        const alternativeSwapPoints = swapPointScores
-          .filter((s) => s.icao !== picSwapPoint.icao)
+        // Build alternative list from ALL swapPoints, not just swapPointScores.
+        // Some swap points may not have been scored (e.g., assignedPicSwapIcao was set,
+        // or commercialFlights was null), but they're still valid retry candidates.
+        const alternativeSpList = swapPoints
+          .filter((sp) => sp.icao !== picSwapPoint.icao)
+          .map((sp) => {
+            // Look up ease score if available, otherwise use 0 (unscored — still try it)
+            const scoreEntry = swapPointScores.find((s) => s.icao === sp.icao);
+            return { sp, ease: scoreEntry?.ease ?? 0, position: sp.position };
+          })
           .sort((a, b) => b.ease - a.ease);
 
+        // Combined badness metric: timing violation gap + unattended gap
+        const currentBadness = optimizeResult.violationGapMs + optimizeResult.unattendedGapMs;
+
         // Track the best result (least violation) in case all fail
-        let bestViolationGapMs = optimizeResult.violationGapMs;
+        let bestBadness = currentBadness;
         let bestTasks = tailTasks;
         let bestResult = optimizeResult;
         let bestSwapPoint = picSwapPoint;
         let solved = false;
 
-        for (const altScore of alternativeSwapPoints) {
-          const altSp = swapPoints.find((sp) => sp.icao === altScore.icao);
-          if (!altSp) continue;
+        for (const alt of alternativeSpList) {
+          const altSp = alt.sp;
 
           const { tasks: altTasks, result: altResult } = buildAndOptimizeTasks(altSp);
 
-          if (!altResult.timingViolation) {
-            // This alternative swap point works — use it
+          if (!altResult.timingViolation && !altResult.unattendedGap) {
+            // This alternative swap point works — no violations at all
             console.log(
-              `[SwapPointRetry] ${tail}: SOLVED at ${toIata(altSp.icao)} (${altScore.position}) — ` +
-              `no timing violation, ease=${altScore.ease}`
+              `[SwapPointRetry] ${tail}: SOLVED at ${toIata(altSp.icao)} (${alt.position}) — ` +
+              `no timing violation, no unattended gap, ease=${alt.ease}`
             );
             tailTasks = altTasks;
             optimizeResult = altResult;
@@ -2629,9 +2770,10 @@ export function buildSwapPlan(params: {
             break;
           }
 
-          // Track least-bad option
-          if (altResult.violationGapMs < bestViolationGapMs) {
-            bestViolationGapMs = altResult.violationGapMs;
+          // Track least-bad option (combined timing + unattended badness)
+          const altBadness = altResult.violationGapMs + altResult.unattendedGapMs;
+          if (altBadness < bestBadness) {
+            bestBadness = altBadness;
             bestTasks = altTasks;
             bestResult = altResult;
             bestSwapPoint = altSp;
@@ -2639,11 +2781,11 @@ export function buildSwapPlan(params: {
         }
 
         if (!solved) {
-          // ALL swap points have timing violations — use the least-bad one
+          // ALL swap points have violations — use the least-bad one
           if (bestSwapPoint !== picSwapPoint) {
             console.log(
-              `[SwapPointRetry] ${tail}: all swap points have timing violations. ` +
-              `Using least-bad: ${toIata(bestSwapPoint.icao)} (gap=${Math.round(bestViolationGapMs / 60_000)}min)`
+              `[SwapPointRetry] ${tail}: all swap points have violations. ` +
+              `Using least-bad: ${toIata(bestSwapPoint.icao)} (badness=${Math.round(bestBadness / 60_000)}min)`
             );
             tailTasks = bestTasks;
             optimizeResult = bestResult;
@@ -2655,38 +2797,64 @@ export function buildSwapPlan(params: {
           }
 
           // Mark as UNSOLVABLE — force crew with timing violations to travel_type "none"
-          const depSp = tailTasks[0]?.swapPoint;
-          const depTime = depSp
-            ? ((depSp.position === "between_legs" && depSp.window_end) ? depSp.window_end : depSp.time)
-            : null;
-          const depStr = depTime
-            ? new Date(depTime).toISOString().slice(11, 16) + "Z"
-            : "unknown";
+          // Only for departure-constrained swap points (before_live / between_legs)
+          if (optimizeResult.timingViolation) {
+            const depSp = tailTasks[0]?.swapPoint;
+            const depTime = depSp
+              ? ((depSp.position === "between_legs" && depSp.window_end) ? depSp.window_end : depSp.time)
+              : null;
+            const depStr = depTime
+              ? new Date(depTime).toISOString().slice(11, 16) + "Z"
+              : "unknown";
 
-          for (const task of tailTasks) {
-            if (task.direction !== "oncoming") continue;
-            const sp = task.swapPoint;
-            if (sp.position !== "before_live" && sp.position !== "between_legs") continue;
+            for (const task of tailTasks) {
+              if (task.direction !== "oncoming") continue;
+              const sp = task.swapPoint;
+              if (sp.position !== "before_live" && sp.position !== "between_legs") continue;
 
-            const taskDepTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
-            const deadlineMs = new Date(taskDepTime).getTime() - ms(FBO_ARRIVAL_BUFFER);
-            const arrivalMs = task.best?.fboArrivalTime?.getTime();
+              const taskDepTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+              const deadlineMs = new Date(taskDepTime).getTime() - ms(FBO_ARRIVAL_BUFFER);
+              const arrivalMs = task.best?.fboArrivalTime?.getTime();
 
-            if (!task.best || task.best.type === "none" || (arrivalMs && arrivalMs > deadlineMs)) {
-              const arrStr = arrivalMs
-                ? new Date(arrivalMs).toISOString().slice(11, 16) + "Z"
-                : "no transport";
-              const unsolvableMsg = `UNSOLVABLE: No swap point allows ${task.role} to arrive before aircraft departs ${depStr}. ` +
-                `Best option: arrives ${arrStr}. All ${swapPoints.length} swap points tried. Manual intervention required.`;
-              task.warnings = [unsolvableMsg]; // Replace any lesser warnings
-              task.best = {
-                type: "none", flightNumber: null, depTime: null, arrTime: null,
-                from: "", to: "", cost: 0, durationMin: 0, isDirect: false,
-                isBudgetCarrier: false, hubConnection: false, connectionCount: 0,
-                offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null,
-                dutyOnTime: null, score: 0, backups: [],
-              };
-              console.log(`[SwapPointRetry] ${tail} ${task.role}: ${unsolvableMsg}`);
+              if (!task.best || task.best.type === "none" || (arrivalMs && arrivalMs > deadlineMs)) {
+                const arrStr = arrivalMs
+                  ? new Date(arrivalMs).toISOString().slice(11, 16) + "Z"
+                  : "no transport";
+                const unsolvableMsg = `UNSOLVABLE: No swap point allows ${task.role} to arrive before aircraft departs ${depStr}. ` +
+                  `Best option: arrives ${arrStr}. All ${swapPoints.length} swap points tried. Manual intervention required.`;
+                task.warnings = [unsolvableMsg]; // Replace any lesser warnings
+                task.best = {
+                  type: "none", flightNumber: null, depTime: null, arrTime: null,
+                  from: "", to: "", cost: 0, durationMin: 0, isDirect: false,
+                  isBudgetCarrier: false, hubConnection: false, connectionCount: 0,
+                  offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null,
+                  dutyOnTime: null, score: 0, backups: [],
+                };
+                console.log(`[SwapPointRetry] ${tail} ${task.role}: ${unsolvableMsg}`);
+              }
+            }
+          }
+
+          // Mark unattended gap warnings for after_live/idle positions
+          if (optimizeResult.unattendedGap) {
+            for (const task of tailTasks) {
+              if (task.direction !== "oncoming") continue;
+              const sp = task.swapPoint;
+              if (sp.position !== "after_live" && sp.position !== "idle") continue;
+
+              const onArriveMs = task.best?.fboArrivalTime?.getTime();
+              const offTask = tailTasks.find((t) => t.direction === "offgoing" && t.role === task.role);
+              const offLeaveMs = offTask?.best?.fboLeaveTime?.getTime()
+                ?? offTask?.best?.depTime?.getTime();
+
+              if (onArriveMs && offLeaveMs && (onArriveMs - offLeaveMs) > HANDOFF_BUFFER_MINUTES * 60_000) {
+                const gapMin = Math.round((onArriveMs - offLeaveMs) / 60_000);
+                const unsolvableMsg = `UNSOLVABLE: Aircraft unattended for ${gapMin}min at ${toIata(sp.icao)}. ` +
+                  `All ${swapPoints.length} swap points tried. Manual intervention required.`;
+                task.warnings.push(unsolvableMsg);
+                if (offTask) offTask.warnings.push(unsolvableMsg);
+                console.log(`[SwapPointRetry] ${tail} ${task.role}: ${unsolvableMsg}`);
+              }
             }
           }
         }
