@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 import { postSlackMessage } from "@/lib/slack";
+import { createServiceClient } from "@/lib/supabase/service";
 
 export const maxDuration = 120;
 
@@ -68,7 +69,7 @@ export async function GET(req: NextRequest) {
       shutdownFuel: number;
       shutdownAirport: string;
       legs: Array<{ from: string; to: string }>;
-      plan: { tankerOutByStop: number[]; totalFuelCost: number; totalFees: number; totalTripCost: number } | null;
+      plan: { tankerOutByStop: number[]; fuelOrderGalByStop?: number[]; totalFuelCost: number; totalFees: number; totalTripCost: number } | null;
       naiveCost: number;
       tankerSavings: number;
       error?: string;
@@ -109,7 +110,35 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, ...results });
   }
 
-  // 4. Post clean summary to Slack
+  // 4. Cache plan gallons for the upcoming-choices API
+  try {
+    const supa = createServiceClient();
+    // Clear old cache for this date
+    await supa.from("fuel_plan_cache").delete().eq("plan_date", dateStr);
+
+    const cacheRows = plans.flatMap((tp) => {
+      if (!tp.plan || !tp.legs?.length) return [];
+      return tp.legs.map((leg, i) => ({
+        plan_date: dateStr,
+        tail_number: tp.tail,
+        aircraft_type: tp.aircraftType,
+        leg_index: i,
+        departure_icao: leg.from,
+        arrival_icao: leg.to,
+        gallons_order: tp.plan!.fuelOrderGalByStop?.[i] ?? 0,
+        price_per_gal: (leg as { departurePricePerGal?: number }).departurePricePerGal ?? null,
+      }));
+    });
+
+    if (cacheRows.length > 0) {
+      const { error: cacheErr } = await supa.from("fuel_plan_cache").insert(cacheRows);
+      results.planCache = { rows: cacheRows.length, error: cacheErr?.message };
+    }
+  } catch (err) {
+    results.planCache = { error: String(err) };
+  }
+
+  // 5. Post clean summary to Slack
   const withSavings = plans
     .filter((p) => p.tankerSavings > 0 && p.plan && !p.error)
     .sort((a, b) => b.tankerSavings - a.tankerSavings);

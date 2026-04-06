@@ -9,10 +9,12 @@ import CreateFlight from "./CreateFlight";
 import WebhookEvents from "./WebhookEvents";
 import UnifiedFuelEfficiency from "./UnifiedFuelEfficiency";
 import FuelChoiceReview from "./FuelChoiceReview";
+import FleetFuelDashboard from "@/app/fuel-dashboard/FleetFuelDashboard";
 
 const TABS = [
   { id: "fbo", label: "FBO Fuel Check" },
   { id: "tankering", label: "Tankering Plans" },
+  { id: "releases", label: "Fuel Releases" },
   { id: "review", label: "Fuel Choices" },
   { id: "efficiency", label: "Fuel Efficiency" },
   { id: "dispatch", label: "Dispatch" },
@@ -50,6 +52,7 @@ export default function FuelPlanningPage() {
 
       {tab === "fbo" && <ForeFlightClient />}
       {tab === "tankering" && <TankeringDashboard />}
+      {tab === "releases" && <FleetFuelDashboard />}
       {tab === "review" && <FuelChoiceReview />}
       {tab === "efficiency" && <UnifiedFuelEfficiency />}
       {tab === "dispatch" && <DispatchFlights />}
