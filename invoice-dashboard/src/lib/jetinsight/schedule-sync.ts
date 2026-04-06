@@ -321,17 +321,30 @@ export async function syncSalespersons(): Promise<{
   if (!cookie) { result.errors.push("No cookie"); return result; }
 
   // Find unique trip IDs missing salesperson — next 7 days only
-  const { data: flights } = await supa
+  // Prioritize next-48h flights so tomorrow's trips get scraped before the daily summary
+  const now = Date.now();
+  const { data: urgentFlights } = await supa
     .from("flights")
     .select("jetinsight_trip_id")
     .not("jetinsight_trip_id", "is", null)
     .is("salesperson", null)
-    .gte("scheduled_departure", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-    .lte("scheduled_departure", new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
+    .gte("scheduled_departure", new Date(now - 24 * 60 * 60 * 1000).toISOString())
+    .lte("scheduled_departure", new Date(now + 48 * 60 * 60 * 1000).toISOString())
     .order("scheduled_departure", { ascending: true })
     .limit(500);
 
-  const tripIds = [...new Set((flights ?? []).map((f) => f.jetinsight_trip_id as string).filter(Boolean))];
+  const { data: laterFlights } = await supa
+    .from("flights")
+    .select("jetinsight_trip_id")
+    .not("jetinsight_trip_id", "is", null)
+    .is("salesperson", null)
+    .gt("scheduled_departure", new Date(now + 48 * 60 * 60 * 1000).toISOString())
+    .lte("scheduled_departure", new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString())
+    .order("scheduled_departure", { ascending: true })
+    .limit(500);
+
+  const allFlights = [...(urgentFlights ?? []), ...(laterFlights ?? [])];
+  const tripIds = [...new Set(allFlights.map((f) => f.jetinsight_trip_id as string).filter(Boolean))];
   if (tripIds.length === 0) return result;
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
