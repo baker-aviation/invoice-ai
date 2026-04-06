@@ -44,15 +44,15 @@ export async function POST(req: NextRequest) {
   const genData = await genRes.json();
   const plans = genData.plans ?? [];
 
-  // 2. Filter to tails with positive tankering savings
-  const savingsPlans = plans.filter(
-    (p: { tankerSavings: number; error?: string }) => p.tankerSavings > 0 && !p.error
+  // 2. Include all valid plans (with or without tankering savings) — fuel vendor plan is always useful
+  const validPlans = plans.filter(
+    (p: { plan: unknown; error?: string }) => p.plan && !p.error
   );
 
-  if (savingsPlans.length === 0) {
+  if (validPlans.length === 0) {
     return NextResponse.json({
       ok: true,
-      message: "No tankering opportunities found for " + targetDate,
+      message: "No fuel plans generated for " + targetDate,
       sent: 0,
     });
   }
@@ -73,7 +73,9 @@ export async function POST(req: NextRequest) {
   const results: Array<{ tail: string; token: string; channel: string; sent: boolean }> = [];
   const slackToken = process.env.SLACK_BOT_TOKEN;
 
-  for (const plan of savingsPlans) {
+  const strip = (c: string) => c.length === 4 && c.startsWith("K") ? c.slice(1) : c;
+
+  for (const plan of validPlans) {
     const token = randomBytes(24).toString("base64url");
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -102,6 +104,24 @@ export async function POST(req: NextRequest) {
 
     if (slackToken) {
       try {
+        // Build vendor summary lines
+        const vendorLines: string[] = [];
+        for (const leg of (plan.legs ?? [])) {
+          const from = strip(leg.from);
+          const vendor = leg.departureFboVendor || "—";
+          const price = leg.departurePricePerGal > 0 ? `$${leg.departurePricePerGal.toFixed(2)}/gal` : "N/A";
+          vendorLines.push(`${from}: ${vendor} @ ${price}`);
+        }
+
+        const headerText = savings > 0
+          ? `*${plan.tail}* — Fuel Briefing  (~$${savings.toLocaleString()} tankering savings)`
+          : `*${plan.tail}* — Fuel Briefing`;
+
+        const bodyParts = [];
+        if (vendorLines.length > 0) {
+          bodyParts.push(`*Vendor Plan:*\n${vendorLines.map((l) => `  ${l}`).join("\n")}`);
+        }
+
         const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
           method: "POST",
           headers: {
@@ -113,18 +133,19 @@ export async function POST(req: NextRequest) {
             blocks: [
               {
                 type: "section",
-                text: {
-                  type: "mrkdwn",
-                  text: `*${plan.tail}* — Tankering opportunity (~$${savings.toLocaleString()})`,
-                },
+                text: { type: "mrkdwn", text: headerText },
                 accessory: {
                   type: "button",
                   text: { type: "plain_text", text: "View Plan" },
                   url: planUrl,
                 },
               },
+              ...(bodyParts.length > 0 ? [{
+                type: "section",
+                text: { type: "mrkdwn", text: bodyParts.join("\n\n") },
+              }] : []),
             ],
-            text: `${plan.tail} tankering opportunity — ${planUrl}`,
+            text: `${plan.tail} fuel briefing — ${planUrl}`,
           }),
         });
 
@@ -148,7 +169,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     date: targetDate,
     totalPlans: plans.length,
-    savingsPlans: savingsPlans.length,
+    briefingsSent: validPlans.length,
     sent: results.filter((r) => r.sent).length,
     results,
   });

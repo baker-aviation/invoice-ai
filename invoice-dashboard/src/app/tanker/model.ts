@@ -232,6 +232,8 @@ export interface MultiLeg {
   departurePricePerGal: number;
   waiveFeesGallons: number;
   feesWaivedDollars: number;
+  /** When true, always charge feesWaivedDollars regardless of order size (user explicitly set this fee) */
+  feeForced?: boolean;
 }
 
 export function makeDefaultLeg(from = "", to = ""): MultiLeg {
@@ -351,8 +353,10 @@ export function optimizeMultiLeg(route: MultiRouteInputs, stepLbs = 100): MultiL
 
         const oGal = oLbs / ppg;
         const fc   = oGal * leg.departurePricePerGal;
-        const fee  = leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons
-          ? leg.feesWaivedDollars : 0;
+        const fee  = leg.feeForced
+          ? leg.feesWaivedDollars
+          : (leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons
+            ? leg.feesWaivedDollars : 0);
         const t = fc + fee + fut;
         if (t < best) { best = t; bestOJ = oj; }
       }
@@ -391,8 +395,10 @@ export function optimizeMultiLeg(route: MultiRouteInputs, stepLbs = 100): MultiL
 
     const fc  = oGal * leg.departurePricePerGal;
     totalFC  += fc;
-    const fee = leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons
-      ? leg.feesWaivedDollars : 0;
+    const fee = leg.feeForced
+      ? leg.feesWaivedDollars
+      : (leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons
+        ? leg.feesWaivedDollars : 0);
     feesArr.push(fee); totalFees += fee;
     landing.push(getMultiPlannedArrival(route, i) + inE);
 
