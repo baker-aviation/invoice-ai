@@ -130,8 +130,9 @@ export const BACKUP_FLIGHT_MIN_GAP = 60;
  */
 
 /**
- * PIC and SIC do NOT have to swap at the same location.
- * Can swap at different airports.
+ * PIC and SIC MUST swap at the same location.
+ * No split swaps — both crew swap at the same airport.
+ * PIC replaces PIC, SIC replaces SIC, always 1-for-1.
  */
 
 /**

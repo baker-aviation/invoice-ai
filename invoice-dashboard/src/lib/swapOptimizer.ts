@@ -1784,6 +1784,90 @@ function optimizeTail(
     task.candidates.sort((a, b) => b.score - a.score);
     task.best = task.candidates[0] ?? null;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // AIRCRAFT NEVER EMPTY — hard constraint with automatic resolution
+  // ══════════════════════════════════════════════════════════════════════════
+  // For each role (PIC/SIC), verify oncoming arrives BEFORE offgoing departs.
+  // If not, try two alternatives and pick the cheaper one. If neither works,
+  // mark the tail unsolved.
+  const HANDOFF_BUFFER_MS = ms(HANDOFF_BUFFER_MINUTES);
+
+  for (const [onTask, offTask] of [
+    [oncomingPic, offgoingPic],
+    [oncomingSic, offgoingSic],
+  ] as [CrewTask | undefined, CrewTask | undefined][]) {
+    if (!onTask?.best || !offTask?.best) continue;
+    if (onTask.best.type === "none" || offTask.best.type === "none") continue;
+
+    const oncomingArrival = onTask.best.fboArrivalTime;
+    const offgoingDeparture = offTask.best.fboLeaveTime ?? offTask.best.depTime;
+
+    if (!oncomingArrival || !offgoingDeparture) continue;
+
+    // Check: does oncoming arrive at least HANDOFF_BUFFER before offgoing leaves?
+    if (oncomingArrival.getTime() + HANDOFF_BUFFER_MS <= offgoingDeparture.getTime()) {
+      continue; // Timing is fine — aircraft is never empty
+    }
+
+    // CONFLICT: aircraft would be empty. Try to resolve automatically.
+    console.log(
+      `[AircraftCoverage] ${onTask.tail} ${onTask.role}: CONFLICT — ` +
+      `oncoming arrives ${oncomingArrival.toISOString().slice(11, 16)}Z, ` +
+      `offgoing departs ${offgoingDeparture.toISOString().slice(11, 16)}Z ` +
+      `(need ${HANDOFF_BUFFER_MINUTES}min buffer)`
+    );
+
+    // Option A: Keep oncoming, find later offgoing transport
+    // Offgoing holds at FBO until oncoming arrives, then takes a later flight/transport
+    const requiredOffgoingLeaveTime = oncomingArrival.getTime() + HANDOFF_BUFFER_MS;
+    const laterOffgoing = offTask.candidates
+      .filter((c) => {
+        if (c.type === "none") return false;
+        const leave = (c.fboLeaveTime ?? c.depTime)?.getTime();
+        return leave != null && leave >= requiredOffgoingLeaveTime;
+      })
+      .sort((a, b) => a.cost - b.cost); // cheapest viable option
+
+    // Option B: Keep offgoing, find earlier oncoming transport
+    // Oncoming arrives earlier so they're at FBO before offgoing needs to leave
+    const requiredOncomingArrival = offgoingDeparture.getTime() - HANDOFF_BUFFER_MS;
+    const earlierOncoming = onTask.candidates
+      .filter((c) => {
+        if (c.type === "none") return false;
+        const arr = c.fboArrivalTime?.getTime();
+        return arr != null && arr <= requiredOncomingArrival;
+      })
+      .sort((a, b) => b.score - a.score); // best-scored viable option
+
+    const optionA = laterOffgoing[0] ?? null;
+    const optionB = earlierOncoming[0] ?? null;
+
+    if (optionA && optionB) {
+      // Compare costs: use whichever is cheaper overall
+      const costA = optionA.cost + (onTask.best.cost ?? 0);
+      const costB = (offTask.best.cost ?? 0) + optionB.cost;
+      if (costA <= costB) {
+        console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: Option A — later offgoing ${optionA.flightNumber ?? optionA.type} (cost $${Math.round(optionA.cost)})`);
+        offTask.best = optionA;
+      } else {
+        console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: Option B — earlier oncoming ${optionB.flightNumber ?? optionB.type} (cost $${Math.round(optionB.cost)})`);
+        onTask.best = optionB;
+      }
+    } else if (optionA) {
+      console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: Option A — later offgoing ${optionA.flightNumber ?? optionA.type} (cost $${Math.round(optionA.cost)})`);
+      offTask.best = optionA;
+    } else if (optionB) {
+      console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: Option B — earlier oncoming ${optionB.flightNumber ?? optionB.type} (cost $${Math.round(optionB.cost)})`);
+      onTask.best = optionB;
+    } else {
+      // NEITHER option works — mark as unsolved
+      const warningMsg = `Cannot ensure aircraft coverage — oncoming ${onTask.role} arrives ${oncomingArrival.toISOString().slice(11, 16)}Z but offgoing must leave ${offgoingDeparture.toISOString().slice(11, 16)}Z (need ${HANDOFF_BUFFER_MINUTES}min handoff)`;
+      onTask.warnings.push(warningMsg);
+      offTask.warnings.push(warningMsg);
+      console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: UNSOLVED — ${warningMsg}`);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2154,8 +2238,64 @@ export function buildSwapPlan(params: {
         if (isInternational || sp.icao === "TQPF" || tail.includes("555")) {
           console.log(`[SwapPointDebug] ${tail} ${toIata(sp.icao)} (${sp.position}): ease=${Math.round(ease)} drive=${minDrive} intl=${isInternational} comm=${commAirports.length} timing=${Math.round(timingPenalty)} prox=${Math.round(proximityBonus)} afterLive=${afterLiveBonus}`);
         }
-        if (ease > bestEase) {
-          bestEase = ease;
+        // ── Bug fix: penalize swap points where offgoing crew can't get home ──
+        // Check if offgoing PIC or SIC have ANY viable transport home from this swap point.
+        // If not, heavily penalize so swap points with offgoing viability win.
+        const noOffgoingTransportPenalty = -400;
+        let offgoingPenalty = 0;
+        const offgoingNames = [assignment.offgoing_pic, assignment.offgoing_sic].filter(Boolean) as string[];
+        if (offgoingNames.length > 0) {
+          let anyOffgoingViable = false;
+          for (const offName of offgoingNames) {
+            const offCrew = findCrewByName(crewRoster, offName, "PIC") ?? findCrewByName(crewRoster, offName, "SIC");
+            const offHomes = offCrew?.home_airports ?? [];
+            if (offHomes.length === 0) { anyOffgoingViable = true; break; } // can't evaluate — don't penalize
+
+            let crewViable = false;
+            for (const home of offHomes) {
+              // Check ground transport: swap point → home within rental max
+              const drive = estimateDriveTime(sp.icao, toIcao(home));
+              if (drive && drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+                crewViable = true; break;
+              }
+              // Check commercial flights: swap point commercial airports → home commercial airports
+              if (commercialFlights) {
+                const homeIata = toIata(home);
+                const homeIcao = toIcao(home);
+                const homeSearchIatas = [homeIata];
+                if (!isCommercialAirport(homeIcao)) {
+                  const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+                  for (const nc of nearbyComm) homeSearchIatas.push(toIata(nc));
+                }
+                for (const commOrig of commAirports) {
+                  const origIata = toIata(commOrig);
+                  for (const destIata of homeSearchIatas) {
+                    // Check swap day and day after (offgoing can fly next morning)
+                    if (lookupFlights(commercialFlights, origIata, destIata, swapDate).length > 0) {
+                      crewViable = true; break;
+                    }
+                    const dayAfter = new Date(swapDate);
+                    dayAfter.setDate(dayAfter.getDate() + 1);
+                    if (lookupFlights(commercialFlights, origIata, destIata, dayAfter.toISOString().slice(0, 10)).length > 0) {
+                      crewViable = true; break;
+                    }
+                  }
+                  if (crewViable) break;
+                }
+              }
+              if (crewViable) break;
+            }
+            if (crewViable) { anyOffgoingViable = true; break; }
+          }
+          if (!anyOffgoingViable) {
+            offgoingPenalty = noOffgoingTransportPenalty;
+            console.log(`[SwapPointDebug] ${tail} ${toIata(sp.icao)}: offgoing has NO viable transport home — penalty ${noOffgoingTransportPenalty}`);
+          }
+        }
+
+        const easeWithOffgoing = ease + offgoingPenalty;
+        if (easeWithOffgoing > bestEase) {
+          bestEase = easeWithOffgoing;
           picSwapPoint = sp;
         }
       }
@@ -2312,48 +2452,12 @@ export function buildSwapPlan(params: {
         }
       }
 
-      if (direction === "oncoming" && swapPoints.length > 1) {
-        // Try each swap point — run buildCandidates for each, pick the best
-        let bestSwapPoint = picSwapPoint; // default to same as PIC
-        let bestScore = -1;
-
-        for (const sp of swapPoints) {
-          const tempTask: CrewTask = {
-            name: crewMember?.name ?? name, crewMember, role: "SIC",
-            direction: "oncoming", tail, aircraftType, swapPoint: sp,
-            homeAirports, candidates: [], best: null, warnings: [],
-            ...sicVolFlags,
-          };
-          const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
-          for (const c of candidates) {
-            c.score = scoreCandidate(c, tempTask, null);
-          }
-          const topScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
-          // Strong preference for PIC's swap point (+20 bonus) — only split if SIC truly can't reach it
-          const isPicPoint = sp.icao.toUpperCase() === picSwapPoint.icao.toUpperCase();
-          const adjustedScore = isPicPoint ? topScore + 20 : topScore;
-          if (adjustedScore > bestScore) {
-            bestScore = adjustedScore;
-            bestSwapPoint = sp;
-          }
-        }
-
-        if (bestSwapPoint !== picSwapPoint && bestSwapPoint.position !== "idle") {
-          warnings.push(`SIC swaps at ${toIata(bestSwapPoint.icao)} (after ${bestSwapPoint.position}) — PIC covers SIC seat for earlier legs`);
-        }
-
-        tailTasks.push({
-          name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
-          aircraftType, swapPoint: bestSwapPoint, homeAirports,
-          candidates: [], best: null, warnings,
-          ...sicVolFlags,
-        });
-      } else {
-        // Offgoing SIC or oncoming SIC with single swap point
-        const oncomingSicTask = tailTasks.find((t) => t.role === "SIC" && t.direction === "oncoming");
+      // SIC MUST swap at the same airport as PIC — no split swaps allowed.
+      // PIC replaces PIC, SIC replaces SIC, always 1-for-1 at the same location.
+      {
         const sicSwapPoint = direction === "offgoing"
           ? offgoingSwapPoint  // idle tails: use late swap point for offgoing
-          : (oncomingSicTask?.swapPoint ?? picSwapPoint);
+          : picSwapPoint;      // oncoming SIC always uses PIC's swap point
 
         tailTasks.push({
           name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
@@ -2843,15 +2947,14 @@ function buildFeasibilityMatrix(params: {
       swapPointsToTry = [bestSp];
     }
 
-    // SIC: force to PIC's swap point when available. Only fall back to other
-    // swap points if the PIC's point has no viable transport at all.
-    if (role === "SIC" && picSwapPoints && swapPoints.length > 1) {
+    // SIC MUST use PIC's swap point — no split swaps allowed.
+    // PIC and SIC always swap at the same airport.
+    if (role === "SIC" && picSwapPoints) {
       const picSp = picSwapPoints.get(tail);
       if (picSp) {
         const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === picSp.toUpperCase());
         if (matched) {
-          // Try PIC's swap point first, then fall back to others if no viable transport
-          swapPointsToTry = [matched, ...swapPoints.filter(sp => sp !== matched)];
+          swapPointsToTry = [matched]; // SIC locked to PIC's swap point
         }
       }
     }
