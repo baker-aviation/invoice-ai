@@ -13,6 +13,7 @@ const MATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
 export interface ScheduleSyncResult {
   flightsCreated: number;
   flightsUpdated: number;
+  flightsCancelled: number;
   mxNotesUpserted: number;
   errors: string[];
   sessionExpired: boolean;
@@ -27,6 +28,7 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   const result: ScheduleSyncResult = {
     flightsCreated: 0,
     flightsUpdated: 0,
+    flightsCancelled: 0,
     mxNotesUpserted: 0,
     errors: [],
     sessionExpired: false,
@@ -102,11 +104,11 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   // Parse events
   const events = parseScheduleJson(rawJson);
 
-  // Load existing flights for matching
+  // Load existing flights for matching (include diverted flag for route protection)
   const { data: existingFlights } = await supa
     .from("flights")
     .select(
-      "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid",
+      "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid, diverted",
     )
     .gte("scheduled_departure", start.toISOString())
     .lte("scheduled_departure", end.toISOString());
@@ -124,6 +126,7 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   // Classify events: updates vs inserts vs maintenance
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
   const inserts: Array<Record<string, unknown>> = [];
+  const matchedFlightIds = new Set<string>(); // Track which existing flights are still in JSON feed
 
   for (const event of events) {
     if (event.eventType === "maintenance") {
@@ -138,42 +141,70 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
       continue;
     }
 
-    // Build the full flight data payload
-    const flightData = {
+    // Try to match to existing flight (using indexes for O(1) lookups)
+    const matched = findMatchingFlight(flights, event, uuidIndex, icsUidIndex);
+
+    // Build the flight data payload — null-safe for updates (don't overwrite
+    // good existing data with null from JSON when fields are missing)
+    const flightData: Record<string, unknown> = {
       tail_number: event.tailNumber,
-      departure_icao: event.departureIcao,
-      arrival_icao: event.arrivalIcao,
       scheduled_departure: event.start,
       scheduled_arrival: event.end,
       summary: buildSummary(event),
       flight_type: event.flightType,
-      pic: event.pic,
-      sic: event.sic,
-      pax_count: event.paxCount,
-      jetinsight_url: event.tripId
-        ? `${BASE_URL}/trips/${event.tripId}`
-        : null,
-      // Enrichment fields
-      flight_number: event.flightNumber,
-      customer_name: event.customerName,
-      jetinsight_trip_id: event.tripId,
-      origin_fbo: event.originFbo,
-      destination_fbo: event.destinationFbo,
-      international_leg: event.internationalLeg || null,
-      trip_stage: event.tripStage,
-      release_complete: event.releaseComplete,
-      crew_complete: event.crewComplete,
-      pax_complete: event.paxComplete,
-      faa_part: event.faaPart,
       jetinsight_event_uuid: event.uuid,
     };
 
-    // Try to match to existing flight (using indexes for O(1) lookups)
-    const matched = findMatchingFlight(flights, event, uuidIndex, icsUidIndex);
+    // Protect diverted flights: don't overwrite manually-entered route data
+    const isDiverted = matched?.diverted === true;
+    if (!isDiverted) {
+      flightData.departure_icao = event.departureIcao;
+      flightData.arrival_icao = event.arrivalIcao;
+    }
 
+    // For updates: only set fields that have non-null values from JSON,
+    // so we don't erase data that ICS or other sources already populated
     if (matched) {
+      if (event.pic != null) flightData.pic = event.pic;
+      if (event.sic != null) flightData.sic = event.sic;
+      if (event.paxCount != null) flightData.pax_count = event.paxCount;
+      if (event.customerName != null) flightData.customer_name = event.customerName;
+      if (event.flightNumber != null) flightData.flight_number = event.flightNumber;
+      if (event.originFbo != null) flightData.origin_fbo = event.originFbo;
+      if (event.destinationFbo != null) flightData.destination_fbo = event.destinationFbo;
+      if (event.tripId != null) {
+        flightData.jetinsight_trip_id = event.tripId;
+        flightData.jetinsight_url = `${BASE_URL}/trips/${event.tripId}`;
+      }
+      if (event.internationalLeg != null) flightData.international_leg = event.internationalLeg;
+      if (event.tripStage != null) flightData.trip_stage = event.tripStage;
+      if (event.releaseComplete != null) flightData.release_complete = event.releaseComplete;
+      if (event.crewComplete != null) flightData.crew_complete = event.crewComplete;
+      if (event.paxComplete != null) flightData.pax_complete = event.paxComplete;
+      if (event.faaPart != null) flightData.faa_part = event.faaPart;
+
       updates.push({ id: matched.id, data: flightData });
+      matchedFlightIds.add(matched.id);
     } else {
+      // For inserts: set all fields (null is fine for new rows)
+      flightData.pic = event.pic;
+      flightData.sic = event.sic;
+      flightData.pax_count = event.paxCount;
+      flightData.customer_name = event.customerName;
+      flightData.flight_number = event.flightNumber;
+      flightData.origin_fbo = event.originFbo;
+      flightData.destination_fbo = event.destinationFbo;
+      flightData.jetinsight_trip_id = event.tripId;
+      flightData.jetinsight_url = event.tripId
+        ? `${BASE_URL}/trips/${event.tripId}`
+        : null;
+      flightData.international_leg = event.internationalLeg || null;
+      flightData.trip_stage = event.tripStage;
+      flightData.release_complete = event.releaseComplete;
+      flightData.crew_complete = event.crewComplete;
+      flightData.pax_complete = event.paxComplete;
+      flightData.faa_part = event.faaPart;
+
       inserts.push({
         ...flightData,
         ics_uid: `ji:${event.uuid}`,
@@ -222,6 +253,33 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
           result.errors.push(`Insert batch: ${msg}`);
         }
       }
+    }
+  }
+
+  // Clean up cancelled flights: JSON-created flights that no longer appear in the feed.
+  // Only remove flights created by JSON sync (ics_uid starts with "ji:") in the
+  // near-term window (next 7 days). Don't touch ICS-created flights — ICS has
+  // its own cleanup. Don't touch flights beyond 7 days — they may have just
+  // rotated out of the feed window.
+  const cleanupCutoff = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const staleJsonFlights = flights.filter(
+    (f) =>
+      !matchedFlightIds.has(f.id) &&
+      f.ics_uid?.startsWith("ji:") &&
+      f.scheduled_departure <= cleanupCutoff &&
+      f.scheduled_departure >= now.toISOString(),
+  );
+
+  if (staleJsonFlights.length > 0) {
+    const staleIds = staleJsonFlights.map((f) => f.id);
+    const { error: delErr } = await supa
+      .from("flights")
+      .delete()
+      .in("id", staleIds);
+    if (delErr) {
+      result.errors.push(`Cancel cleanup: ${delErr.message}`);
+    } else {
+      result.flightsCancelled = staleIds.length;
     }
   }
 
@@ -343,11 +401,12 @@ function findMatchingFlight(
     arrival_icao: string;
     scheduled_departure: string;
     jetinsight_event_uuid: string | null;
+    diverted?: boolean | null;
   }>,
   event: ScheduleEvent,
-  uuidIndex: Map<string, { id: string }>,
-  icsUidIndex: Map<string, { id: string }>,
-): { id: string } | null {
+  uuidIndex: Map<string, { id: string; diverted?: boolean | null }>,
+  icsUidIndex: Map<string, { id: string; diverted?: boolean | null }>,
+): { id: string; diverted?: boolean | null } | null {
   // 1. Exact event UUID match (O(1))
   const uuidMatch = uuidIndex.get(event.uuid);
   if (uuidMatch) return uuidMatch;
