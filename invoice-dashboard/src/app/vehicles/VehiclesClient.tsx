@@ -113,9 +113,11 @@ function FuelGauge({ percent }: { percent: number | null }) {
 function VehicleFleetTable({
   vehicles,
   diags,
+  registry,
 }: {
   vehicles: SamsaraVan[];
   diags: Map<string, VehicleDiag>;
+  registry: Map<string, RegistryEntry>;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -156,6 +158,7 @@ function VehicleFleetTable({
                     celOn={celOn}
                     isExpanded={isExpanded}
                     onToggle={() => setExpandedId(isExpanded ? null : v.id)}
+                    registry={registry}
                   />
                 );
               })}
@@ -173,12 +176,14 @@ function VehicleFleetRow({
   celOn,
   isExpanded,
   onToggle,
+  registry,
 }: {
   v: SamsaraVan;
   diag?: VehicleDiag;
   celOn: boolean;
   isExpanded: boolean;
   onToggle: () => void;
+  registry: Map<string, RegistryEntry>;
 }) {
   return (
     <>
@@ -190,7 +195,7 @@ function VehicleFleetRow({
           <div className="flex items-center gap-2">
             <span className="font-medium text-gray-800">{v.name || v.id}</span>
             {(() => {
-              const t = inferTypeFromName(v.name);
+              const t = inferTypeFromName(v.name, registry, v.id);
               const badge = t === "van" ? { label: "Van", cls: "bg-blue-100 text-blue-700" }
                 : t === "truck" ? { label: "Truck", cls: "bg-purple-100 text-purple-700" }
                 : t === "crew_car" ? { label: "Crew Car", cls: "bg-emerald-100 text-emerald-700" }
@@ -660,9 +665,36 @@ const VEHICLE_FILTERS: { key: VehicleFilter; label: string; icon: string }[] = [
   { key: "other", label: "Other", icon: "📦" },
 ];
 
-function inferTypeFromName(name: string): VehicleFilter {
+type RegistryEntry = {
+  samsara_id: string;
+  vehicle_type: string;
+  make: string | null;
+  model: string | null;
+};
+
+function inferTypeFromName(name: string, registry?: Map<string, RegistryEntry>, id?: string): VehicleFilter {
+  // Use registry type if available
+  if (registry && id) {
+    const reg = registry.get(id);
+    if (reg && reg.vehicle_type !== "unknown") {
+      const t = reg.vehicle_type;
+      if (t === "van") return "van";
+      if (t === "truck") return "truck";
+      if (t === "crew_car") return "crew_car";
+      return "other";
+    }
+    // Fall back to make/model from registry
+    if (reg) {
+      const model = (reg.model || "").toUpperCase();
+      const make = (reg.make || "").toUpperCase();
+      if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY") || model.includes("BRONCO")) return "truck";
+      if (model.includes("CAMRY") || make.includes("BMW")) return "crew_car";
+    }
+  }
+  // Final fallback: name-based
   const u = (name || "").toUpperCase();
-  if (u.includes("BRONCO") || u.includes("TRUCK")) return "truck";
+  if (u.includes("CLEANING")) return "other";
+  if (u.includes("BRONCO") || u.includes("TRUCK") || /F[-\s]?\d{3}/.test(u) || u.includes("SUPER DUTY")) return "truck";
   if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
   if (u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
   return "other";
@@ -675,6 +707,21 @@ export default function VehiclesClient() {
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("fleet");
   const [vehicleFilter, setVehicleFilter] = useState<VehicleFilter>("all");
+  const [registry, setRegistry] = useState<Map<string, RegistryEntry>>(new Map());
+
+  useEffect(() => {
+    async function loadRegistry() {
+      try {
+        const res = await fetch("/api/vehicles/registry", { cache: "no-store" });
+        const data = await res.json();
+        if (!data.ok) return;
+        const map = new Map<string, RegistryEntry>();
+        for (const v of data.vehicles ?? []) map.set(v.samsara_id, v);
+        setRegistry(map);
+      } catch {}
+    }
+    loadRegistry();
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -720,17 +767,17 @@ export default function VehiclesClient() {
 
   const filteredVehicles = useMemo(() => {
     if (vehicleFilter === "all") return allVehicles;
-    return allVehicles.filter((v) => inferTypeFromName(v.name) === vehicleFilter);
-  }, [allVehicles, vehicleFilter]);
+    return allVehicles.filter((v) => inferTypeFromName(v.name, registry, v.id) === vehicleFilter);
+  }, [allVehicles, vehicleFilter, registry]);
 
   const filterCounts = useMemo(() => {
     const counts: Record<VehicleFilter, number> = { all: allVehicles.length, van: 0, truck: 0, crew_car: 0, other: 0 };
     for (const v of allVehicles) {
-      const t = inferTypeFromName(v.name);
+      const t = inferTypeFromName(v.name, registry, v.id);
       counts[t]++;
     }
     return counts;
-  }, [allVehicles]);
+  }, [allVehicles, registry]);
 
   const celVehicles = allVehicles.filter((v) => diagData.get(v.id)?.check_engine_on === true);
   const lowFuelVehicles = allVehicles.filter((v) => {
@@ -909,7 +956,7 @@ export default function VehiclesClient() {
 
       {/* Tab content */}
       {activeTab === "fleet" && (
-        <VehicleFleetTable vehicles={filteredVehicles} diags={diagData} />
+        <VehicleFleetTable vehicles={filteredVehicles} diags={diagData} registry={registry} />
       )}
       {activeTab === "maintenance" && (
         <MaintenanceSchedule vehicles={filteredVehicles} diags={diagData} />

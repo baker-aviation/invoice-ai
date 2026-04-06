@@ -10,6 +10,8 @@ const SLACK_CHANNEL = "C0AR2R54BPC"; // #vehicles
 interface SamsaraVehicle {
   id: string;
   name?: string;
+  make?: string;
+  model?: string;
 }
 
 interface SamsaraVehicleStat {
@@ -20,12 +22,17 @@ interface SamsaraVehicleStat {
 
 // ── Vehicle type inference from Samsara name ──────────────────────────────
 
-function inferVehicleType(name: string): string {
-  const u = (name || "").toUpperCase();
-  if (u.includes("CLEANING")) return "cleaning";
-  if (u.includes("BRONCO") || u.includes("TRUCK")) return "truck";
-  if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
-  if (u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
+function inferVehicleType(v: SamsaraVehicle): string {
+  const name = (v.name || "").toUpperCase();
+  const model = (v.model || "").toUpperCase();
+  const make = (v.make || "").toUpperCase();
+  const all = `${name} ${make} ${model}`;
+
+  if (name.includes("CLEANING")) return "cleaning";
+  // Trucks: F-150/250/350/450/550, Super Duty, Bronco, etc. — check model FIRST to override name
+  if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY") || model.includes("BRONCO") || all.includes("TRUCK")) return "truck";
+  if (name.includes("VAN") || name.includes("AOG") || name.includes("TRAN")) return "van";
+  if (model.includes("CAMRY") || make.includes("BMW") || name.includes("CAMRY") || name.includes("BMW") || name.includes("CAR")) return "crew_car";
   return "unknown";
 }
 
@@ -144,11 +151,13 @@ export async function GET(req: NextRequest) {
         check_engine: faultMap.get(v.id) ?? false,
       });
       // Auto-create registry entry with inferred type
-      const vType = inferVehicleType(v.name ?? "");
+      const vType = inferVehicleType(v);
       const vRole = inferVehicleRole(vType);
       await supa.from("vehicle_registry").insert({
         samsara_id: v.id,
         name: v.name ?? null,
+        make: v.make ?? null,
+        model: v.model ?? null,
         vehicle_type: vType,
         vehicle_role: vRole,
       });
