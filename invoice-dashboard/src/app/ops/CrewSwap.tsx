@@ -49,6 +49,12 @@ type OncomingPool = {
   sic: OncomingPoolEntry[];
 };
 
+/** Pre-optimizer constraints set by coordinator */
+type SwapConstraint =
+  | { type: "force_tail"; crew_name: string; tail: string; reason?: string }
+  | { type: "force_pair"; crew_a: string; crew_b: string; reason?: string }
+  | { type: "force_fleet"; crew_name: string; aircraft_type: string; reason?: string };
+
 type RosterUploadResult = {
   ok: boolean;
   total_parsed: number;
@@ -171,6 +177,8 @@ type CrewSwapRow = {
   alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
   backup_flight: string | null;
   score: number;
+  /** false = tentative/standby, true = confirmed/book it */
+  confirmed?: boolean;
 };
 
 type TwoPassStats = {
@@ -308,6 +316,16 @@ function TailStatusGrid({ rows, impactedTails, onTileClick }: {
             <div className="font-mono font-bold text-sm">{tail}</div>
             {ac && <div className={`text-[9px] mt-0.5 ${ac.text}`}>{ac.label}</div>}
             {tailCost > 0 && <div className="text-[9px] mt-0.5 opacity-70">${tailCost}</div>}
+            {(() => {
+              const solved = tailRows.filter(r => r.travel_type !== "none");
+              const confirmed = solved.filter(r => r.confirmed).length;
+              if (solved.length === 0) return null;
+              return (
+                <div className={`text-[8px] mt-0.5 font-medium ${confirmed === solved.length ? "text-green-700" : "text-yellow-700"}`}>
+                  {confirmed}/{solved.length}
+                </div>
+              );
+            })()}
           </button>
         );
       })}
@@ -629,17 +647,17 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
   );
 }
 
-function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; selectedWed: Date }) {
+function AirportAliasPanel({ flights, selectedDate }: { flights: Flight[]; selectedDate: Date }) {
   const [show, setShow] = useState(false);
 
   // Find FBO airports from this week's flights
   const fboAirports = useMemo(() => {
-    const wedStr = selectedWed.toISOString().slice(0, 10);
+    const wedStr = selectedDate.toISOString().slice(0, 10);
     const airports = new Set<string>();
     for (const f of flights) {
       if (f.scheduled_departure?.startsWith(wedStr) ||
-          (f.scheduled_departure && new Date(f.scheduled_departure) >= new Date(selectedWed.getTime() - 86400_000) &&
-           new Date(f.scheduled_departure) <= new Date(selectedWed.getTime() + 86400_000))) {
+          (f.scheduled_departure && new Date(f.scheduled_departure) >= new Date(selectedDate.getTime() - 86400_000) &&
+           new Date(f.scheduled_departure) <= new Date(selectedDate.getTime() + 86400_000))) {
         if (f.departure_icao) airports.add(f.departure_icao);
         if (f.arrival_icao) airports.add(f.arrival_icao);
       }
@@ -654,7 +672,7 @@ function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; select
       }
     }
     return result.sort((a, b) => a.fbo.localeCompare(b.fbo));
-  }, [flights, selectedWed]);
+  }, [flights, selectedDate]);
 
   if (fboAirports.length === 0) return null;
 
@@ -729,15 +747,32 @@ function isLiveFlightType(type: string | null): boolean {
 
 // ─── Swap Sheet (Excel-matching layout) ─────────────────────────────────────
 
-function SwapSheetRow({ row, onArrivalOverride }: { row: CrewSwapRow; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void }) {
+function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSwapRow; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void; onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void }) {
   const ac = AIRCRAFT_COLORS[row.aircraft_type];
   const rowBg = ac ? `${ac.bg}/30` : "";
+  const isUnsolved = row.travel_type === "none";
+  const isConfirmed = !!row.confirmed;
 
   return (
-    <tr className={`hover:bg-gray-50 border-b border-gray-100 ${rowBg}`}>
+    <tr className={`hover:bg-gray-50 border-b border-gray-100 ${rowBg} ${!isUnsolved && !isConfirmed ? "opacity-70" : ""}`}
+      style={!isUnsolved ? { borderLeft: `3px solid ${isConfirmed ? "#22c55e" : "#eab308"}`, borderLeftStyle: isConfirmed ? "solid" : "dashed" } : undefined}
+    >
       {/* Name (Home Base) */}
       <td className="px-3 py-1.5 text-sm">
         <div className="flex items-center gap-1.5">
+          {!isUnsolved && onToggleConfirm && (
+            <button
+              onClick={() => onToggleConfirm(row.tail_number, row.role, row.direction)}
+              className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] shrink-0 transition-colors ${
+                isConfirmed
+                  ? "bg-green-500 border-green-600 text-white"
+                  : "bg-white border-gray-300 text-transparent hover:border-yellow-400"
+              }`}
+              title={isConfirmed ? "Confirmed — click to mark tentative" : "Tentative — click to confirm"}
+            >
+              {isConfirmed ? "\u2713" : ""}
+            </button>
+          )}
           {ac && (
             <span className={`inline-block w-2.5 h-2.5 rounded-full ${ac.bg} border ${ac.text.replace("text-", "border-")}`} />
           )}
@@ -832,7 +867,7 @@ function SwapSheetRow({ row, onArrivalOverride }: { row: CrewSwapRow; onArrivalO
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
@@ -840,17 +875,19 @@ function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
   onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
+  onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void;
+  onConfirmTail?: (tail: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
-  selectedWed?: Date;
+  selectedDate?: Date;
   tailAircraftTypes?: Record<string, string>;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} onArrivalOverride={onArrivalOverride} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />;
-  return <SwapSheetByRole rows={rows} onArrivalOverride={onArrivalOverride} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} onConfirmTail={onConfirmTail} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedDate={selectedDate} tailAircraftTypes={tailAircraftTypes} />;
+  return <SwapSheetByRole rows={rows} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />;
 }
 
-function SwapSheetByRole({ rows, onArrivalOverride }: { rows: CrewSwapRow[]; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void }) {
+function SwapSheetByRole({ rows, onArrivalOverride, onToggleConfirm }: { rows: CrewSwapRow[]; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void; onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void }) {
   const byArrival = (a: CrewSwapRow, b: CrewSwapRow) =>
     (a.arrival_time ?? "").localeCompare(b.arrival_time ?? "");
   const byDeparture = (a: CrewSwapRow, b: CrewSwapRow) =>
@@ -889,13 +926,13 @@ function SwapSheetByRole({ rows, onArrivalOverride }: { rows: CrewSwapRow[]; onA
         </thead>
         <tbody>
           <SectionHeader title="Oncoming Pilots — Pilot In-Command" count={oncomingPics.length} color="bg-green-50 text-green-700 border-t-2 border-green-300" />
-          {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
+          {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />)}
           <SectionHeader title="Oncoming Pilots — Second In-Command" count={oncomingSics.length} color="bg-green-50 text-green-600" />
-          {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
+          {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />)}
           <SectionHeader title="Offgoing Pilots — Pilot In-Command" count={offgoingPics.length} color="bg-red-50 text-red-700 border-t-2 border-red-300" />
-          {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
+          {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />)}
           <SectionHeader title="Offgoing Pilots — Second In-Command" count={offgoingSics.length} color="bg-red-50 text-red-600" />
-          {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
+          {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />)}
         </tbody>
       </table>
       {rows.length === 0 && (
@@ -907,7 +944,7 @@ function SwapSheetByRole({ rows, onArrivalOverride }: { rows: CrewSwapRow[]; onA
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -918,10 +955,12 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
   onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
+  onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void;
+  onConfirmTail?: (tail: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
-  selectedWed?: Date;
+  selectedDate?: Date;
   tailAircraftTypes?: Record<string, string>;
 }) {
   // Build checkairman type lookup for enhanced CA badges
@@ -982,8 +1021,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 
         // Check if ANY oncoming crew arrives AFTER aircraft departs THEIR swap point
         let crewArrivesLate = false;
-        if (flights && selectedWed) {
-          const wedStr = selectedWed.toISOString().slice(0, 10);
+        if (flights && selectedDate) {
+          const wedStr = selectedDate.toISOString().slice(0, 10);
           for (const onCrew of [onPic, onSic]) {
             if (!onCrew?.available_time) continue;
             const crewSwap = onCrew.swap_location ?? swapLoc;
@@ -1011,8 +1050,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 
         // Classify tail legs: REV (has revenue/charter), POS (only positioning), IDLE (no legs)
         const tailLegType: "rev" | "pos" | "idle" = (() => {
-          if (!flights || !selectedWed) return "idle";
-          const wedStr = selectedWed.toISOString().slice(0, 10);
+          if (!flights || !selectedDate) return "idle";
+          const wedStr = selectedDate.toISOString().slice(0, 10);
           const tailLegs = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
           if (tailLegs.length === 0) return "idle";
           const hasRev = tailLegs.some((f) => {
@@ -1087,8 +1126,26 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               )}
             </div>
           );
+          const crewIsUnsolved = row.travel_type === "none";
+          const crewIsConfirmed = !!row.confirmed;
           return (
-            <div className="flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50/50">
+            <div className={`flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50/50 ${!crewIsUnsolved && !crewIsConfirmed ? "opacity-70" : ""}`}
+              style={!crewIsUnsolved ? { borderLeft: `3px ${crewIsConfirmed ? "solid #22c55e" : "dashed #eab308"}` } : undefined}
+            >
+              {/* Confirm toggle */}
+              {!crewIsUnsolved && onToggleConfirm && (
+                <button
+                  onClick={() => onToggleConfirm(tail, role, direction)}
+                  className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] shrink-0 transition-colors ${
+                    crewIsConfirmed
+                      ? "bg-green-500 border-green-600 text-white"
+                      : "bg-white border-gray-300 text-transparent hover:border-yellow-400"
+                  }`}
+                  title={crewIsConfirmed ? "Confirmed — click to mark tentative" : "Tentative — click to confirm"}
+                >
+                  {crewIsConfirmed ? "\u2713" : ""}
+                </button>
+              )}
               <span className={`text-[10px] font-bold uppercase ${color} w-14 shrink-0`}>{label}</span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -1103,8 +1160,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     const availablePts = role === "PIC" ? allPts : allPts;
                     // Extract repo/positioning leg airports for manual override
                     const crewRepoAirports: string[] = [];
-                    if (flights && selectedWed) {
-                      const wedStr = selectedWed.toISOString().slice(0, 10);
+                    if (flights && selectedDate) {
+                      const wedStr = selectedDate.toISOString().slice(0, 10);
                       const tailFlights = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
                       const repoSet = new Set<string>();
                       for (const f of tailFlights) {
@@ -1294,8 +1351,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                   const allPts = [...new Set(onPic?.all_swap_points ?? onSic?.all_swap_points ?? offPic?.all_swap_points ?? [])];
                   // Extract repo/positioning leg airports for manual override
                   const repoAirports: string[] = [];
-                  if (flights && selectedWed) {
-                    const wedStr = selectedWed.toISOString().slice(0, 10);
+                  if (flights && selectedDate) {
+                    const wedStr = selectedDate.toISOString().slice(0, 10);
                     const tailFlights = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
                     const repoSet = new Set<string>();
                     for (const f of tailFlights) {
@@ -1379,6 +1436,31 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 {tailCost > 0 && (
                   <span className="text-xs text-gray-500">${tailCost.toLocaleString()}</span>
                 )}
+                {/* Per-tail confirm status + button */}
+                {(() => {
+                  const solvedRows = tailRows.filter(r => r.travel_type !== "none");
+                  const confirmedCount = solvedRows.filter(r => r.confirmed).length;
+                  const allConfirmed = solvedRows.length > 0 && confirmedCount === solvedRows.length;
+                  if (solvedRows.length === 0) return null;
+                  return (
+                    <>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        allConfirmed ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
+                      }`}>
+                        {confirmedCount}/{solvedRows.length} confirmed
+                      </span>
+                      {!allConfirmed && onConfirmTail && (
+                        <button
+                          onClick={() => onConfirmTail(tail)}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 font-medium"
+                          title="Confirm all crew on this tail"
+                        >
+                          Confirm Tail
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1446,8 +1528,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 
             {/* Wednesday flight legs for this tail */}
             {(() => {
-              if (!flights || !selectedWed) return null;
-              const wedStr = selectedWed.toISOString().slice(0, 10);
+              if (!flights || !selectedDate) return null;
+              const wedStr = selectedDate.toISOString().slice(0, 10);
               const tailFlights = flights
                 .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
                 .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
@@ -1556,8 +1638,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 
             {/* Repositioning warning: next leg departs from different airport than swap point */}
             {(() => {
-              if (!flights || !selectedWed) return null;
-              const wedStr = selectedWed.toISOString().slice(0, 10);
+              if (!flights || !selectedDate) return null;
+              const wedStr = selectedDate.toISOString().slice(0, 10);
               const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
               const tailLegs = flights
                 .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
@@ -1832,18 +1914,18 @@ function findBadPairing(
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function CrewSwap({ flights: parentFlights }: { flights: Flight[] }) {
-  const [selectedWed, setSelectedWed] = useState<Date>(getNextWednesday());
+  const [selectedDate, setSelectedDate] = useState<Date>(getNextWednesday());
   // Fetch flights covering the swap week (parent only has ±48hrs from today)
   const [swapWeekFlights, setSwapWeekFlights] = useState<Flight[]>([]);
   useEffect(() => {
     // Calculate hours from now to swap date + 1 day
-    const hoursAhead = Math.max(48, Math.ceil((selectedWed.getTime() + 86400_000 - Date.now()) / 3600_000));
-    const lookback = Math.max(48, Math.ceil((Date.now() - selectedWed.getTime() + 3 * 86400_000) / 3600_000));
+    const hoursAhead = Math.max(48, Math.ceil((selectedDate.getTime() + 86400_000 - Date.now()) / 3600_000));
+    const lookback = Math.max(48, Math.ceil((Date.now() - selectedDate.getTime() + 3 * 86400_000) / 3600_000));
     fetch(`/api/ops/flights?lookahead_hours=${hoursAhead}&lookback_hours=${lookback}`)
       .then((r) => r.ok ? r.json() : { flights: [] })
       .then((d) => setSwapWeekFlights(d.flights ?? []))
       .catch(() => {});
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   // Merge parent flights (today ±48hr) with swap week flights, dedup by id
   const flights = useMemo(() => {
@@ -1885,7 +1967,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Gap detection (new airports + missing cache pairs)
   const [gapAlerts, setGapAlerts] = useState<{ newAirports: { icao: string; iata: string; suggested: string | null; distance: number | null; flights: number }[]; missingPairs: number } | null>(null);
   useEffect(() => {
-    const wedStr = selectedWed.toISOString().slice(0, 10);
+    const wedStr = selectedDate.toISOString().slice(0, 10);
     fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -1896,7 +1978,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
       })
       .catch(() => {});
-  }, [selectedWed]);
+  }, [selectedDate]);
   // Excluded tails (MX, owner-flown, etc.)
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // ICS fleet (all tails from ics_sources)
@@ -1913,6 +1995,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [requiredPairings, setRequiredPairings] = useState<{ pic: string; sic: string; reason: string }[]>([]);
   const [pairingCrewFilter, setPairingCrewFilter] = useState("");
   const [batchPairingSics, setBatchPairingSics] = useState<Set<string>>(new Set());
+  // Coordinator constraints (force tail, force pair, force fleet)
+  const [swapConstraints, setSwapConstraints] = useState<SwapConstraint[]>([]);
 
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
@@ -2045,7 +2129,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         body: JSON.stringify({
           tail_number: tail,
           new_swap_point: newSwapPoint,
-          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_date: selectedDate.toISOString().slice(0, 10),
           crew_assignments: {
             oncoming_pic: onPic?.name ?? null,
             oncoming_sic: onSic?.name ?? null,
@@ -2138,7 +2222,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     }
 
     // Get first/last leg times for this tail on swap day
-    const swapDateStr = selectedWed.toISOString().slice(0, 10);
+    const swapDateStr = selectedDate.toISOString().slice(0, 10);
     const tailFlights = flights.filter((f) =>
       f.tail_number === tail &&
       f.scheduled_departure?.startsWith(swapDateStr)
@@ -2214,6 +2298,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           alt_flights: [],
           backup_flight: null,
           score: 0,
+          confirmed: false,
         };
 
         if (existing >= 0) {
@@ -2253,6 +2338,47 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     });
   }
 
+  // ─── Confirm/tentative toggles ──────────────────────────────────────────
+  /** Toggle a single row's confirmed status */
+  function toggleConfirmRow(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") {
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number === tail && r.role === role && r.direction === direction && r.travel_type !== "none") {
+          return { ...r, confirmed: !r.confirmed };
+        }
+        return r;
+      });
+      return { ...prev, rows: newRows };
+    });
+  }
+
+  /** Confirm all crew on a specific tail */
+  function confirmTail(tail: string) {
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number === tail && r.travel_type !== "none") {
+          return { ...r, confirmed: true };
+        }
+        return r;
+      });
+      return { ...prev, rows: newRows };
+    });
+  }
+
+  /** Confirm all rows that have transport (travel_type !== "none") */
+  function confirmAll() {
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.travel_type !== "none") return { ...r, confirmed: true };
+        return r;
+      });
+      return { ...prev, rows: newRows };
+    });
+  }
+
   // Plan persistence
   const [savedPlanMeta, setSavedPlanMeta] = useState<{ id: string; version: number; created_at: string } | null>(null);
   const [savingPlan, setSavingPlan] = useState(false);
@@ -2275,7 +2401,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         style: { overflow: "visible" },
       });
       const link = document.createElement("a");
-      link.download = `swap-plan-${selectedWed.toISOString().slice(0, 10)}.png`;
+      link.download = `swap-plan-${selectedDate.toISOString().slice(0, 10)}.png`;
       link.href = dataUrl;
       link.click();
     } catch (e) {
@@ -2444,7 +2570,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Swap Plan");
-    XLSX.writeFile(wb, `swap-plan-${selectedWed.toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(wb, `swap-plan-${selectedDate.toISOString().slice(0, 10)}.xlsx`);
   }
 
   const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(() => {
@@ -2482,7 +2608,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Fetch route computation status for the selected Wednesday
   const loadRouteStatus = useCallback(async () => {
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/routes?date=${dateStr}`);
       if (!res.ok) return;
       const data = await res.json();
@@ -2490,7 +2616,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     } catch {
       // ignore
     }
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   useEffect(() => {
     loadRouteStatus();
@@ -2499,13 +2625,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Load volunteer preferences for selected Wednesday
   const loadVolunteers = useCallback(async () => {
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/volunteers?swap_date=${dateStr}`);
       if (!res.ok) return;
       const data = await res.json();
       setVolunteers(data.volunteers ?? []);
     } catch { /* ignore */ }
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   useEffect(() => { loadVolunteers(); }, [loadVolunteers]);
 
@@ -2513,26 +2639,26 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const loadSwapPoints = useCallback(async () => {
     setLoadingSwapPoints(true);
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/swap-points?swap_date=${dateStr}`);
       if (!res.ok) return;
       const data = await res.json();
       setSwapPoints(data.tails ?? []);
     } catch { /* ignore */ }
     finally { setLoadingSwapPoints(false); }
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   // Load flight change alerts
   const loadAlerts = useCallback(async () => {
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/swap-alerts?swap_date=${dateStr}`);
       if (!res.ok) return;
       const data = await res.json();
       setSwapAlerts(data.alerts ?? []);
       setAlertCount(data.unacknowledged_count ?? 0);
     } catch { /* ignore */ }
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   useEffect(() => { loadAlerts(); }, [loadAlerts]);
 
@@ -2543,7 +2669,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const res = await fetch("/api/crew/volunteers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+        body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
       });
       if (res.ok) await loadVolunteers();
     } catch { /* ignore */ }
@@ -2579,12 +2705,18 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const loadSavedPlan = useCallback(async () => {
     setLoadingPlan(true);
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}`);
       if (!res.ok) return;
       const data = await res.json();
       if (data.plan) {
         const plan = data.plan as SavedPlan;
+        // Backfill confirmed field for old plans that don't have it
+        if (plan.plan_data?.rows) {
+          for (const row of plan.plan_data.rows) {
+            if (row.confirmed === undefined) row.confirmed = false;
+          }
+        }
         setSwapPlan(plan.plan_data);
         setSavedPlanMeta({ id: plan.id, version: plan.version, created_at: plan.created_at });
         if (plan.swap_assignments) {
@@ -2605,7 +2737,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       }
     } catch { /* ignore */ }
     finally { setLoadingPlan(false); }
-  }, [selectedWed]);
+  }, [selectedDate]);
 
   useEffect(() => { loadSavedPlan(); }, [loadSavedPlan]);
 
@@ -2618,8 +2750,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          swap_date: selectedWed.toISOString().slice(0, 10),
-          plan_data: swapPlan,
+          swap_date: selectedDate.toISOString().slice(0, 10),
+          plan_data: { ...swapPlan, constraints: swapConstraints.length > 0 ? swapConstraints : undefined },
           swap_assignments: swapAssignments,
           oncoming_pool: oncomingPool,
           strategy,
@@ -2650,7 +2782,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         const res = await fetch("/api/crew/swap-plan/impact", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+          body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -2743,7 +2875,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const prevAlertCountRef = useRef(0);
   useEffect(() => {
     if (activeTab !== "plan" && activeTab !== "impacts") return;
-    const swapDateStr = selectedWed.toISOString().slice(0, 10);
+    const swapDateStr = selectedDate.toISOString().slice(0, 10);
 
     const poll = async () => {
       try {
@@ -2771,12 +2903,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     const interval = setInterval(poll, 120_000); // 2 min
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, selectedWed, savedPlanMeta]);
+  }, [activeTab, selectedDate, savedPlanMeta]);
 
   // Load plan version history
   async function loadPlanHistory() {
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}&version=all`);
       if (!res.ok) return;
       const data = await res.json();
@@ -2786,7 +2918,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
 
   // Clear all plan versions for this swap date (testing only)
   async function clearAllVersions() {
-    const dateStr = selectedWed.toISOString().slice(0, 10);
+    const dateStr = selectedDate.toISOString().slice(0, 10);
     if (!confirm(`Delete ALL saved plans for ${dateStr}? This cannot be undone.`)) return;
     if (!confirm(`Are you absolutely sure? All versions will be permanently deleted.`)) return;
     try {
@@ -2807,12 +2939,18 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   async function loadVersion(versionId: string) {
     setLoadingVersion(true);
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}&version_id=${versionId}`);
       if (!res.ok) { addToast("error", "Failed to load version"); return; }
       const data = await res.json();
       if (data.plan?.plan_data) {
         const planData = data.plan.plan_data as SwapPlanResult;
+        // Backfill confirmed field for old plans
+        if (planData.rows) {
+          for (const row of planData.rows) {
+            if (row.confirmed === undefined) row.confirmed = false;
+          }
+        }
         setSwapPlan({ ...planData, ok: true });
         setSavedPlanMeta({
           id: data.plan.id,
@@ -2853,12 +2991,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_date: selectedDate.toISOString().slice(0, 10),
           swap_assignments: filteredAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
           strategy,
           lock_tails: lockTails,
           locked_rows: lockedRows,
+          constraints: swapConstraints.length > 0 ? swapConstraints : undefined,
         }),
       });
       const text = await res.text();
@@ -2898,7 +3037,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const res = await fetch("/api/crew/routes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+        body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
       });
       const data = await safeJson(res, "Route computation failed");
       if (res.ok) {
@@ -2913,12 +3052,44 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     }
   }
 
+  const [seedingFlights, setSeedingFlights] = useState(false);
+  async function seedFlights() {
+    setSeedingFlights(true);
+    try {
+      const res = await fetch("/api/crew/seed-flights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10), mode: "fill" }),
+      });
+      const data = await safeJson(res, "Flight seeding failed");
+      if (res.ok) {
+        // Refresh gap alerts after seeding
+        const wedStr = selectedDate.toISOString().slice(0, 10);
+        fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
+          .then((r) => r.json())
+          .then((d) => {
+            const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
+              icao: a.icao, iata: a.iata, suggested: a.suggested_alias_iata, distance: a.distance_miles, flights: a.appears_in_flights,
+            }));
+            setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
+          })
+          .catch(() => {});
+      } else {
+        setOptimizeError(data.error ?? "Flight seeding failed");
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Flight seeding failed");
+    } finally {
+      setSeedingFlights(false);
+    }
+  }
+
   // Auto-detect rotation from JetInsight flights
   async function detectRotation() {
     setDetectingRotation(true);
     setOptimizeError(null);
     try {
-      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const dateStr = selectedDate.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/detect-rotation?date=${dateStr}`);
       const data = await safeJson(res, "Rotation detection failed");
       if (!res.ok) {
@@ -3033,6 +3204,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           alt_flights: [],
           backup_flight: null,
           score: 100,
+          confirmed: false,
         });
       }
 
@@ -3053,7 +3225,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         const totalCost = freezeRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
         setSwapPlan({
           ok: true,
-          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_date: selectedDate.toISOString().slice(0, 10),
           rows: freezeRows,
           warnings: ["Plan loaded from FREEZE sheet — run Optimize to fill gaps"],
           routes_used: 0,
@@ -3082,7 +3254,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source: "google_sheets",
-          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_date: selectedDate.toISOString().slice(0, 10),
           week: selectedWeek || undefined,
         }),
       });
@@ -3142,7 +3314,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+      fd.append("swap_date", selectedDate.toISOString().slice(0, 10));
       const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
       if (res.ok) {
         const data = await res.json();
@@ -3175,7 +3347,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       // Use the sync endpoint as primary — handles CREW INFO workbook + legacy weekly sheets
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+      fd.append("swap_date", selectedDate.toISOString().slice(0, 10));
 
       const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
       const data = await safeJson(res, "Upload failed");
@@ -3244,13 +3416,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const sorted = [...tailFlights].sort(
         (a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime(),
       );
-      const wedFlights = sorted.filter((f) => isWednesday(f.scheduled_departure, selectedWed));
+      const wedFlights = sorted.filter((f) => isWednesday(f.scheduled_departure, selectedDate));
       const lastKnown = sorted.filter((f) => f.arrival_icao).pop()?.arrival_icao ?? null;
       schedules.push({ tail, wedFlights, lastKnown });
     }
 
     return schedules.sort((a, b) => a.tail.localeCompare(b.tail));
-  }, [flights, selectedWed]);
+  }, [flights, selectedDate]);
 
   // Run swap optimizer (uses pre-computed routes from pilot_routes table)
   async function runOptimizer() {
@@ -3272,13 +3444,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_date: selectedDate.toISOString().slice(0, 10),
           swap_assignments: filteredAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
           strategy,
           lock_tails: lockTailsArr,
           locked_rows: lockedRows,
           required_pairings: requiredPairings.length > 0 ? requiredPairings : undefined,
+          constraints: swapConstraints.length > 0 ? swapConstraints : undefined,
         }),
       });
       const text = await res.text();
@@ -3313,22 +3486,35 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   );
 
   function shiftWeek(delta: number) {
-    setSelectedWed((prev) => {
+    setSelectedDate((prev) => {
       const next = new Date(prev);
       next.setDate(prev.getDate() + delta * 7);
       return next;
     });
   }
 
+  function shiftDay(delta: number) {
+    setSelectedDate((prev) => {
+      const next = new Date(prev);
+      next.setDate(prev.getDate() + delta);
+      return next;
+    });
+  }
+
+  const isWednesdaySelected = selectedDate.getDay() === 3;
+
   return (
     <div className="space-y-4">
       {/* Header + Week Selector + Stepper */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-6">
           <div>
             <h2 className="text-lg font-bold text-gray-900">Crew Swap Planning</h2>
-            <p className="text-sm text-gray-500">
-              Wednesday swap day: {selectedWed.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+            <p className="text-sm text-gray-500 flex items-center gap-2">
+              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${isWednesdaySelected ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"}`}>
+                {isWednesdaySelected ? "Rotation Swap" : "Ad-hoc Move"}
+              </span>
+              {selectedDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
             </p>
           </div>
           <WorkflowStepper steps={[
@@ -3338,15 +3524,30 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             { label: "Save", done: !!savedPlanMeta },
           ]} />
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => shiftWeek(-1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50">
-            Prev Week
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => shiftWeek(-1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50" title="Previous Wednesday">
+            &laquo; Wk
           </button>
-          <button onClick={() => setSelectedWed(getNextWednesday())} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50">
-            Next Swap
+          <button onClick={() => shiftDay(-1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50" title="Previous day">
+            &larr;
           </button>
-          <button onClick={() => shiftWeek(1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50">
-            Next Week
+          <input
+            type="date"
+            value={selectedDate.toISOString().slice(0, 10)}
+            onChange={(e) => {
+              const d = new Date(e.target.value + "T00:00:00");
+              if (!isNaN(d.getTime())) setSelectedDate(d);
+            }}
+            className="px-2 py-1 text-sm font-medium border rounded-lg bg-white text-gray-700 hover:bg-gray-50 cursor-pointer"
+          />
+          <button onClick={() => shiftDay(1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50" title="Next day">
+            &rarr;
+          </button>
+          <button onClick={() => shiftWeek(1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50" title="Next Wednesday">
+            Wk &raquo;
+          </button>
+          <button onClick={() => setSelectedDate(getNextWednesday())} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50 bg-blue-50 text-blue-700" title="Jump to next Wednesday">
+            Next Wed
           </button>
         </div>
       </div>
@@ -3866,8 +4067,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             </div>
           )}
           {gapAlerts.missingPairs > 0 && (
-            <div className="text-xs text-amber-700">
-              <span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedWed.toISOString().slice(0, 10)}. Run &quot;Seed Flights&quot; to fill.
+            <div className="flex items-center gap-3 text-xs text-amber-700">
+              <span><span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedDate.toISOString().slice(0, 10)}.</span>
+              <button
+                onClick={seedFlights}
+                disabled={seedingFlights}
+                className={`px-3 py-1 rounded-md font-medium whitespace-nowrap ${
+                  seedingFlights ? "bg-gray-200 text-gray-400" : "bg-amber-600 text-white hover:bg-amber-700"
+                }`}
+              >
+                {seedingFlights ? "Seeding..." : "Seed Flights Now"}
+              </button>
             </div>
           )}
         </div>
@@ -4507,6 +4717,108 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         </div>
 
+        {/* Section 7: Coordinator Constraints */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">7. Constraints</h3>
+            <span className="text-[10px] text-gray-400">Lock crew to tail, pair crew, or lock to fleet type</span>
+          </div>
+          <div className="p-4 text-xs space-y-3">
+            {swapConstraints.length === 0 && (
+              <p className="text-gray-400 italic text-[11px]">No constraints set. Add one below to lock crew to a tail, pair two crew together, or restrict to a fleet type.</p>
+            )}
+            {swapConstraints.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {swapConstraints.map((c, i) => (
+                  <div key={i} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium border ${
+                    c.type === "force_tail" ? "bg-blue-50 border-blue-200 text-blue-800"
+                    : c.type === "force_pair" ? "bg-purple-50 border-purple-200 text-purple-800"
+                    : "bg-amber-50 border-amber-200 text-amber-800"
+                  }`}>
+                    {c.type === "force_tail" && (<><span className="font-bold">TAIL</span> {c.crew_name} &rarr; {c.tail}</>)}
+                    {c.type === "force_pair" && (<><span className="font-bold">PAIR</span> {c.crew_a} + {c.crew_b}</>)}
+                    {c.type === "force_fleet" && (<><span className="font-bold">FLEET</span> {c.crew_name} &rarr; {c.aircraft_type}</>)}
+                    {c.reason && <span className="text-gray-500">({c.reason})</span>}
+                    <button onClick={() => setSwapConstraints((prev) => prev.filter((_, j) => j !== i))}
+                      className="ml-1 text-red-400 hover:text-red-600 text-xs">&times;</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="border rounded p-3 bg-gray-50 space-y-2">
+              <div className="flex items-center gap-2">
+                <select id="constraint-type" className="text-xs border rounded px-2 py-1.5 bg-white" defaultValue="force_tail">
+                  <option value="force_tail">Lock to Tail</option>
+                  <option value="force_pair">Pair Crew</option>
+                  <option value="force_fleet">Lock to Fleet</option>
+                </select>
+                <input id="constraint-reason" type="text" placeholder="Reason (optional)"
+                  className="flex-1 text-xs border rounded px-2 py-1.5 bg-white placeholder-gray-400" />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500">Crew A / Crew</label>
+                  <select id="constraint-crew-a" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
+                    <option value="">Select crew...</option>
+                    {crew.filter((cr) => cr.active).sort((a, b) => a.name.localeCompare(b.name)).map((cr) => (
+                      <option key={cr.id} value={cr.name}>{cr.name} ({cr.role})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Crew B / Tail / Fleet</label>
+                  <select id="constraint-crew-b" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
+                    <option value="">Select...</option>
+                    {swapAssignments && Object.keys(swapAssignments).sort().map((t) => (
+                      <option key={`tail-${t}`} value={t}>{t}</option>
+                    ))}
+                    <option value="__fleet_citation_x">Fleet: Citation X</option>
+                    <option value="__fleet_challenger">Fleet: Challenger</option>
+                    {crew.filter((cr) => cr.active).sort((a, b) => a.name.localeCompare(b.name)).map((cr) => (
+                      <option key={`crew-${cr.id}`} value={`__crew_${cr.name}`}>{cr.name} ({cr.role})</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={() => {
+                      const typeEl = document.getElementById("constraint-type") as HTMLSelectElement;
+                      const crewAEl = document.getElementById("constraint-crew-a") as HTMLSelectElement;
+                      const crewBEl = document.getElementById("constraint-crew-b") as HTMLSelectElement;
+                      const reasonEl = document.getElementById("constraint-reason") as HTMLInputElement;
+                      const cType = typeEl?.value as "force_tail" | "force_pair" | "force_fleet";
+                      const crewA = crewAEl?.value;
+                      const crewBRaw = crewBEl?.value;
+                      const reason = reasonEl?.value?.trim() || undefined;
+                      if (!crewA || !crewBRaw) return;
+                      let newConstraint: SwapConstraint | null = null;
+                      if (cType === "force_tail") {
+                        if (crewBRaw.startsWith("__")) return;
+                        newConstraint = { type: "force_tail", crew_name: crewA, tail: crewBRaw, reason };
+                      } else if (cType === "force_pair") {
+                        if (!crewBRaw.startsWith("__crew_")) return;
+                        newConstraint = { type: "force_pair", crew_a: crewA, crew_b: crewBRaw.replace("__crew_", ""), reason };
+                      } else if (cType === "force_fleet") {
+                        if (!crewBRaw.startsWith("__fleet_")) return;
+                        newConstraint = { type: "force_fleet", crew_name: crewA, aircraft_type: crewBRaw.replace("__fleet_", ""), reason };
+                      }
+                      if (newConstraint) {
+                        setSwapConstraints((prev) => [...prev, newConstraint]);
+                        crewAEl.value = "";
+                        crewBEl.value = "";
+                        reasonEl.value = "";
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium rounded bg-blue-100 text-blue-700 hover:bg-blue-200 w-full"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Ready to optimize */}
         <div className={`rounded-lg border-2 p-4 text-center ${
           Object.values(reviewChecks).every(Boolean) ? "border-green-300 bg-green-50" : "border-amber-300 bg-amber-50"
@@ -4524,7 +4836,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 : "bg-gray-200 text-gray-600 hover:bg-gray-300"
             }`}
           >
-            Go to Plan Tab →
+            Go to Plan Tab &rarr;
           </button>
         </div>
       </div>
@@ -4537,7 +4849,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {/* Swap Optimizer */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
         {/* Sticky toolbar */}
-        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b shadow-sm px-4 py-3 flex items-center justify-between">
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b shadow-sm px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
               Swap Optimizer
@@ -4615,10 +4927,21 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               onClick={computeRoutes}
               disabled={computingRoutes || optimizing}
               className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-gray-50 text-gray-700 hover:bg-gray-100 border-gray-200"
               }`}
+              title="Compute drive times for all crew-to-swap routes"
             >
-              {computingRoutes ? "Seeding Flights..." : "Seed Flights"}
+              {computingRoutes ? "Computing..." : "Compute Routes"}
+            </button>
+            <button
+              onClick={seedFlights}
+              disabled={seedingFlights || optimizing}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+              }`}
+              title="Seed commercial flight cache from Google Flights via HasData"
+            >
+              {seedingFlights ? "Seeding Flights..." : "Seed Flights"}
             </button>
             <button
               onClick={() => runOptimizer()}
@@ -4673,6 +4996,21 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 >
                   {savingPlan ? "Saving..." : savedPlanMeta ? `Update Plan (v${savedPlanMeta.version + 1})` : "Save Plan"}
                 </button>
+                {/* Confirm All button */}
+                {(() => {
+                  const solvedRows = swapPlan.rows.filter(r => r.travel_type !== "none");
+                  const tentativeCount = solvedRows.filter(r => !r.confirmed).length;
+                  if (tentativeCount === 0) return null;
+                  return (
+                    <button
+                      onClick={confirmAll}
+                      className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
+                      title={`Confirm all ${tentativeCount} tentative crew`}
+                    >
+                      Confirm All ({tentativeCount})
+                    </button>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -4711,6 +5049,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     {swapPlan.unsolved_count} unsolved
                   </span>
                 )}
+                {/* Confirmed / tentative summary */}
+                {(() => {
+                  const solvedRows = swapPlan.rows.filter(r => r.travel_type !== "none");
+                  const confirmedCount = solvedRows.filter(r => r.confirmed).length;
+                  const tentativeCount = solvedRows.length - confirmedCount;
+                  if (solvedRows.length === 0) return null;
+                  return (
+                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                      tentativeCount === 0 ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
+                    }`}>
+                      {confirmedCount} confirmed / {tentativeCount} tentative
+                    </span>
+                  );
+                })()}
                 {swapPlan.routes_used > 0 && (
                   <span className="text-green-500 text-xs">
                     ({swapPlan.routes_used} cached routes used)
@@ -4962,7 +5314,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   const sp = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "";
                   if (sp) handleSwapPointChange(tail, sp);
                 }}
-                swapDate={selectedWed.toISOString().slice(0, 10)}
+                swapDate={selectedDate.toISOString().slice(0, 10)}
                 standbyPics={swapPlan.crew_assignment?.standby?.pic ?? []}
                 standbySics={swapPlan.crew_assignment?.standby?.sic ?? []}
                 tailAircraftTypes={tailAircraftTypes}
@@ -4971,8 +5323,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
                 lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
                 onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange} onArrivalOverride={handleArrivalOverride}
+                onToggleConfirm={toggleConfirmRow} onConfirmTail={confirmTail}
                 badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
-                flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />
+                flights={flights} selectedDate={selectedDate} tailAircraftTypes={tailAircraftTypes} />
             )}
           </div>
         )}
@@ -4982,14 +5335,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             {loadingPlan ? "Loading saved plan..." : (
               routeStatus && routeStatus.total_routes > 0
                 ? `${routeStatus.total_routes.toLocaleString()} flight options cached. Click Optimize to run.`
-                : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+                : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
             )}
           </div>
         )}
       </div>
 
       {/* FBO → Commercial Airport Reference */}
-      <AirportAliasPanel flights={flights} selectedWed={selectedWed} />
+      <AirportAliasPanel flights={flights} selectedDate={selectedDate} />
 
       {/* Aircraft Schedule (collapsible) */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
@@ -5167,7 +5520,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           crewRole={selectedCrewSlot.role}
           homeAirports={selectedCrewSlot.homeAirports}
           destinationIcao={selectedCrewSlot.swapLocation}
-          swapDate={selectedWed.toISOString().slice(0, 10)}
+          swapDate={selectedDate.toISOString().slice(0, 10)}
           direction={selectedCrewSlot.direction}
           tailNumber={selectedCrewSlot.tailNumber}
           firstLegDep={selectedCrewSlot.firstLegDep}

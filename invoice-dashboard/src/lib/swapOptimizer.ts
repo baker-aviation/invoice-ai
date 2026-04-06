@@ -36,6 +36,7 @@ import {
   EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
   RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS, HANDOFF_BUFFER_MINUTES,
   TEB_PENALTY_AIRPORTS, TEB_OFFGOING_PENALTY, TEB_ONCOMING_PENALTY,
+  GROUND_ONLY_CUTOFF_HOUR,
 } from "./swapRules";
 
 // ─── Train routes (Amtrak NEC + Brightline) ──────────────────────────────────
@@ -193,6 +194,8 @@ export type CrewSwapRow = {
   alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
   backup_flight: string | null;
   score: number;
+  /** false = tentative/standby, true = confirmed/book it. Defaults to false for new plans. */
+  confirmed: boolean;
 };
 
 export type SwapPointScore = {
@@ -244,6 +247,12 @@ export type SwapPlanResult = {
     }[];
   };
 };
+
+/** Pre-optimizer constraints set by coordinator (forced crew→tail, pair, fleet) */
+export type SwapConstraint =
+  | { type: "force_tail"; crew_name: string; tail: string; reason?: string }
+  | { type: "force_pair"; crew_a: string; crew_b: string; reason?: string }
+  | { type: "force_fleet"; crew_name: string; aircraft_type: string; reason?: string };
 
 export type TwoPassStats = {
   pass1_solved: number;
@@ -634,7 +643,7 @@ function buildCandidates(
     const depLocalHour = parseFloat(
       new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
     );
-    if (depLocalHour < 8) {
+    if (depLocalHour < GROUND_ONLY_CUTOFF_HOUR) {
       groundOnlySwap = true;
     }
   }
@@ -2114,8 +2123,8 @@ export function buildSwapPlan(params: {
           );
           // Heavy penalty (not hard reject) for early departures — commercial flights
           // can't make it but ground transport (uber/rental) still can. The per-candidate
-          // filter in buildCandidates rejects commercial when < 8am.
-          if (depLocalHour < 8) {
+          // filter in buildCandidates rejects commercial when < GROUND_ONLY_CUTOFF_HOUR.
+          if (depLocalHour < GROUND_ONLY_CUTOFF_HOUR) {
             // Only ground transport viable — heavy penalty but not impossible
             timingPenalty += 100;
           } else if (depLocalHour < 10) {
@@ -2552,6 +2561,7 @@ export function buildSwapPlan(params: {
       alt_flights: altFlights,
       backup_flight: backupStr,
       score: best?.score ?? 0,
+      confirmed: false,
     };
   });
 
@@ -3307,13 +3317,14 @@ export function assignOncomingCrew(params: {
   excludeTails?: Set<string>;
   offgoingDeadlines?: OncomingDeadline[];
   relaxation?: boolean;
+  constraints?: SwapConstraint[];
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
   rejections: FeasibilityRejection[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation, constraints } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
   const allRejections: FeasibilityRejection[] = [];
@@ -3356,8 +3367,51 @@ export function assignOncomingCrew(params: {
     }
   }
 
+  // ── Apply constraints: pre-fill forced assignments BEFORE bipartite matching ──
+  const forcedPicNames = new Set<string>();
+  const forcedSicNames = new Set<string>();
+  const forceFleetFilter = new Map<string, string>(); // crew_name → aircraft_type
+  const forcePairs: { crew_a: string; crew_b: string; reason?: string }[] = [];
+
+  if (constraints && constraints.length > 0) {
+    for (const c of constraints) {
+      if (c.type === "force_tail") {
+        const crewMember = crewRoster.find((cr) => cr.name === c.crew_name);
+        if (!crewMember) {
+          console.log(`[Constraint] force_tail: crew "${c.crew_name}" not found in roster — skipping`);
+          continue;
+        }
+        if (!result[c.tail]) {
+          console.log(`[Constraint] force_tail: tail "${c.tail}" not in swap assignments — skipping`);
+          continue;
+        }
+        const field: "oncoming_pic" | "oncoming_sic" = crewMember.role === "PIC" ? "oncoming_pic" : "oncoming_sic";
+        // Clear any existing assignment for this crew from other tails
+        for (const [tail, sa] of Object.entries(result)) {
+          if (sa[field] === c.crew_name && tail !== c.tail) sa[field] = null;
+        }
+        result[c.tail][field] = c.crew_name;
+        if (crewMember.role === "PIC") forcedPicNames.add(c.crew_name);
+        else forcedSicNames.add(c.crew_name);
+        const reason = `FORCED to ${c.tail}${c.reason ? ` (${c.reason})` : ""}`;
+        details.push({ name: c.crew_name, tail: c.tail, cost: 0, reason });
+        console.log(`[Constraint] force_tail: ${crewMember.role} "${c.crew_name}" → ${c.tail}${c.reason ? ` (${c.reason})` : ""}`);
+      } else if (c.type === "force_fleet") {
+        forceFleetFilter.set(c.crew_name, c.aircraft_type);
+        console.log(`[Constraint] force_fleet: "${c.crew_name}" locked to ${c.aircraft_type}${c.reason ? ` (${c.reason})` : ""}`);
+      } else if (c.type === "force_pair") {
+        forcePairs.push({ crew_a: c.crew_a, crew_b: c.crew_b, reason: c.reason });
+        console.log(`[Constraint] force_pair: "${c.crew_a}" + "${c.crew_b}"${c.reason ? ` (${c.reason})` : ""}`);
+      }
+    }
+  }
+
+  // Filter pools to exclude force_tail crew (already assigned)
+  const filteredPicPool = oncomingPool.pic.filter((p) => !forcedPicNames.has(p.name));
+  const filteredSicPool = oncomingPool.sic.filter((p) => !forcedSicNames.has(p.name));
+
   // Assign PICs then SICs using feasibility matrix
-  const picRejections = assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation);
+  const picRejections = assignRoleWithMatrix("oncoming_pic", filteredPicPool, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation, undefined, forceFleetFilter);
   allRejections.push(...picRejections);
 
   // PIC swap point fallback: if any PIC tails are unsolved (no viable crew at the
@@ -3370,13 +3424,43 @@ export function assignOncomingCrew(params: {
   if (unsolvedPicTails.length > 0) {
     console.log(`[SwapPointFallback] ${unsolvedPicTails.length} PIC tails unsolved — retrying with ALL swap points: ${unsolvedPicTails.join(", ")}`);
     const fallbackRejections = assignRoleWithMatrix(
-      "oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases,
+      "oncoming_pic", filteredPicPool, "PIC", result, byTail, swapDate, aliases,
       commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes,
       preComputedOffgoing, new Set([...Object.keys(result).filter(t => result[t].oncoming_pic), ...(excludeTails ?? [])]),
       offgoingDeadlines, undefined, relaxation, true,  // swapPointFallback = true
+      forceFleetFilter,
     );
     allRejections.push(...fallbackRejections);
   }
+
+  // ── Apply force_pair constraints: lock paired crew onto the same tail ──
+  // After PIC assignment, if crew_a (PIC) is assigned, force crew_b (SIC) to same tail.
+  // Also handles the reverse: if crew_b is a PIC, force crew_a (SIC) to their tail.
+  for (const pair of forcePairs) {
+    // Find which one is assigned as PIC
+    let picTail: string | null = null;
+    let sicName: string | null = null;
+    for (const [tail, sa] of Object.entries(result)) {
+      if (sa.oncoming_pic === pair.crew_a) { picTail = tail; sicName = pair.crew_b; break; }
+      if (sa.oncoming_pic === pair.crew_b) { picTail = tail; sicName = pair.crew_a; break; }
+    }
+    if (!picTail || !sicName) {
+      console.log(`[Constraint] force_pair: neither "${pair.crew_a}" nor "${pair.crew_b}" assigned as PIC — skipping`);
+      continue;
+    }
+    // Remove SIC from wherever they're currently assigned
+    for (const [, sa] of Object.entries(result)) {
+      if (sa.oncoming_sic === sicName) sa.oncoming_sic = null;
+    }
+    result[picTail].oncoming_sic = sicName;
+    forcedSicNames.add(sicName);
+    const reason = `FORCED pair with ${result[picTail].oncoming_pic}${pair.reason ? ` (${pair.reason})` : ""}`;
+    details.push({ name: sicName, tail: picTail, cost: 0, reason });
+    console.log(`[Constraint] force_pair: SIC "${sicName}" → ${picTail} with PIC "${result[picTail].oncoming_pic}"${pair.reason ? ` (${pair.reason})` : ""}`);
+  }
+
+  // Re-filter SIC pool after force_pair (may have added to forcedSicNames)
+  const finalSicPool = filteredSicPool.filter((p) => !forcedSicNames.has(p.name));
 
   // Build PIC swap point map for SIC same-swap-point preference
   const picSwapPoints = new Map<string, string>();
@@ -3384,7 +3468,7 @@ export function assignOncomingCrew(params: {
     if (sa.oncoming_pic_swap_icao) picSwapPoints.set(tail, sa.oncoming_pic_swap_icao);
   }
 
-  const sicRejections = assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints, relaxation);
+  const sicRejections = assignRoleWithMatrix("oncoming_sic", finalSicPool, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints, relaxation, undefined, forceFleetFilter);
   allRejections.push(...sicRejections);
 
   // Remaining pool → standby
@@ -3436,12 +3520,13 @@ export function twoPassAssignAndOptimize(params: {
   preComputedOffgoing?: Map<string, PilotRoute[]>;
   excludeTails?: Set<string>;
   offgoingDeadlines?: OncomingDeadline[];
+  constraints?: SwapConstraint[];
 }): {
   result: SwapPlanResult;
   assignmentResult: ReturnType<typeof assignOncomingCrew>;
   twoPassStats: TwoPassStats;
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, constraints } = params;
 
   // ── Pass 1: Use FULL pool (volunteers included) ──────────────────────
   // Previously excluded early/late volunteers from Pass 1 to save bonuses,
@@ -3462,6 +3547,7 @@ export function twoPassAssignAndOptimize(params: {
     preComputedOffgoing,
     excludeTails,
     offgoingDeadlines,
+    constraints,
   });
 
   const pass1Result = buildSwapPlan({
@@ -3907,6 +3993,7 @@ function assignRoleWithMatrix(
   picSwapPoints?: Map<string, string>,
   relaxation?: boolean,
   swapPointFallback?: boolean,  // when true, PIC tries ALL swap points (not just best)
+  forceFleetFilter?: Map<string, string>,  // crew_name → aircraft_type (from force_fleet constraints)
 ): FeasibilityRejection[] {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return [];
@@ -3932,6 +4019,22 @@ function assignRoleWithMatrix(
 
   // Only consider viable options (where real transport exists)
   let viableOptions = matrix.filter((m) => m.viable);
+
+  // ── Apply force_fleet constraints: set rank = Infinity for non-matching tails ──
+  if (forceFleetFilter && forceFleetFilter.size > 0) {
+    for (const opt of viableOptions) {
+      const requiredType = forceFleetFilter.get(opt.crewName);
+      if (!requiredType) continue;
+      const tailType = tailAircraftType.get(opt.tail) ?? "unknown";
+      if (tailType !== "unknown" && tailType !== requiredType && requiredType !== "dual") {
+        opt.rank = Infinity;
+        opt.viable = false;
+        console.log(`[Constraint] force_fleet: ${opt.crewName} rejected for ${opt.tail} (tail=${tailType}, required=${requiredType})`);
+      }
+    }
+    // Re-filter after force_fleet
+    viableOptions = viableOptions.filter((m) => m.viable);
+  }
 
   // ── Grade-based pairing enforcement (sum >= 4) ─────────────────────────
   // When assigning SICs, penalize (don't block) pairings where PIC + SIC grade < 4.

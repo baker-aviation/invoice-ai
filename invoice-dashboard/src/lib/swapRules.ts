@@ -53,6 +53,10 @@ export const EARLIEST_DUTY_ON_HOUR = 4; // 0400L
 
 // ─── Ground Transport Thresholds ─────────────────────────────────────────────
 
+/** Aircraft departures before this local hour are ground-transport-only (no commercial flights).
+ *  Set to 6 so that 6-8 AM departures can still consider red-eye arrivals. */
+export const GROUND_ONLY_CUTOFF_HOUR = 6;
+
 /** Drive under this = Uber, no duty day adjustment for local crew */
 export const UBER_MAX_MINUTES = 60;
 

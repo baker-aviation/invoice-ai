@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool, type SwapConstraint } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import type { PilotRoute } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
@@ -22,6 +22,11 @@ const OptimizeRequestSchema = z.object({
     sic: z.string(),
     reason: z.string(),
   })).optional(),
+  constraints: z.array(z.discriminatedUnion("type", [
+    z.object({ type: z.literal("force_tail"), crew_name: z.string(), tail: z.string(), reason: z.string().optional() }),
+    z.object({ type: z.literal("force_pair"), crew_a: z.string(), crew_b: z.string(), reason: z.string().optional() }),
+    z.object({ type: z.literal("force_fleet"), crew_name: z.string(), aircraft_type: z.string(), reason: z.string().optional() }),
+  ])).optional(),
 }).strip();
 
 export const dynamic = "force-dynamic";
@@ -64,6 +69,7 @@ export async function POST(req: NextRequest) {
   const clientOncomingPool = parsed.data.oncoming_pool as OncomingPool | undefined;
   const lockTails = parsed.data.lock_tails as string[] | undefined;
   const requiredPairings = parsed.data.required_pairings as { pic: string; sic: string; reason: string }[] | undefined;
+  const swapConstraints = parsed.data.constraints as SwapConstraint[] | undefined;
   const lockedRows = parsed.data.locked_rows as unknown[] | undefined;
   const lockTailSet = lockTails ? new Set(lockTails) : null;
 
@@ -363,6 +369,7 @@ export async function POST(req: NextRequest) {
       preComputedOffgoing: false ? crewOffgoingMap : undefined,
       excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
+      constraints: swapConstraints,
     });
     assignmentResult = twoPass.assignmentResult;
     swapAssignments = twoPass.assignmentResult.assignments;
@@ -406,6 +413,7 @@ export async function POST(req: NextRequest) {
         preComputedOffgoing: false ? crewOffgoingMap : undefined,
         excludeTails: unsolvableTails,
         offgoingDeadlines: offgoingFirstResult?.deadlines,
+        constraints: swapConstraints,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
