@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { FIXED_VAN_ZONES } from "@/lib/maintenanceData";
 import { fetchMxNotes } from "@/lib/opsApi";
+import { buildFboHoursMap } from "@/lib/fboHours";
 import { notFound } from "next/navigation";
 import VanDriverClient from "./VanDriverClient";
 
@@ -92,6 +93,9 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
     }
   }
 
+  // Build FBO hours lookup (matches fboMap entries against fbo_handling_fees hours data)
+  const fboHoursMap = await buildFboHoursMap(fboMap);
+
   return (
     <VanDriverClient
       vanId={vanId}
@@ -102,6 +106,7 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       syntheticFlights={syntheticFlights}
       mxNotes={mxNotes}
       fboMap={fboMap}
+      fboHoursMap={fboHoursMap}
       airportOverrides={airportOverrides}
       flightOverrides={flightOverrides}
       removals={removals}

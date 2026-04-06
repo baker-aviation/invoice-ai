@@ -10,6 +10,8 @@ export type VanSlackItem = {
   tail: string;
   airport: string;       // "BCT"
   fbo?: string | null;   // "Atlantic Aviation"
+  fboHours?: string | null;  // "06:00 - 22:00"
+  fboClosed?: boolean;       // true if FBO closed at arrival time
   arrivalTime: string;   // "14:30 ET"
   status: string;        // "Scheduled" | "~Landed" | "En Route" | "DIVERTED"
   nextDep?: string;      // "Flying again 18:00 ET → VNY"
@@ -82,6 +84,8 @@ export function buildAircraftDetailBlocks(item: VanSlackItem) {
   let body = `*${item.tail}* → ${airport}${fboLabel}\n`;
   body += `Arrival: ${item.arrivalTime}`;
   if (item.status !== "Scheduled") body += ` _(${item.status})_`;
+  if (item.fboClosed) body += `\n:rotating_light: *FBO CLOSED at arrival* — hours: ${item.fboHours ?? "unknown"}`;
+  else if (item.fboHours && !/24/i.test(item.fboHours)) body += `\nFBO Hours: ${item.fboHours}`;
   if (item.driveTime) body += `\nDrive: ${item.driveTime}`;
   if (item.turnStatus) body += `\nTurn: ${item.turnStatus}`;
   if (item.nextDep) body += `\n↳ _${item.nextDep}_`;

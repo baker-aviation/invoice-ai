@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlightsLite, fetchMxNotes, fetchMelItems, fetchAircraftTags } from "@/lib/opsApi";
+import { buildFboHoursMap } from "@/lib/fboHours";
 import VanPositioningClient from "./VanPositioningWrapper";
 
 export default async function MaintenancePage() {
@@ -25,6 +26,9 @@ export default async function MaintenancePage() {
     }
   }
 
+  // Build FBO hours lookup (matches fboMap entries against scraped hours data)
+  const fboHoursMap = await buildFboHoursMap(fboMap);
+
   return (
     <>
       <Topbar title="AOG Van Action Plan" />
@@ -33,7 +37,7 @@ export default async function MaintenancePage() {
         <p className="text-sm text-gray-500">
           5-day aircraft positioning from JetInsight · AOG vans · live tracking via Samsara · Priority: overnight service
         </p>
-        <VanPositioningClient initialFlights={flightData.flights} mxNotes={mxNotes} melItems={melItems} aircraftTags={aircraftTags} fboMap={fboMap} />
+        <VanPositioningClient initialFlights={flightData.flights} mxNotes={mxNotes} melItems={melItems} aircraftTags={aircraftTags} fboMap={fboMap} fboHoursMap={fboHoursMap} />
       </div>
     </>
   );

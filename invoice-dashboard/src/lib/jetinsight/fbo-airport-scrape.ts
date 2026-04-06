@@ -264,8 +264,9 @@ export async function scrapeFboAirports(
     cookie?: string;
     dryRun?: boolean;
     limit?: number;
+    offset?: number;
   } = {},
-): Promise<{ results: AirportScrapeResult[]; totalFbos: number; errors: string[] }> {
+): Promise<{ results: AirportScrapeResult[]; totalFbos: number; totalAirports: number; errors: string[] }> {
   const supa = createServiceClient();
 
   let cookie = options.cookie;
@@ -297,6 +298,10 @@ export async function scrapeFboAirports(
     airportCodes = [...codes].sort();
   }
 
+  const totalAirports = airportCodes.length;
+  if (options.offset) {
+    airportCodes = airportCodes.slice(options.offset);
+  }
   if (options.limit) {
     airportCodes = airportCodes.slice(0, options.limit);
   }
@@ -327,6 +332,7 @@ export async function scrapeFboAirports(
               continue; // Skip PRIVATE FBOs with no fee data
             }
 
+            const is24hr = /24\s*h|24\/7|always\s*open/i.test(fbo.hours);
             await supa.from("fbo_handling_fees").upsert(
               {
                 airport_code: faa,
@@ -340,6 +346,9 @@ export async function scrapeFboAirports(
                 overnight_fee: fbo.overnight_fee,
                 parking_info: fbo.parking_info || null,
                 jet_a_price: fbo.jet_a_price,
+                hours: fbo.hours || null,
+                phone: fbo.phone || null,
+                is_24hr: is24hr,
                 source: "jetinsight-scrape",
               },
               { onConflict: "airport_code,fbo_name,aircraft_type" },
@@ -361,5 +370,5 @@ export async function scrapeFboAirports(
     }
   }
 
-  return { results, totalFbos, errors };
+  return { results, totalFbos, totalAirports, errors };
 }

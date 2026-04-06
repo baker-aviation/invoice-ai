@@ -223,11 +223,30 @@ const AIRPORTS_24_7 = new Set([
 
 // ─── Baker PPR airports (fetched from database) ─────────────────────────────
 
-function isAfterHours(utcIso: string | null, icao: string | null): boolean {
+function isAfterHours(utcIso: string | null, icao: string | null, fboHours?: Record<string, FboHoursEntry>): boolean {
   if (!utcIso) return false;
-  if (icao && AIRPORTS_24_7.has(icao)) return false; // 24/7 airport — never after-hours
+
+  // Check real FBO hours data first
+  const fboEntry = icao ? fboHours?.[icao] : null;
+  if (fboEntry) {
+    if (fboEntry.is24hr) return false;
+    if (fboEntry.openMinutes != null && fboEntry.closeMinutes != null) {
+      const tz = AIRPORT_TZ[icao ?? ""] ?? "America/Chicago";
+      const d = new Date(utcIso);
+      const localStr = d.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: tz });
+      const [h, m] = localStr.split(":").map(Number);
+      const minuteOfDay = h * 60 + m;
+      if (fboEntry.closeMinutes <= fboEntry.openMinutes) {
+        return !(minuteOfDay >= fboEntry.openMinutes || minuteOfDay < fboEntry.closeMinutes);
+      }
+      return minuteOfDay < fboEntry.openMinutes || minuteOfDay >= fboEntry.closeMinutes;
+    }
+  }
+
+  // Fallback: hardcoded 24/7 list + default 7 AM – 8 PM
+  if (icao && AIRPORTS_24_7.has(icao)) return false;
   const hour = getLocalHour(utcIso, icao);
-  return hour >= 20 || hour < 7; // 8 PM – 7 AM local
+  return hour >= 20 || hour < 7;
 }
 
 // ─── Flight type badge colors (matching JetInsight categories) ───────────────
@@ -959,7 +978,9 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ bakerPprAirports }: { bakerPprAirports: string[] }) {
+type FboHoursEntry = { is24hr: boolean; openMinutes: number | null; closeMinutes: number | null; hours: string };
+
+export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { bakerPprAirports: string[]; fboHoursMap?: Record<string, FboHoursEntry> }) {
   const now = useMemo(() => new Date(), []);
   const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
 
@@ -1271,28 +1292,32 @@ export default function OpsBoard({ bakerPprAirports }: { bakerPprAirports: strin
       }
 
       // Check after-hours departure (8 PM – 7 AM local at departure airport)
-      if (isAfterHours(f.scheduled_departure, f.departure_icao)) {
+      if (isAfterHours(f.scheduled_departure, f.departure_icao, fboHoursMap)) {
         const localTime = getLocalTimeStr(f.scheduled_departure, f.departure_icao);
+        const fboEntry = fboHoursMap[f.departure_icao ?? ""];
+        const hoursLabel = fboEntry && !fboEntry.is24hr && fboEntry.hours ? ` (FBO hours: ${fboEntry.hours})` : " — outside 7 AM – 8 PM";
         alerts.push({
           key: `afterhours-dep-${f.id}`,
           flightId: f.id,
           type: "AFTER_HOURS",
           label: "LATE",
           severity: "warning",
-          message: `Departing ${f.departure_icao ?? "????"} at ${localTime} local — outside 7 AM – 8 PM`,
+          message: `Departing ${f.departure_icao ?? "????"} at ${localTime} local${hoursLabel}`,
         });
       }
 
-      // Check after-hours arrival (8 PM – 7 AM local at arrival airport)
-      if (isAfterHours(f.scheduled_arrival, f.arrival_icao)) {
+      // Check after-hours arrival
+      if (isAfterHours(f.scheduled_arrival, f.arrival_icao, fboHoursMap)) {
         const localTime = getLocalTimeStr(f.scheduled_arrival!, f.arrival_icao);
+        const fboEntry = fboHoursMap[f.arrival_icao ?? ""];
+        const hoursLabel = fboEntry && !fboEntry.is24hr && fboEntry.hours ? ` (FBO hours: ${fboEntry.hours})` : " — outside 7 AM – 8 PM";
         alerts.push({
           key: `afterhours-arr-${f.id}`,
           flightId: f.id,
           type: "AFTER_HOURS",
           label: "LATE",
           severity: "warning",
-          message: `Landing ${f.arrival_icao ?? "????"} at ${localTime} local — outside 7 AM – 8 PM`,
+          message: `Landing ${f.arrival_icao ?? "????"} at ${localTime} local${hoursLabel}`,
         });
       }
 
@@ -1387,8 +1412,8 @@ export default function OpsBoard({ bakerPprAirports }: { bakerPprAirports: strin
     // After-hours filter (departure or arrival between 8 PM – 7 AM local, excl. 24/7 airports)
     if (activeFilter === "LATE") {
       return timeFiltered.filter((f) =>
-        isAfterHours(f.scheduled_departure, f.departure_icao) ||
-        isAfterHours(f.scheduled_arrival, f.arrival_icao)
+        isAfterHours(f.scheduled_departure, f.departure_icao, fboHoursMap) ||
+        isAfterHours(f.scheduled_arrival, f.arrival_icao, fboHoursMap)
       );
     }
 

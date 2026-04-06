@@ -281,6 +281,7 @@ export default function VanDriverClient({
   syntheticFlights,
   mxNotes,
   fboMap,
+  fboHoursMap,
   airportOverrides,
   flightOverrides,
   removals,
@@ -294,6 +295,7 @@ export default function VanDriverClient({
   syntheticFlights?: { id: string; tail: string; airport: string | null }[];
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
+  fboHoursMap?: Record<string, { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null }>;
   airportOverrides?: [string, string][];
   flightOverrides?: [string, number][];
   removals?: string[];
@@ -304,6 +306,12 @@ export default function VanDriverClient({
     if (!fboMap || !f.tail_number || !f.arrival_icao) return null;
     return fboMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
   }, [fboMap]);
+
+  /** Look up FBO hours info for a flight */
+  const lookupFboHours = useCallback((f: Flight): { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null } | null => {
+    if (!fboHoursMap || !f.tail_number || !f.arrival_icao) return null;
+    return fboHoursMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
+  }, [fboHoursMap]);
 
   const date = todayEtDate();
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
@@ -686,6 +694,7 @@ export default function VanDriverClient({
               dismissedMxIds={dismissedMxIds}
               onDismissMx={dismissMxNote}
               fbo={lookupFbo(item.arrFlight)}
+              fboHours={lookupFboHours(item.arrFlight)}
             />
           ))}
         </div>
@@ -841,6 +850,7 @@ function StopCard({
   dismissedMxIds,
   onDismissMx,
   fbo,
+  fboHours,
 }: {
   item: VanFlightItem;
   index: number;
@@ -851,6 +861,7 @@ function StopCard({
   dismissedMxIds: Set<string>;
   onDismissMx: (id: string) => void;
   fbo: string | null;
+  fboHours: { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null } | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const tail = item.arrFlight.tail_number ?? "TBD";
@@ -876,6 +887,24 @@ function StopCard({
     if (isNext && !prevIsNext.current) setExpanded(true);
     prevIsNext.current = isNext;
   }, [isNext]);
+
+  // FBO open/closed detection at arrival time
+  const fboClosedAtArrival = (() => {
+    if (!fboHours || fboHours.is24hr) return false;
+    if (fboHours.openMinutes == null || fboHours.closeMinutes == null) return false;
+    const arrIso = effectiveArr ?? item.arrFlight.scheduled_arrival;
+    if (!arrIso) return false;
+    const arrDate = new Date(arrIso);
+    const tz = "America/New_York"; // FBO hours are typically in local time; ET as safe default
+    const localStr = arrDate.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: tz });
+    const [h, m] = localStr.split(":").map(Number);
+    const minuteOfDay = h * 60 + m;
+    // Handle overnight hours (e.g. open=360, close=30 means 6AM-12:30AM)
+    if (fboHours.closeMinutes <= fboHours.openMinutes) {
+      return !(minuteOfDay >= fboHours.openMinutes || minuteOfDay < fboHours.closeMinutes);
+    }
+    return minuteOfDay < fboHours.openMinutes || minuteOfDay >= fboHours.closeMinutes;
+  })();
 
   const navUrl = fbo && item.airportInfo
     ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(fbo + " " + (item.airportInfo.name ?? item.airport))}`
@@ -951,11 +980,26 @@ function StopCard({
                 &middot; {fbo}
               </span>
             )}
+            {fboHours && !fboHours.is24hr && (
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                ({fboHours.hours})
+              </span>
+            )}
+            {fboClosedAtArrival && (
+              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                FBO CLOSED
+              </span>
+            )}
           </div>
           {item.airportInfo && (
             <span className="text-xs text-gray-400 dark:text-gray-500">
               {item.airportInfo.name}
             </span>
+          )}
+          {fboHours?.phone && fboClosedAtArrival && (
+            <a href={`tel:${fboHours.phone}`} className="text-xs text-blue-600 dark:text-blue-400 underline">
+              Call FBO: {fboHours.phone}
+            </a>
           )}
         </div>
 

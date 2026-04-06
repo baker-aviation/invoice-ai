@@ -1064,7 +1064,7 @@ function turnBadgeClass(label: string): string {
 // ---------------------------------------------------------------------------
 
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
-function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>, viewDate?: string) {
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>, viewDate?: string, fboHoursMap?: Record<string, { hours: string; is24hr: boolean; openMinutes: number | null; closeMinutes: number | null }>) {
   return items.map((item) => {
     const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
@@ -1124,10 +1124,35 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       })
       .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
 
+    // FBO hours + closed detection
+    const fboKey1 = `${item.arrFlight.tail_number}:${arrIcao}`;
+    const fboKey2 = `${item.arrFlight.tail_number}:${arrIcaoStripped}`;
+    const fboHrs = fboHoursMap?.[fboKey1] ?? fboHoursMap?.[fboKey2] ?? null;
+    let fboClosed = false;
+    if (fboHrs && !fboHrs.is24hr && fboHrs.openMinutes != null && fboHrs.closeMinutes != null) {
+      const arrIso = item.arrFlight.scheduled_arrival;
+      if (arrIso) {
+        const arrDate = new Date(arrIso);
+        const h = arrDate.getUTCHours(); // approximate — would need TZ for precision
+        const m = arrDate.getUTCMinutes();
+        // Use ET as fallback (most Baker ops are eastern)
+        const etStr = arrDate.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: "America/New_York" });
+        const [etH, etM] = etStr.split(":").map(Number);
+        const minuteOfDay = etH * 60 + etM;
+        if (fboHrs.closeMinutes <= fboHrs.openMinutes) {
+          fboClosed = !(minuteOfDay >= fboHrs.openMinutes || minuteOfDay < fboHrs.closeMinutes);
+        } else {
+          fboClosed = minuteOfDay < fboHrs.openMinutes || minuteOfDay >= fboHrs.closeMinutes;
+        }
+      }
+    }
+
     return {
       tail: item.arrFlight.tail_number ?? "—",
       airport: item.airport,
       fbo,
+      fboHours: fboHrs?.hours ?? null,
+      fboClosed,
       arrivalTime: isOvernight
         ? `Parked overnight · Arrived ${item.arrFlight.scheduled_arrival ? fmtArrWithDay(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "prev. day"}`
         : item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
@@ -1144,6 +1169,8 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
 
 type SlackShareState = "idle" | "sending" | "success" | "error";
 
+type FboHoursMapType = Record<string, { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null }>;
+
 function SlackShareModal({
   vanName,
   vanId,
@@ -1153,6 +1180,7 @@ function SlackShareModal({
   flightInfoMap,
   fboMap,
   mxNotesByTail,
+  fboHoursMap,
   onClose,
 }: {
   vanName: string;
@@ -1163,6 +1191,7 @@ function SlackShareModal({
   flightInfoMap: Map<string, FlightInfoEntry>;
   fboMap?: Record<string, string>;
   mxNotesByTail?: Map<string, MxNote[]>;
+  fboHoursMap?: FboHoursMapType;
   onClose: () => void;
 }) {
   const [state, setState] = useState<SlackShareState>("sending");
@@ -1177,7 +1206,7 @@ function SlackShareModal({
             vanName,
             vanId,
             homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date, fboHoursMap),
           }],
         };
         const res = await fetch("/api/vans/share-slack-bulk", {
@@ -2260,6 +2289,7 @@ function VanScheduleCard({
   onSwapToVan,
   onAlsoOnVan,
   fboMap,
+  fboHoursMap,
   tailToVans,
   tailToVanDetails,
   vanDiff,
@@ -2302,6 +2332,7 @@ function VanScheduleCard({
   onSwapToVan?: (flightId: string, toVanId: number) => void;
   onAlsoOnVan?: (tail: string, toVanId: number) => void;
   fboMap?: Record<string, string>;
+  fboHoursMap?: FboHoursMapType;
   tailToVans?: Map<string, number[]>;
   tailToVanDetails?: Map<string, { vanId: number; airports: string[] }[]>;
   vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
@@ -2349,6 +2380,7 @@ function VanScheduleCard({
           flightInfoMap={flightInfoMap}
           fboMap={fboMap}
           mxNotesByTail={mxNotesByTail}
+          fboHoursMap={fboHoursMap}
           onClose={() => setShowSlackModal(false)}
         />
       )}
@@ -2746,6 +2778,7 @@ function ScheduleTab({
   mxVanOverrides,
   onVanOverride,
   fboMap,
+  fboHoursMap,
   wontSeeTodayTails,
   onMarkWontSee,
   onRestoreWontSee,
@@ -2767,6 +2800,7 @@ function ScheduleTab({
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   fboMap?: Record<string, string>;
+  fboHoursMap?: FboHoursMapType;
   wontSeeTodayTails: Set<string>;
   onMarkWontSee: (tail: string) => void;
   onRestoreWontSee: (tail: string) => void;
@@ -4175,7 +4209,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date, fboHoursMap),
           };
         });
       if (vans.length === 0) {
@@ -4208,7 +4242,7 @@ function ScheduleTab({
           vanName: zone.name,
           vanId: zone.vanId,
           homeAirport: zone.homeAirport,
-          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date, fboHoursMap),
         };
       });
       const slackRes = await fetch("/api/vans/share-slack-bulk", {
@@ -4290,7 +4324,7 @@ function ScheduleTab({
           vanName: d.vanName,
           vanId: d.vanId,
           homeAirport: d.homeAirport,
-          items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date),
+          items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date, fboHoursMap),
           diff: {
             added: exAdded ? d.added.filter((_, i) => !exAdded.has(i)) : d.added,
             removed: exRemoved ? d.removed.filter((_, i) => !exRemoved.has(i)) : d.removed,
@@ -4378,7 +4412,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date, fboHoursMap),
           }],
         }),
       });
@@ -5518,6 +5552,7 @@ function ScheduleTab({
                 }
               }}
               fboMap={fboMap}
+              fboHoursMap={fboHoursMap}
               tailToVans={tailToVans}
               tailToVanDetails={tailToVanDetails}
               coveringZoneNames={zoneCovers.filter(([c]) => c === zone.vanId).map(([, cov]) =>
@@ -5940,7 +5975,7 @@ function MxAdminTab() {
   );
 }
 
-export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
+export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {}, fboHoursMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string>; fboHoursMap?: Record<string, { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null }> }) {
   // 3-day range: yesterday, today, tomorrow
   const dates = useMemo(() => {
     const today = new Date();
@@ -7097,7 +7132,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} readOnly={isYesterday} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} readOnly={isYesterday} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} fboHoursMap={fboHoursMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}

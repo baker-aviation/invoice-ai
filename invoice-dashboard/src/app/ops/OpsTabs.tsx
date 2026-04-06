@@ -31,7 +31,9 @@ const SLUG_TO_TAB: Record<string, Tab> = Object.fromEntries(
   Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab as Tab])
 ) as Record<string, Tab>;
 
-export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], initialTab }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; initialTab?: string | null }) {
+type FboHoursEntry = { is24hr: boolean; openMinutes: number | null; closeMinutes: number | null; hours: string };
+
+export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], initialTab, fboHoursMap = {} }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; initialTab?: string | null; fboHoursMap?: Record<string, FboHoursEntry> }) {
   const [tab, setTab] = useState<Tab>(
     (initialTab ? SLUG_TO_TAB[initialTab] : null) ?? "Current Ops"
   );
@@ -108,7 +110,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
-        <OpsBoard bakerPprAirports={bakerPprAirports} />
+        <OpsBoard bakerPprAirports={bakerPprAirports} fboHoursMap={fboHoursMap} />
       ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
       ) : tab === "Swap Status" ? (
