@@ -10,6 +10,7 @@ import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
 import { getAirportInfo, findNearestAirport } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
 import { buildBestRateByAirport } from "@/lib/fuelLookup";
+import { Badge } from "@/components/ui/badge";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -2985,18 +2986,18 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             return <span className={`text-xs font-medium ${statusColor}`}>{status}</span>;
                           })()}
                           {isFaSourced && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">
+                            <Badge variant="secondary" className="text-[10px] font-bold bg-blue-100 text-blue-700">
                               FA Source
-                            </span>
+                            </Badge>
                           )}
                           {flowAffectedAirports.size > 0 && [f.departure_icao, f.arrival_icao].some(icao => {
                             if (!icao) return false;
                             const norm = icao.startsWith("K") && icao.length === 4 ? icao.slice(1) : icao;
                             return flowAffectedAirports.has(icao) || flowAffectedAirports.has(norm) || flowAffectedAirports.has("K" + norm);
                           }) && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
+                            <Badge variant="destructive" className="text-[10px] font-bold">
                               SWIM
-                            </span>
+                            </Badge>
                           )}
                           {(() => {
                             const tt = (f.alerts ?? []).find((a) => a.alert_type === "TIGHT_TURN" && !a.acknowledged_at);
@@ -3019,9 +3020,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             if (schedMs < nowMs && !fi?.actual_departure && status === "Scheduled" && !getActiveEdct(f)) {
                               const lateMin = Math.round((nowMs - schedMs) / 60_000);
                               return (
-                                <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                <Badge variant={lateMin > 30 ? "destructive" : "outline"} className={`text-[10px] font-bold ${lateMin > 30 ? "" : "bg-amber-50 text-amber-700 border-amber-200"}`}>
                                   +{lateMin}m late
-                                </span>
+                                </Badge>
                               );
                             }
                             return null;
