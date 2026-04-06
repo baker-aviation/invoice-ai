@@ -223,6 +223,8 @@ const AIRPORTS_24_7 = new Set([
 
 // ─── Baker PPR airports (fetched from database) ─────────────────────────────
 
+const FBO_HOURS_BUFFER = 60; // 1-hour buffer before open and after close
+
 function isAfterHours(utcIso: string | null, icao: string | null, fboHours?: Record<string, FboHoursEntry>): boolean {
   if (!utcIso) return false;
 
@@ -236,10 +238,14 @@ function isAfterHours(utcIso: string | null, icao: string | null, fboHours?: Rec
       const localStr = d.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: tz });
       const [h, m] = localStr.split(":").map(Number);
       const minuteOfDay = h * 60 + m;
+      // Apply buffer: flag if within 1hr of close or before 1hr after open
+      const bufferedOpen = fboEntry.openMinutes + FBO_HOURS_BUFFER;
+      const bufferedClose = fboEntry.closeMinutes - FBO_HOURS_BUFFER;
       if (fboEntry.closeMinutes <= fboEntry.openMinutes) {
-        return !(minuteOfDay >= fboEntry.openMinutes || minuteOfDay < fboEntry.closeMinutes);
+        // Overnight hours (e.g. 0600-0030)
+        return !(minuteOfDay >= bufferedOpen || minuteOfDay < bufferedClose);
       }
-      return minuteOfDay < fboEntry.openMinutes || minuteOfDay >= fboEntry.closeMinutes;
+      return minuteOfDay < bufferedOpen || minuteOfDay >= bufferedClose;
     }
   }
 

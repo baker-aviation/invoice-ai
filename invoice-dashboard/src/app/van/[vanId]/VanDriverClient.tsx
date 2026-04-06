@@ -888,7 +888,8 @@ function StopCard({
     prevIsNext.current = isNext;
   }, [isNext]);
 
-  // FBO open/closed detection at arrival time
+  // FBO open/closed detection at arrival time (with 1hr buffer)
+  const FBO_BUFFER = 60;
   const fboClosedAtArrival = (() => {
     if (!fboHours || fboHours.is24hr) return false;
     if (fboHours.openMinutes == null || fboHours.closeMinutes == null) return false;
@@ -899,11 +900,13 @@ function StopCard({
     const localStr = arrDate.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: tz });
     const [h, m] = localStr.split(":").map(Number);
     const minuteOfDay = h * 60 + m;
+    const bufferedOpen = fboHours.openMinutes + FBO_BUFFER;
+    const bufferedClose = fboHours.closeMinutes - FBO_BUFFER;
     // Handle overnight hours (e.g. open=360, close=30 means 6AM-12:30AM)
     if (fboHours.closeMinutes <= fboHours.openMinutes) {
-      return !(minuteOfDay >= fboHours.openMinutes || minuteOfDay < fboHours.closeMinutes);
+      return !(minuteOfDay >= bufferedOpen || minuteOfDay < bufferedClose);
     }
-    return minuteOfDay < fboHours.openMinutes || minuteOfDay >= fboHours.closeMinutes;
+    return minuteOfDay < bufferedOpen || minuteOfDay >= bufferedClose;
   })();
 
   const navUrl = fbo && item.airportInfo

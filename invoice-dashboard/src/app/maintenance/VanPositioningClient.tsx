@@ -1124,7 +1124,8 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       })
       .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
 
-    // FBO hours + closed detection
+    // FBO hours + closed detection (with 1hr buffer)
+    const FBO_BUFFER = 60;
     const fboKey1 = `${item.arrFlight.tail_number}:${arrIcao}`;
     const fboKey2 = `${item.arrFlight.tail_number}:${arrIcaoStripped}`;
     const fboHrs = fboHoursMap?.[fboKey1] ?? fboHoursMap?.[fboKey2] ?? null;
@@ -1133,16 +1134,16 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       const arrIso = item.arrFlight.scheduled_arrival;
       if (arrIso) {
         const arrDate = new Date(arrIso);
-        const h = arrDate.getUTCHours(); // approximate — would need TZ for precision
-        const m = arrDate.getUTCMinutes();
         // Use ET as fallback (most Baker ops are eastern)
         const etStr = arrDate.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: "America/New_York" });
         const [etH, etM] = etStr.split(":").map(Number);
         const minuteOfDay = etH * 60 + etM;
+        const bufferedOpen = fboHrs.openMinutes + FBO_BUFFER;
+        const bufferedClose = fboHrs.closeMinutes - FBO_BUFFER;
         if (fboHrs.closeMinutes <= fboHrs.openMinutes) {
-          fboClosed = !(minuteOfDay >= fboHrs.openMinutes || minuteOfDay < fboHrs.closeMinutes);
+          fboClosed = !(minuteOfDay >= bufferedOpen || minuteOfDay < bufferedClose);
         } else {
-          fboClosed = minuteOfDay < fboHrs.openMinutes || minuteOfDay >= fboHrs.closeMinutes;
+          fboClosed = minuteOfDay < bufferedOpen || minuteOfDay >= bufferedClose;
         }
       }
     }
