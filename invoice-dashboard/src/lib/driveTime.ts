@@ -382,6 +382,21 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   MHTG: [14.0609, -87.2172],   // Tegucigalpa, Honduras
   MGGT: [14.5833, -90.5275],   // Guatemala City
   TXKF: [32.3640, -64.6787],   // Bermuda
+  // Added 2026-04-06 — gap detection coverage
+  KFDK: [39.4178, -77.3744],   // Frederick Municipal, MD (near IAD/DCA/BWI)
+  KBIS: [46.7727, -100.7468],  // Bismarck, ND
+  PAOT: [66.8847, -162.5985],  // Kotzebue (Ralph Wien), AK
+  KLEB: [43.6261, -72.3042],   // Lebanon, NH (near MHT/BOS)
+  CYXX: [49.0253, -122.3606],  // Abbotsford, BC
+  TLPL: [13.7332, -60.9528],   // Hewanorra (St Lucia)
+  CYQA: [44.9747, -79.3033],   // Muskoka, ON
+  KLWB: [37.8583, -80.3995],   // Greenbrier, WV (near CRW)
+  KBRO: [25.9068, -97.4259],   // Brownsville, TX
+  KSTP: [44.9345, -93.0600],   // St Paul Downtown, MN (near MSP)
+  KSAF: [35.6171, -106.0892],  // Santa Fe, NM
+  KCRW: [38.3731, -81.5932],   // Charleston, WV
+  PAFA: [64.8151, -147.8561],  // Fairbanks, AK
+  PAJN: [58.3550, -134.5763],  // Juneau, AK
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────
@@ -498,9 +513,23 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KAVP", "KBGR", "KBTV", "KBUF", "KCAK", "KFAT", "KGSP", "KJAC",
   "KLAN", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
   "KROC", "KSBA", "KSBN", "KSUN",
+  // Added 2026-04-06 — gap detection misses
+  "KBIS", "KOTZ", "KBRO", "KSAF", "KLWB", "KSTP", "KLEB",
+  "KFDK", "KMCC", "KCRW", "KMHT", "KPWM", "KSYR", "KABE",
+  "KAVL", "KCHA", "KDAY", "KERI", "KFWA", "KGEG", "KHPN",
+  "KISP", "KITH", "KMBS", "KMDW", "KMOB", "KPNS", "KSHV",
+  "KSWF", "KTYC", "KPIA", "KCWA", "KCKB", "KLFT", "KMLI",
   "PANC", // Anchorage (non-K ICAO)
+  "PAFA", // Fairbanks
+  "PAJN", // Juneau
+  "PAOT", // Kotzebue (OTZ)
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
+  "CYXX", // Abbotsford
+  "CYQA", // Muskoka
   "TJSJ", // San Juan, PR
+  // Caribbean / Latin America
+  "TLPL", // St Lucia Hewanorra
+  "MMSL", // Mazatlán
 ]);
 
 /** Check if an airport is a known commercial airport with scheduled airline service. */
