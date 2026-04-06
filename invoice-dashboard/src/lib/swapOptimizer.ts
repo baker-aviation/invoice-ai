@@ -1473,6 +1473,48 @@ function scoreCandidate(
 // LAYER 5: Combination Optimizer
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Result from optimizeTail — includes timing violation info for swap-point retry */
+type OptimizeTailResult = {
+  /** True if any oncoming crew arrives after aircraft departs at a before_live/between_legs swap point */
+  timingViolation: boolean;
+  /** How many ms the worst violator is late (positive = late). 0 if no violation. */
+  violationGapMs: number;
+  /** The aircraft-coverage auto-fix resolved the oncoming/offgoing overlap but NOT the departure constraint */
+  coverageFixed: boolean;
+};
+
+/** Check if any oncoming crew arrives after aircraft departs at a departure-constrained swap point.
+ *  This is the HARD constraint — aircraft cannot depart without crew on board. */
+function checkDepartureTimingViolation(tasks: CrewTask[]): { violation: boolean; gapMs: number } {
+  const oncoming = tasks.filter((t) => t.direction === "oncoming");
+  let worstGapMs = 0;
+
+  for (const task of oncoming) {
+    const sp = task.swapPoint;
+    // Only before_live and between_legs have a departure time constraint
+    if (sp.position !== "before_live" && sp.position !== "between_legs") continue;
+
+    const depTime = (sp.position === "between_legs" && sp.window_end)
+      ? sp.window_end : sp.time;
+    const depMs = new Date(depTime).getTime();
+    const deadlineMs = depMs - ms(FBO_ARRIVAL_BUFFER);
+
+    if (!task.best || task.best.type === "none") {
+      // No transport at all for oncoming crew at a departure-constrained point = violation
+      worstGapMs = Math.max(worstGapMs, ms(9999)); // massive gap
+      continue;
+    }
+
+    const arrivalMs = task.best.fboArrivalTime?.getTime();
+    if (arrivalMs && arrivalMs > deadlineMs) {
+      const gap = arrivalMs - deadlineMs;
+      worstGapMs = Math.max(worstGapMs, gap);
+    }
+  }
+
+  return { violation: worstGapMs > 0, gapMs: worstGapMs };
+}
+
 /** For each tail, find the best combination of transport for all crew */
 function optimizeTail(
   tasks: CrewTask[],
@@ -1481,7 +1523,7 @@ function optimizeTail(
   swapDate: string,
   tailLegs?: FlightLeg[],
   deadlines?: OncomingDeadline[],
-): void {
+): OptimizeTailResult {
   // Build candidates for each task
   for (const task of tasks) {
     task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate, tailLegs);
@@ -1868,6 +1910,14 @@ function optimizeTail(
       console.log(`[AircraftCoverage] ${onTask.tail} ${onTask.role}: UNSOLVED — ${warningMsg}`);
     }
   }
+
+  // ── Check departure timing violation (oncoming arrives after aircraft departs) ──
+  const depCheck = checkDepartureTimingViolation(tasks);
+  return {
+    timingViolation: depCheck.violation,
+    violationGapMs: depCheck.gapMs,
+    coverageFixed: true, // The auto-fix above ran; caller checks depCheck separately
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2429,90 +2479,210 @@ export function buildSwapPlan(params: {
       };
     }
 
-    // ── Create crew tasks ────────────────────────────────────────────────
-    const tailTasks: CrewTask[] = [];
+    // ── Create crew tasks + run optimizer ───────────────────────────────
+    // Wrapped in a helper so we can retry with alternative swap points
+    // when oncoming crew can't arrive before the aircraft departs.
 
-    // For idle tails with split swap points (early oncoming / late offgoing),
-    // use the first swap point for oncoming and the last for offgoing.
-    const isIdleTail = swapPoints.length >= 2 && swapPoints.every((sp) => sp.position === "idle");
-    const offgoingSwapPoint = isIdleTail ? swapPoints[swapPoints.length - 1] : picSwapPoint;
-
-    // PIC tasks — at the best-scored swap point
     if (!assignment.oncoming_pic) {
       globalWarnings.push(`${tail}: No oncoming PIC assigned — no qualified crew can reach this aircraft`);
     }
-    for (const [name, direction] of [
-      [assignment.oncoming_pic, "oncoming"] as const,
-      [assignment.offgoing_pic, "offgoing"] as const,
-    ]) {
-      if (!name) continue;
-      const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "PIC");
-      if (homeAirports.length === 0) {
-        console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
-      }
-      // Note when PIC swaps at a non-default location (not the first swap point)
-      if (picSwapPoint !== swapPoints[0]) {
-        warnings.push(`PIC swaps at ${toIata(picSwapPoint.icao)} (${picSwapPoint.position}) — easier commercial access than ${toIata(swapPoints[0].icao)}`);
-      }
-      const volFlags = direction === "oncoming" ? getVolunteerFlags(name, "PIC") : { earlyVolunteer: false, lateVolunteer: false };
-      const taskSwapPoint = direction === "offgoing" ? offgoingSwapPoint : picSwapPoint;
-      tailTasks.push({
-        name: crewMember?.name ?? name, crewMember, role: "PIC", direction, tail,
-        aircraftType, swapPoint: taskSwapPoint, homeAirports,
-        candidates: [], best: null, warnings,
-        ...volFlags,
-      });
-    }
-
-    // SIC tasks — try ALL swap points, pick the one with best transport
     if (!assignment.oncoming_sic) {
       globalWarnings.push(`${tail}: No oncoming SIC assigned — no qualified crew can reach this aircraft`);
     }
-    for (const [name, direction] of [
-      [assignment.oncoming_sic, "oncoming"] as const,
-      [assignment.offgoing_sic, "offgoing"] as const,
-    ]) {
-      if (!name) continue;
-      const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "SIC");
-      if (homeAirports.length === 0) {
-        console.warn(`[SwapOptimizer] No home airports for "${name}" (SIC, ${tail})`);
-      }
 
-      const sicVolFlags = direction === "oncoming" ? getVolunteerFlags(name, "SIC") : { earlyVolunteer: false, lateVolunteer: false };
+    /** Build tasks for a given swap point and run optimizeTail */
+    function buildAndOptimizeTasks(
+      useSwapPoint: SwapPoint,
+    ): { tasks: CrewTask[]; result: OptimizeTailResult } {
+      const tasks: CrewTask[] = [];
 
-      // If assignment phase proved a SIC swap point, use it directly
-      const assignedSicSwapIcao = assignment.oncoming_sic_swap_icao;
-      if (direction === "oncoming" && assignedSicSwapIcao) {
-        const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === assignedSicSwapIcao.toUpperCase());
-        if (matched) {
-          tailTasks.push({
-            name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
-            aircraftType, swapPoint: matched, homeAirports,
-            candidates: [], best: null, warnings,
-            ...sicVolFlags,
-          });
-          continue; // skip the try-all-swap-points loop
+      const isIdleTail = swapPoints.length >= 2 && swapPoints.every((sp) => sp.position === "idle");
+      const useOffgoingSwapPoint = isIdleTail ? swapPoints[swapPoints.length - 1] : useSwapPoint;
+
+      // PIC tasks
+      for (const [name, direction] of [
+        [assignment.oncoming_pic, "oncoming"] as const,
+        [assignment.offgoing_pic, "offgoing"] as const,
+      ]) {
+        if (!name) continue;
+        const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "PIC");
+        if (homeAirports.length === 0) {
+          console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
         }
+        if (useSwapPoint !== swapPoints[0]) {
+          warnings.push(`PIC swaps at ${toIata(useSwapPoint.icao)} (${useSwapPoint.position}) — easier commercial access than ${toIata(swapPoints[0].icao)}`);
+        }
+        const volFlags = direction === "oncoming" ? getVolunteerFlags(name, "PIC") : { earlyVolunteer: false, lateVolunteer: false };
+        const taskSwapPoint = direction === "offgoing" ? useOffgoingSwapPoint : useSwapPoint;
+        tasks.push({
+          name: crewMember?.name ?? name, crewMember, role: "PIC", direction, tail,
+          aircraftType, swapPoint: taskSwapPoint, homeAirports,
+          candidates: [], best: null, warnings,
+          ...volFlags,
+        });
       }
 
-      // SIC MUST swap at the same airport as PIC — no split swaps allowed.
-      // PIC replaces PIC, SIC replaces SIC, always 1-for-1 at the same location.
-      {
-        const sicSwapPoint = direction === "offgoing"
-          ? offgoingSwapPoint  // idle tails: use late swap point for offgoing
-          : picSwapPoint;      // oncoming SIC always uses PIC's swap point
+      // SIC tasks
+      for (const [name, direction] of [
+        [assignment.oncoming_sic, "oncoming"] as const,
+        [assignment.offgoing_sic, "offgoing"] as const,
+      ]) {
+        if (!name) continue;
+        const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "SIC");
+        if (homeAirports.length === 0) {
+          console.warn(`[SwapOptimizer] No home airports for "${name}" (SIC, ${tail})`);
+        }
 
-        tailTasks.push({
+        const sicVolFlags = direction === "oncoming" ? getVolunteerFlags(name, "SIC") : { earlyVolunteer: false, lateVolunteer: false };
+
+        // If assignment phase proved a SIC swap point, use it directly
+        const assignedSicSwapIcao = assignment.oncoming_sic_swap_icao;
+        if (direction === "oncoming" && assignedSicSwapIcao) {
+          const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === assignedSicSwapIcao.toUpperCase());
+          if (matched) {
+            tasks.push({
+              name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
+              aircraftType, swapPoint: matched, homeAirports,
+              candidates: [], best: null, warnings,
+              ...sicVolFlags,
+            });
+            continue; // skip the default swap point
+          }
+        }
+
+        // SIC MUST swap at the same airport as PIC — no split swaps allowed.
+        const sicSwapPoint = direction === "offgoing"
+          ? useOffgoingSwapPoint
+          : useSwapPoint;
+
+        tasks.push({
           name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
           aircraftType, swapPoint: sicSwapPoint, homeAirports,
           candidates: [], best: null, warnings,
           ...sicVolFlags,
         });
       }
+
+      // Run optimizer
+      const result = optimizeTail(tasks, aliases, commercialFlights, swapDate, byTail.get(tail), offgoingDeadlines);
+      return { tasks, result };
     }
 
-    // Run optimizer for this tail
-    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail), offgoingDeadlines);
+    // ── Try primary swap point, then retry alternatives on timing violation ──
+    let { tasks: tailTasks, result: optimizeResult } = buildAndOptimizeTasks(picSwapPoint);
+
+    // Only retry if there's a departure timing violation at a before_live/between_legs point.
+    // after_live and idle swap points have no departure constraint — no retry needed.
+    if (optimizeResult.timingViolation) {
+      const primaryPosition = picSwapPoint.position;
+      const hasDepartureConstraint = primaryPosition === "before_live" || primaryPosition === "between_legs";
+
+      if (hasDepartureConstraint && swapPointScores.length > 1) {
+        console.log(
+          `[SwapPointRetry] ${tail}: timing violation at ${toIata(picSwapPoint.icao)} (${primaryPosition}), ` +
+          `crew arrives ${Math.round(optimizeResult.violationGapMs / 60_000)}min after deadline. Trying alternatives...`
+        );
+
+        // Sort alternatives by ease score (best first), skip the already-tried one
+        const alternativeSwapPoints = swapPointScores
+          .filter((s) => s.icao !== picSwapPoint.icao)
+          .sort((a, b) => b.ease - a.ease);
+
+        // Track the best result (least violation) in case all fail
+        let bestViolationGapMs = optimizeResult.violationGapMs;
+        let bestTasks = tailTasks;
+        let bestResult = optimizeResult;
+        let bestSwapPoint = picSwapPoint;
+        let solved = false;
+
+        for (const altScore of alternativeSwapPoints) {
+          const altSp = swapPoints.find((sp) => sp.icao === altScore.icao);
+          if (!altSp) continue;
+
+          const { tasks: altTasks, result: altResult } = buildAndOptimizeTasks(altSp);
+
+          if (!altResult.timingViolation) {
+            // This alternative swap point works — use it
+            console.log(
+              `[SwapPointRetry] ${tail}: SOLVED at ${toIata(altSp.icao)} (${altScore.position}) — ` +
+              `no timing violation, ease=${altScore.ease}`
+            );
+            tailTasks = altTasks;
+            optimizeResult = altResult;
+            picSwapPoint = altSp; // update for debug tracking
+            solved = true;
+
+            // Update swap point debug to reflect the new selection
+            for (const s of swapPointScores) s.selected = false;
+            const newSelected = swapPointScores.find((s) => s.icao === altSp.icao);
+            if (newSelected) newSelected.selected = true;
+            break;
+          }
+
+          // Track least-bad option
+          if (altResult.violationGapMs < bestViolationGapMs) {
+            bestViolationGapMs = altResult.violationGapMs;
+            bestTasks = altTasks;
+            bestResult = altResult;
+            bestSwapPoint = altSp;
+          }
+        }
+
+        if (!solved) {
+          // ALL swap points have timing violations — use the least-bad one
+          if (bestSwapPoint !== picSwapPoint) {
+            console.log(
+              `[SwapPointRetry] ${tail}: all swap points have timing violations. ` +
+              `Using least-bad: ${toIata(bestSwapPoint.icao)} (gap=${Math.round(bestViolationGapMs / 60_000)}min)`
+            );
+            tailTasks = bestTasks;
+            optimizeResult = bestResult;
+            picSwapPoint = bestSwapPoint;
+
+            for (const s of swapPointScores) s.selected = false;
+            const newSelected = swapPointScores.find((s) => s.icao === bestSwapPoint.icao);
+            if (newSelected) newSelected.selected = true;
+          }
+
+          // Mark as UNSOLVABLE — force crew with timing violations to travel_type "none"
+          const depSp = tailTasks[0]?.swapPoint;
+          const depTime = depSp
+            ? ((depSp.position === "between_legs" && depSp.window_end) ? depSp.window_end : depSp.time)
+            : null;
+          const depStr = depTime
+            ? new Date(depTime).toISOString().slice(11, 16) + "Z"
+            : "unknown";
+
+          for (const task of tailTasks) {
+            if (task.direction !== "oncoming") continue;
+            const sp = task.swapPoint;
+            if (sp.position !== "before_live" && sp.position !== "between_legs") continue;
+
+            const taskDepTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+            const deadlineMs = new Date(taskDepTime).getTime() - ms(FBO_ARRIVAL_BUFFER);
+            const arrivalMs = task.best?.fboArrivalTime?.getTime();
+
+            if (!task.best || task.best.type === "none" || (arrivalMs && arrivalMs > deadlineMs)) {
+              const arrStr = arrivalMs
+                ? new Date(arrivalMs).toISOString().slice(11, 16) + "Z"
+                : "no transport";
+              const unsolvableMsg = `UNSOLVABLE: No swap point allows ${task.role} to arrive before aircraft departs ${depStr}. ` +
+                `Best option: arrives ${arrStr}. All ${swapPoints.length} swap points tried. Manual intervention required.`;
+              task.warnings = [unsolvableMsg]; // Replace any lesser warnings
+              task.best = {
+                type: "none", flightNumber: null, depTime: null, arrTime: null,
+                from: "", to: "", cost: 0, durationMin: 0, isDirect: false,
+                isBudgetCarrier: false, hubConnection: false, connectionCount: 0,
+                offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null,
+                dutyOnTime: null, score: 0, backups: [],
+              };
+              console.log(`[SwapPointRetry] ${tail} ${task.role}: ${unsolvableMsg}`);
+            }
+          }
+        }
+      }
+    }
+
     allTasks.push(...tailTasks);
 
     // Emit placeholder rows for unassigned oncoming slots
