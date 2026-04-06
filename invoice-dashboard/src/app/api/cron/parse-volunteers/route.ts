@@ -161,24 +161,29 @@ export async function runParser(overrideSwapDate?: string) {
     });
   }
 
+  // Deduplicate by slack_user_id — keep the latest reply (last in thread)
+  const deduped = new Map<string, VolunteerRow>();
+  for (const r of rows) deduped.set(r.slack_user_id, r);
+  const uniqueRows = [...deduped.values()];
+
   // Step 5: Upsert into volunteer_responses
-  if (rows.length > 0) {
+  if (uniqueRows.length > 0) {
     const { error } = await supa
       .from("volunteer_responses")
-      .upsert(rows, { onConflict: "swap_date,slack_user_id" });
+      .upsert(uniqueRows, { onConflict: "swap_date,slack_user_id" });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
   }
 
-  const matched = rows.filter((r) => r.crew_member_id).length;
-  const unknown = rows.filter((r) => r.parsed_preference === "unknown").length;
+  const matched = uniqueRows.filter((r) => r.crew_member_id).length;
+  const unknown = uniqueRows.filter((r) => r.parsed_preference === "unknown").length;
 
   return NextResponse.json({
     ok: true,
     swap_date: swapDate,
-    parsed: rows.length,
+    parsed: uniqueRows.length,
     matched,
     unknown,
     thread_ts: threadTs,
