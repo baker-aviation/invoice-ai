@@ -46,17 +46,11 @@ export async function POST(req: NextRequest) {
     // Compute full city-pair matrix (fast — just DB queries)
     const basePairs = await computeCityPairMatrix(swap_date);
 
-    // Seed both swap day and next day (optimizer searches next-day for offgoing)
-    const nextDay = new Date(swap_date);
-    nextDay.setDate(nextDay.getDate() + 1);
-    const nextDayStr = nextDay.toISOString().slice(0, 10);
-    const datesToSeed = [swap_date, nextDayStr];
+    // Seed only the requested date — user can seed next day separately if needed
+    const datesToSeed = [swap_date];
+    let allPairs = basePairs.map((p) => ({ ...p, date: swap_date }));
 
-    const swapDayPairs = basePairs.map((p) => ({ ...p, date: swap_date }));
-    const nextDayPairs = basePairs.map((p) => ({ ...p, date: nextDayStr }));
-    let allPairs = [...swapDayPairs, ...nextDayPairs];
-
-    console.log(`[SeedFlights] ${allPairs.length} total pairs (${basePairs.length} x 2 days)`);
+    console.log(`[SeedFlights] ${allPairs.length} pairs for ${swap_date}`);
 
     // Fill mode: skip pairs that already have flights cached
     if (mode === "fill") {
