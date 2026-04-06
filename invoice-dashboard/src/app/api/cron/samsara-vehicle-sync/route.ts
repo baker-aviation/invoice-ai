@@ -26,7 +26,7 @@ async function fetchAllVehicles(apiKey: string): Promise<SamsaraVehicle[]> {
   let url: string | null = `${SAMSARA_BASE}/fleet/vehicles?limit=200`;
   let page = 0;
   while (url) {
-    const res = await fetch(url, {
+    const res: Response = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       cache: "no-store",
     });
@@ -48,7 +48,7 @@ async function fetchFaultStats(apiKey: string): Promise<Map<string, boolean>> {
   let url: string | null = `${SAMSARA_BASE}/fleet/vehicles/stats?types=faultCodes&limit=200`;
   let page = 0;
   while (url) {
-    const res = await fetch(url, {
+    const res: Response = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       cache: "no-store",
     });
