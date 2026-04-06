@@ -1106,20 +1106,20 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const fbo = fboMap?.[`${item.arrFlight.tail_number}:${arrIcao}`]
       ?? fboMap?.[`${item.arrFlight.tail_number}:${arrIcaoStripped}`]
       ?? null;
-    // Gather today's MX notes for this tail (ET timezone, same logic as MxNoteInline)
+    // Gather MX notes for this tail on the schedule date (ET timezone)
     const tailNotes = mxNotesByTail?.get(item.arrFlight.tail_number ?? "") ?? [];
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const schedDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     const mxNoteTexts = tailNotes
       .filter((n) => {
         if (isMel(n)) return false;
-        // If scheduled_date matches today, always show regardless of start/end time
-        if (n.scheduled_date === todayStr) return true;
+        // If scheduled_date matches the schedule date, always show
+        if (n.scheduled_date === schedDate) return true;
         const startDate = n.start_time ? toEtDate(n.start_time) : null;
         const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
-        if (!startDate && !endDate) return true;
-        if (startDate && startDate > todayStr) return false; // future
-        if (endDate && endDate < todayStr) return false; // past
+        if (!startDate && !endDate) return false; // no dates = skip (stale)
+        if (startDate && startDate > schedDate) return false; // future
+        if (endDate && endDate < schedDate) return false; // past
         return true;
       })
       .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
@@ -1434,7 +1434,7 @@ function isMxNoteVisibleOnVan(
   const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const startDate = note.start_time ? toEtDate(note.start_time) : null;
   const endDate = note.end_time ? toEtDate(note.end_time) : startDate;
-  if (!startDate && !endDate) return true;
+  if (!startDate && !endDate) return false; // no dates = skip (stale)
   if (startDate && startDate > viewDate) return false;
   if (endDate && endDate < viewDate) return false;
   return true;
@@ -3575,6 +3575,8 @@ function ScheduleTab({
 
     autoAssignedRef.current = date;
     if (uncoveredItems.length === 0) return;
+    // Skip auto-assign if schedule was already published for this date
+    if (publishedAssignments.length > 0) return;
 
     const newOverrides = new Map<string, number>(overrides);
     let changed = false;

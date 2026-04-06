@@ -1015,7 +1015,7 @@ function StopCard({
             if (n.scheduled_date === todayStr) return true;
             const startDate = n.start_time ? toEtDate(n.start_time) : null;
             const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
-            if (!startDate && !endDate) return true;
+            if (!startDate && !endDate) return false; // no dates = skip (stale)
             if (startDate && startDate > todayStr) return false; // future
             if (endDate && endDate < todayStr) return false; // past
             return true;
