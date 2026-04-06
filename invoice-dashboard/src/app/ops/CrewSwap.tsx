@@ -1997,6 +1997,10 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [batchPairingSics, setBatchPairingSics] = useState<Set<string>>(new Set());
   // Coordinator constraints (force tail, force pair, force fleet)
   const [swapConstraints, setSwapConstraints] = useState<SwapConstraint[]>([]);
+  // Slack directive suggestions (from AI scan of swap chat)
+  const [slackSuggestions, setSlackSuggestions] = useState<(SwapConstraint & { _reason?: string })[]>([]);
+  const [slackScanLoading, setSlackScanLoading] = useState(false);
+  const [slackScanError, setSlackScanError] = useState<string | null>(null);
 
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
@@ -4721,10 +4725,93 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
           <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">7. Constraints</h3>
-            <span className="text-[10px] text-gray-400">Lock crew to tail, pair crew, or lock to fleet type</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-gray-400">Lock crew to tail, pair crew, or lock to fleet type</span>
+              <button
+                onClick={async () => {
+                  setSlackScanLoading(true);
+                  setSlackScanError(null);
+                  try {
+                    const res = await fetch("/api/crew/parse-directives", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                      setSlackScanError(data.error ?? "Scan failed");
+                      return;
+                    }
+                    // Filter out suggestions that already match existing constraints
+                    const newSuggestions = (data.directives ?? []).filter((d: SwapConstraint & { _reason?: string }) => {
+                      return !swapConstraints.some((c) => {
+                        if (c.type !== d.type) return false;
+                        if (c.type === "force_tail" && d.type === "force_tail") return c.crew_name === d.crew_name && c.tail === d.tail;
+                        if (c.type === "force_pair" && d.type === "force_pair") return (c.crew_a === d.crew_a && c.crew_b === d.crew_b) || (c.crew_a === d.crew_b && c.crew_b === d.crew_a);
+                        if (c.type === "force_fleet" && d.type === "force_fleet") return c.crew_name === d.crew_name && c.aircraft_type === d.aircraft_type;
+                        return false;
+                      });
+                    });
+                    setSlackSuggestions(newSuggestions);
+                  } catch (e) {
+                    setSlackScanError(e instanceof Error ? e.message : "Scan failed");
+                  } finally {
+                    setSlackScanLoading(false);
+                  }
+                }}
+                disabled={slackScanLoading}
+                className={`px-2.5 py-1 text-[10px] font-medium rounded border ${
+                  slackScanLoading
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-wait"
+                    : "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
+                }`}
+              >
+                {slackScanLoading ? "Scanning..." : "Scan Slack"}
+              </button>
+            </div>
           </div>
           <div className="p-4 text-xs space-y-3">
-            {swapConstraints.length === 0 && (
+            {/* Slack directive suggestions */}
+            {slackScanError && (
+              <div className="text-[11px] text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+                Scan error: {slackScanError}
+              </div>
+            )}
+            {slackSuggestions.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider">Suggested from Slack</p>
+                <div className="flex flex-wrap gap-2">
+                  {slackSuggestions.map((s, i) => (
+                    <div key={`suggestion-${i}`} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium border border-dashed ${
+                      s.type === "force_tail" ? "bg-blue-50/60 border-blue-300 text-blue-700"
+                      : s.type === "force_pair" ? "bg-purple-50/60 border-purple-300 text-purple-700"
+                      : "bg-amber-50/60 border-amber-300 text-amber-700"
+                    }`}>
+                      {s.type === "force_tail" && (<><span className="font-bold">TAIL</span> {s.crew_name} &rarr; {s.tail}</>)}
+                      {s.type === "force_pair" && (<><span className="font-bold">PAIR</span> {s.crew_a} + {s.crew_b}</>)}
+                      {s.type === "force_fleet" && (<><span className="font-bold">FLEET</span> {s.crew_name} &rarr; {s.aircraft_type}</>)}
+                      {s.reason && <span className="text-gray-500 italic" title={s.reason}>(&ldquo;{s.reason.length > 40 ? s.reason.slice(0, 40) + "..." : s.reason}&rdquo;)</span>}
+                      <button
+                        onClick={() => {
+                          const constraint: SwapConstraint = { ...s };
+                          delete (constraint as Record<string, unknown>)._reason;
+                          setSwapConstraints((prev) => [...prev, constraint]);
+                          setSlackSuggestions((prev) => prev.filter((_, j) => j !== i));
+                        }}
+                        className="ml-0.5 text-green-600 hover:text-green-800 font-bold"
+                        title="Add constraint"
+                      >&#x2713;</button>
+                      <button
+                        onClick={() => setSlackSuggestions((prev) => prev.filter((_, j) => j !== i))}
+                        className="text-red-400 hover:text-red-600"
+                        title="Dismiss"
+                      >&times;</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {swapConstraints.length === 0 && slackSuggestions.length === 0 && (
               <p className="text-gray-400 italic text-[11px]">No constraints set. Add one below to lock crew to a tail, pair two crew together, or restrict to a fleet type.</p>
             )}
             {swapConstraints.length > 0 && (
