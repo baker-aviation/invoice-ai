@@ -3026,7 +3026,23 @@ export function buildSwapPlan(params: {
       duration_minutes: best?.durationMin ?? null,
       available_time: best?.fboArrivalTime?.toISOString() ?? null,
       duty_on_time: best?.dutyOnTime?.toISOString() ?? null,
-      duty_off_time: null,
+      duty_off_time: (() => {
+        if (task.direction === "oncoming") {
+          // Oncoming duty ends: last leg arrival on swap day + DUTY_OFF_AFTER_LAST_LEG
+          const tailLegs = byTail.get(task.tail) ?? [];
+          const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+          const lastLeg = swapDayLegs[swapDayLegs.length - 1];
+          if (lastLeg?.scheduled_arrival) {
+            return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+          }
+          return null;
+        }
+        // Offgoing duty ends: arrival home (commercial landing or drive arrival)
+        if (best?.arrTime) {
+          return new Date(best.arrTime.getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+        }
+        return null;
+      })(),
       is_checkairman: task.crewMember?.is_checkairman ?? false,
       checkairman_types: task.crewMember?.checkairman_types ?? [],
       is_skillbridge: task.crewMember?.is_skillbridge ?? false,
