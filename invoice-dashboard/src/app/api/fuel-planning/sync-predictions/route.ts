@@ -319,6 +319,7 @@ export async function POST(req: NextRequest) {
         await supa.from("foreflight_predictions").upsert(
           {
             foreflight_id: flightId,
+            snapshot_type: "post_flight",
             tail_number: flightData.aircraftRegistration ?? null,
             departure_icao: flightData.departure ?? null,
             destination_icao: flightData.destination ?? null,

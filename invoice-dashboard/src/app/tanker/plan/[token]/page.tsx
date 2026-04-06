@@ -14,6 +14,8 @@ type LegData = {
   departureFboVendor: string | null;
   departureFbo: string | null;
   ffSource: string;
+  ffZfw: number | null;
+  ffMlw: number | null;
   waiver: {
     fboName: string;
     minGallons: number;
@@ -73,10 +75,16 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
 
+  // Fuel release state
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [releaseStatus, setReleaseStatus] = useState<Record<number, { status: "idle" | "loading" | "submitted" | "error"; id?: string; message?: string }>>({});
+  const [requestingAll, setRequestingAll] = useState(false);
+
   const [mlwOverrides, setMlwOverrides] = useState<Record<string, number>>({});
   const [zfwOverrides, setZfwOverrides] = useState<Record<string, number>>({});
   const [feeOverrides, setFeeOverrides] = useState<Record<string, number>>({});
   const [waiverGalOverrides, setWaiverGalOverrides] = useState<Record<string, number>>({});
+  const [fuelBurnOverrides, setFuelBurnOverrides] = useState<Record<string, number>>({});
 
   useEffect(() => { params.then((p) => setToken(p.token)); }, [params]);
 
@@ -95,6 +103,79 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
 
+  // Check if viewer is authenticated (for fuel release buttons)
+  useEffect(() => {
+    fetch("/api/fuel-releases?limit=0", { credentials: "include" })
+      .then((r) => { if (r.ok) setIsAuthed(true); })
+      .catch(() => {});
+  }, []);
+
+  // Load existing releases for this plan token
+  useEffect(() => {
+    if (!token || !isAuthed) return;
+    fetch(`/api/fuel-releases?limit=100`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.releases) return;
+        const byLeg: Record<number, { status: "submitted"; id: string }> = {};
+        for (const rel of data.releases) {
+          if (rel.plan_link_token === token && rel.plan_leg_index != null && rel.status !== "cancelled") {
+            byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
+          }
+        }
+        setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
+      })
+      .catch(() => {});
+  }, [token, isAuthed]);
+
+  const submitRelease = async (legIndex: number) => {
+    if (!plan?.plan || !token) return;
+    const leg = plan.legs[legIndex];
+    const orderGal = plan.plan.fuelOrderGalByStop[legIndex] ?? 0;
+    if (orderGal <= 0) return;
+
+    setReleaseStatus((prev) => ({ ...prev, [legIndex]: { status: "loading" } }));
+    try {
+      const res = await fetch("/api/fuel-releases/submit", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          airport: leg.from,
+          fbo: leg.departureFbo || leg.waiver?.fboName || "",
+          tailNumber: plan.tail,
+          vendorName: leg.departureFboVendor || "",
+          gallons: Math.round(orderGal),
+          quotedPrice: leg.departurePricePerGal > 0 ? leg.departurePricePerGal : undefined,
+          date: leg.departureDate || date,
+          planLinkToken: token,
+          planLegIndex: legIndex,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setReleaseStatus((prev) => ({ ...prev, [legIndex]: { status: "submitted", id: data.id } }));
+      } else {
+        setReleaseStatus((prev) => ({ ...prev, [legIndex]: { status: "error", message: data.error || "Failed" } }));
+      }
+    } catch {
+      setReleaseStatus((prev) => ({ ...prev, [legIndex]: { status: "error", message: "Network error" } }));
+    }
+  };
+
+  const submitAllReleases = async () => {
+    if (!plan?.plan) return;
+    setRequestingAll(true);
+    for (let i = 0; i < plan.legs.length; i++) {
+      const orderGal = plan.plan.fuelOrderGalByStop[i] ?? 0;
+      const existing = releaseStatus[i];
+      if (orderGal > 0 && (!existing || existing.status === "idle" || existing.status === "error")) {
+        await submitRelease(i);
+      }
+    }
+    setRequestingAll(false);
+  };
+
   const recalculate = async () => {
     if (!token) return;
     setRecalculating(true);
@@ -107,6 +188,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
           zfw_overrides: zfwOverrides,
           fee_overrides: feeOverrides,
           waiver_gal_overrides: waiverGalOverrides,
+          fuel_burn_overrides: fuelBurnOverrides,
         }),
       });
       const data = await res.json();
@@ -166,6 +248,21 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                   {fmtDollars(optimized.totalTripCost)}
                 </span>
               )}
+              {isAuthed && optimized && optimized.fuelOrderGalByStop.some((g: number) => g > 0) && (
+                <button
+                  onClick={submitAllReleases}
+                  disabled={requestingAll || optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")
+                      ? "bg-green-100 text-green-700"
+                      : "bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50"
+                  }`}
+                >
+                  {optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")
+                    ? "All Requested"
+                    : requestingAll ? "Requesting..." : "Request All Fuel"}
+                </button>
+              )}
               <button
                 onClick={async () => {
                   setSlackSending(true);
@@ -207,6 +304,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       <th className="pb-2 pr-3 text-right">Order (gal)</th>
                       <th className="pb-2 pr-3 text-right">Landing Fuel</th>
                       <th className="pb-2 text-right">Cost</th>
+                      {isAuthed && <th className="pb-2 pl-3"></th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -222,7 +320,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       return (<>
                         {showDayHeader && (
                           <tr key={`day-${i}`} className="bg-gray-50">
-                            <td colSpan={10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                            <td colSpan={isAuthed ? 11 : 10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
                               {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                             </td>
                           </tr>
@@ -271,6 +369,29 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                               </div>
                             ) : <span className="font-mono text-gray-400">—</span>}
                           </td>
+                          {isAuthed && (
+                            <td className="py-2.5 pl-3">
+                              {orderGal > 0 && (() => {
+                                const rs = releaseStatus[i];
+                                if (rs?.status === "submitted") return (
+                                  <span className="text-xs px-2 py-1 rounded-md bg-green-100 text-green-700 font-medium whitespace-nowrap">Requested</span>
+                                );
+                                if (rs?.status === "loading") return (
+                                  <span className="text-xs px-2 py-1 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse whitespace-nowrap">Sending...</span>
+                                );
+                                if (rs?.status === "error") return (
+                                  <button onClick={() => submitRelease(i)}
+                                    className="text-xs px-2 py-1 rounded-md bg-red-100 text-red-700 font-medium hover:bg-red-200 transition-colors whitespace-nowrap"
+                                    title={rs.message}>Retry</button>
+                                );
+                                return (
+                                  <button onClick={() => submitRelease(i)}
+                                    className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors whitespace-nowrap">
+                                    Request Fuel</button>
+                                );
+                              })()}
+                            </td>
+                          )}
                         </tr>
                       </>);
                     })}
@@ -282,6 +403,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}</td>
                       <td className="py-2.5 pr-3"></td>
                       <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(optimized.totalTripCost)}</td>
+                      {isAuthed && <td></td>}
                     </tr>
                   </tfoot>
                 </table>
@@ -305,7 +427,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                         {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                       </div>
                     )}
-                    <div className={`rounded-lg border p-3 ${tankerOut > 0 ? "border-emerald-200 bg-emerald-50/50" : "border-gray-200 bg-white"}`}>
+                    <div className="rounded-lg border p-3 border-gray-200 bg-white">
                       {/* Leg header */}
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-1.5">
@@ -349,7 +471,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
                       {/* Tanker badge */}
                       {tankerOut > 0 && (
-                        <div className="mt-2 text-xs font-semibold text-emerald-700">
+                        <div className="mt-2 text-xs font-semibold text-gray-700">
                           Tanker +{fmtNum(tankerOut)} lbs
                         </div>
                       )}
@@ -369,6 +491,27 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                           <span className="font-mono font-bold text-gray-900">{fmtDollars(legCost)}</span>
                         )}
                       </div>
+
+                      {/* Request Fuel button */}
+                      {isAuthed && orderGal > 0 && (() => {
+                        const rs = releaseStatus[i];
+                        if (rs?.status === "submitted") return (
+                          <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-green-100 text-green-700 font-medium">Fuel Requested</div>
+                        );
+                        if (rs?.status === "loading") return (
+                          <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse">Sending...</div>
+                        );
+                        if (rs?.status === "error") return (
+                          <button onClick={() => submitRelease(i)}
+                            className="mt-2 w-full text-xs px-3 py-1.5 rounded-md bg-red-100 text-red-700 font-medium hover:bg-red-200 transition-colors"
+                            title={rs.message}>Retry Request</button>
+                        );
+                        return (
+                          <button onClick={() => submitRelease(i)}
+                            className="mt-2 w-full text-xs px-3 py-1.5 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors">
+                            Request Fuel</button>
+                        );
+                      })()}
                     </div>
                   </React.Fragment>);
                 })}
@@ -400,19 +543,9 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                     {optimized.tankerOutByStop.map((tankerOut, i) => {
                       if (tankerOut <= 0) return null;
                       const leg = plan.legs[i];
-                      const tankerIn = optimized.tankerInByStop[i] ?? 0;
-                      const nextLeg = plan.legs[i + 1];
-                      const nextPrice = nextLeg?.departurePricePerGal ?? 0;
-                      const isFeeWaiver = leg.departurePricePerGal >= nextPrice && nextPrice > 0;
                       return (
-                        <div key={i} className={`text-xs rounded-md px-3 py-1.5 border ${
-                          isFeeWaiver ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        }`}>
+                        <div key={i} className="text-xs rounded-md px-3 py-1.5 border bg-gray-50 text-gray-700 border-gray-200">
                           <span className="font-semibold">{leg.from}</span>: carry +{fmtNum(tankerOut)} lbs
-                          <span className={`ml-1 ${isFeeWaiver ? "text-blue-500" : "text-emerald-500"}`}>
-                            ({fmtNum(tankerIn)} lbs at {leg.to})
-                          </span>
-                          {isFeeWaiver && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600">FEE WAIVER</span>}
                         </div>
                       );
                     })}
@@ -443,37 +576,47 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
             <div className="px-4 sm:px-5 py-4 border-t border-gray-200">
               <p className="text-xs text-gray-500 mb-3">Override values per leg, then hit Recalculate.</p>
               <div className="space-y-3">
-                {plan.legs.map((leg, i) => (
-                  <div key={i} className="border border-gray-100 rounded-lg px-3 py-2">
-                    <div className="text-sm text-gray-700 font-semibold mb-2">{leg.from} &rarr; {leg.to}</div>
-                    <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-10">MLW</label>
-                        <input type="number" value={mlwOverrides[String(i)] ?? acDefaults.mlw}
-                          onChange={(e) => setMlwOverrides({ ...mlwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.mlw })}
-                          className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-10">ZFW</label>
-                        <input type="number" value={zfwOverrides[String(i)] ?? acDefaults.zfw}
-                          onChange={(e) => setZfwOverrides({ ...zfwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.zfw })}
-                          className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-10">Fee $</label>
-                        <input type="number" value={feeOverrides[String(i)] ?? (leg.waiver?.feeWaived ?? 0)}
-                          onChange={(e) => setFeeOverrides({ ...feeOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
-                          className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <label className="text-xs text-gray-500 w-10">Waive</label>
-                        <input type="number" value={waiverGalOverrides[String(i)] ?? (leg.waiver?.minGallons ?? 0)}
-                          onChange={(e) => setWaiverGalOverrides({ ...waiverGalOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
-                          className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                {plan.legs.map((leg, i) => {
+                  const legZfw = leg.ffZfw ?? acDefaults.zfw;
+                  const legMlw = leg.ffMlw ?? acDefaults.mlw;
+                  return (
+                    <div key={i} className="border border-gray-100 rounded-lg px-3 py-2">
+                      <div className="text-sm text-gray-700 font-semibold mb-2">{leg.from} &rarr; {leg.to}</div>
+                      <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-14">Fuel Burn</label>
+                          <input type="number" value={fuelBurnOverrides[String(i)] ?? leg.fuelToDestLbs}
+                            onChange={(e) => setFuelBurnOverrides({ ...fuelBurnOverrides, [String(i)]: parseInt(e.target.value) || leg.fuelToDestLbs })}
+                            className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-10">MLW</label>
+                          <input type="number" value={mlwOverrides[String(i)] ?? legMlw}
+                            onChange={(e) => setMlwOverrides({ ...mlwOverrides, [String(i)]: parseInt(e.target.value) || legMlw })}
+                            className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-10">ZFW</label>
+                          <input type="number" value={zfwOverrides[String(i)] ?? legZfw}
+                            onChange={(e) => setZfwOverrides({ ...zfwOverrides, [String(i)]: parseInt(e.target.value) || legZfw })}
+                            className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-10">Fee $</label>
+                          <input type="number" value={feeOverrides[String(i)] ?? (leg.waiver?.feeWaived ?? 0)}
+                            onChange={(e) => setFeeOverrides({ ...feeOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
+                            className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-10">Waive</label>
+                          <input type="number" value={waiverGalOverrides[String(i)] ?? (leg.waiver?.minGallons ?? 0)}
+                            onChange={(e) => setWaiverGalOverrides({ ...waiverGalOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
+                            className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               <button onClick={recalculate} disabled={recalculating}
                 className="mt-4 w-full sm:w-auto px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors">
