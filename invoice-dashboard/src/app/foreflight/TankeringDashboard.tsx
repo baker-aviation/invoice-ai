@@ -32,6 +32,7 @@ interface LegData {
   priceSource?: "trip_notes" | "contract" | "retail" | "airport_fallback" | "none";
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
+  allVendors?: Array<{ vendor: string; price: number; tier: string }>;
   ffSource: "foreflight" | "estimate";
   waiver?: LegWaiver;
 }
@@ -126,7 +127,7 @@ export default function TankeringDashboard() {
   // ── Share to Slack handler (consolidated fleet summary) ──
   const handleShareSlack = useCallback(async () => {
     if (!result?.plans.length) return;
-    if (!window.confirm("Post daily tankering summary to #fuel-planning? Each tail will have a clickable plan link.")) return;
+    if (!window.confirm("Post daily fuel briefing to #fuel-planning? Each tail will have a clickable plan link.")) return;
     setSharing(true);
     setShareResult(null);
     setError(null);
@@ -147,7 +148,7 @@ export default function TankeringDashboard() {
         setError(data.error ?? "Failed to share to Slack");
         return;
       }
-      setShareResult(`Tankering summary sent to Slack (${data.sent} with savings)`);
+      setShareResult(`Fuel briefing sent to Slack (${data.sent} plans sent)`);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -274,7 +275,7 @@ export default function TankeringDashboard() {
                 {noSavings.length > 0 && (
                   <div className="mt-2">
                     <p className="text-xs text-gray-400 uppercase font-medium tracking-wide mb-2">
-                      No tankering opportunity ({noSavings.length} aircraft)
+                      Vendor plan only — no tankering savings ({noSavings.length} aircraft)
                     </p>
                     {noSavings.map((tp) => (
                       <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen={false} />
@@ -300,6 +301,8 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
   const [sent, setSent] = useState(false);
   const [linkSent, setLinkSent] = useState<string | null>(null);
   const [open, setOpen] = useState(defaultOpen);
+  const [showVendorPlan, setShowVendorPlan] = useState(false);
+  const hasVendorData = tp.legs.some((l) => (l.allVendors?.length ?? 0) > 0 || l.departureFboVendor);
 
   const handleSendToSlack = async () => {
     if (!plan) return;
@@ -381,6 +384,71 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
         </div>
       )}
 
+      {/* Fuel Vendor Plan toggle */}
+      {hasVendorData && (
+        <div className="border-t border-gray-100">
+          <button
+            onClick={() => setShowVendorPlan(!showVendorPlan)}
+            className="w-full px-5 py-2.5 flex items-center gap-2 text-left hover:bg-blue-50 transition-colors"
+          >
+            <svg className={`w-3.5 h-3.5 text-blue-500 transition-transform ${showVendorPlan ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Fuel Vendor Plan</span>
+          </button>
+          {showVendorPlan && (
+            <div className="px-5 pb-3 space-y-1.5">
+              {tp.legs.map((leg, i) => {
+                const vendors = leg.allVendors ?? [];
+                const chosen = leg.departureFboVendor;
+                const chosenPrice = leg.departurePricePerGal;
+                const best = vendors[0];
+                const isOverpaying = best && chosenPrice > 0 && chosenPrice > best.price + 0.005;
+                const sourceLabel = leg.priceSource === "trip_notes" ? "Rep pick" : leg.priceSource === "contract" ? "Contract" : leg.priceSource === "retail" ? "Retail" : "";
+
+                return (
+                  <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 py-1.5 border-b border-gray-50 last:border-0">
+                    <div className="flex items-center gap-2 min-w-[100px]">
+                      <span className="font-semibold text-gray-900 text-sm">{leg.from}</span>
+                      <span className="text-gray-400 text-xs">&rarr;</span>
+                      <span className="text-gray-500 text-sm">{leg.to}</span>
+                    </div>
+                    <div className="flex-1 flex items-center gap-2 flex-wrap">
+                      {chosen && chosenPrice > 0 ? (
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          isOverpaying ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"
+                        }`}>
+                          {chosen} @ ${chosenPrice.toFixed(4)}/gal
+                          {sourceLabel && <span className="ml-1 opacity-60">({sourceLabel})</span>}
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">No vendor selected</span>
+                      )}
+                      {isOverpaying && best && (
+                        <span className="text-xs text-amber-600 font-medium">
+                          Better: {best.vendor} @ ${best.price.toFixed(4)} (save ${(chosenPrice - best.price).toFixed(4)}/gal)
+                        </span>
+                      )}
+                    </div>
+                    {vendors.length > 1 && (
+                      <div className="flex gap-1 flex-wrap">
+                        {vendors.slice(0, 4).map((v, vi) => (
+                          <span key={vi} className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                            vi === 0 ? "border-green-200 bg-green-50 text-green-700 font-medium" : "border-gray-100 text-gray-500"
+                          }`}>
+                            {v.vendor} ${v.price.toFixed(4)} <span className="opacity-50">{v.tier}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Legs table */}
       {plan && tp.legs.length > 0 && (
         <div className="px-5 py-4">
@@ -389,7 +457,7 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
               <thead>
                 <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
                   <th className="pb-2 pr-3">Leg</th>
-                  <th className="pb-2 pr-3 text-right">Fuel Burn</th>
+                  <th className="pb-2 pr-3 text-right">Fuel to Dest</th>
                   <th className="pb-2 pr-3 text-right">Flight Time</th>
                   <th className="pb-2 pr-3 text-right">Price/gal</th>
                   <th className="pb-2 pr-3">FBO</th>
@@ -560,7 +628,7 @@ function SendAlertsButton({ date }: { date: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const handleSend = async () => {
-    if (!window.confirm("This will send tankering alerts to Slack for all aircraft with savings. Continue?")) return;
+    if (!window.confirm("This will send fuel briefings to Slack for all aircraft. Continue?")) return;
     setSending(true);
     setError(null);
     setResult(null);
@@ -575,7 +643,7 @@ function SendAlertsButton({ date }: { date: string }) {
         setError(data.error ?? "Failed");
         return;
       }
-      setResult({ sent: data.sent, savingsPlans: data.savingsPlans });
+      setResult({ sent: data.sent, savingsPlans: data.briefingsSent ?? data.savingsPlans });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -591,11 +659,11 @@ function SendAlertsButton({ date }: { date: string }) {
         size="lg"
         className="bg-green-600 hover:bg-green-500 text-white"
       >
-        {sending ? "Sending Alerts..." : "Send Tankering Alerts"}
+        {sending ? "Sending..." : "Send Fuel Briefings"}
       </Button>
       {result && (
         <span className="text-sm text-green-700 font-medium">
-          {result.savingsPlans} aircraft with savings, {result.sent} alerts sent
+          {result.savingsPlans} briefings, {result.sent} sent to Slack
         </span>
       )}
       {error && <span className="text-sm text-red-600">{error}</span>}
