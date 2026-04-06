@@ -3,6 +3,7 @@ import { verifyCronSecret } from "@/lib/api-auth";
 import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 import { postSlackMessage } from "@/lib/slack";
 import { createServiceClient } from "@/lib/supabase/service";
+import { randomBytes } from "crypto";
 
 export const maxDuration = 120;
 
@@ -68,7 +69,7 @@ export async function GET(req: NextRequest) {
       aircraftType: string;
       shutdownFuel: number;
       shutdownAirport: string;
-      legs: Array<{ from: string; to: string }>;
+      legs: Array<{ from: string; to: string; departureFboVendor?: string; departurePricePerGal?: number }>;
       plan: { tankerOutByStop: number[]; fuelOrderGalByStop?: number[]; totalFuelCost: number; totalFees: number; totalTripCost: number } | null;
       naiveCost: number;
       tankerSavings: number;
@@ -138,6 +139,27 @@ export async function GET(req: NextRequest) {
     results.planCache = { error: String(err) };
   }
 
+  // 4b. Create shareable plan links for each tail (24h expiry)
+  const supa2 = createServiceClient();
+  const planLinkByTail = new Map<string, string>();
+  for (const tp of plans) {
+    if (!tp.plan || tp.error) continue;
+    const linkToken = randomBytes(24).toString("base64url");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { error: linkErr } = await supa2.from("fuel_plan_links").insert({
+      token: linkToken,
+      tail_number: tp.tail,
+      aircraft_type: tp.aircraftType,
+      date: dateStr,
+      plan_data: tp,
+      expires_at: expiresAt,
+    });
+    if (!linkErr) {
+      planLinkByTail.set(tp.tail, `${origin}/tanker/plan/${linkToken}`);
+    }
+  }
+  results.planLinks = planLinkByTail.size;
+
   // 5. Post clean summary to Slack
   const withSavings = plans
     .filter((p) => p.tankerSavings > 0 && p.plan && !p.error)
@@ -160,7 +182,17 @@ export async function GET(req: NextRequest) {
   for (const tp of withSavings) {
     const route = buildRoute(tp);
     const fees = tp.plan!.totalFees > 0 ? `  (+${fmtDollars(tp.plan!.totalFees)} fees)` : "";
-    lines.push(`*${tp.tail}*  \`${acLabel(tp.aircraftType)}\`  ${route}  *${fmtDollars(tp.tankerSavings)}* saved${fees}`);
+    const planLink = planLinkByTail.get(tp.tail);
+    const linkSuffix = planLink ? `  <${planLink}|View Plan>` : "";
+    lines.push(`*${tp.tail}*  \`${acLabel(tp.aircraftType)}\`  ${route}  *${fmtDollars(tp.tankerSavings)}* saved${fees}${linkSuffix}`);
+
+    // Vendor plan: show vendor at each stop
+    const vendorDetail = (tp.legs ?? [])
+      .filter((l) => (l.departurePricePerGal ?? 0) > 0)
+      .map((l) =>
+        `${strip(l.from)}: ${l.departureFboVendor ?? "—"} $${(l.departurePricePerGal ?? 0).toFixed(2)}`)
+      .join(" · ");
+    if (vendorDetail) lines.push(`     _${vendorDetail}_`);
 
     const tankerLegs = (tp.plan?.tankerOutByStop ?? [])
       .map((t, i) => ({ lbs: t, from: tp.legs[i]?.from ?? "?" }))
@@ -169,13 +201,27 @@ export async function GET(req: NextRequest) {
       const detail = tankerLegs
         .map((t) => `+${Math.round(t.lbs).toLocaleString()} lbs at ${strip(t.from)}`)
         .join(", ");
-      lines.push(`     _${detail}_`);
+      lines.push(`     _Tanker: ${detail}_`);
     }
   }
 
+  // Tails with vendor plans but no tankering savings
   if (noSavings.length > 0) {
-    const tails = noSavings.map((tp) => tp.tail).join(", ");
-    lines.push(`\n_No tankering opportunity:_ ${tails}`);
+    lines.push("");
+    for (const tp of noSavings) {
+      const route = buildRoute(tp);
+      const vendorDetail = (tp.legs ?? [])
+        .filter((l: { departurePricePerGal?: number }) => (l.departurePricePerGal ?? 0) > 0)
+        .map((l: { from: string; departureFboVendor?: string; departurePricePerGal?: number }) =>
+          `${strip(l.from)}: ${l.departureFboVendor ?? "—"} $${(l.departurePricePerGal ?? 0).toFixed(2)}`)
+        .join(" · ");
+      if (vendorDetail) {
+        const planLink = planLinkByTail.get(tp.tail);
+        const linkSuffix = planLink ? `  <${planLink}|View Plan>` : "";
+        lines.push(`*${tp.tail}*  \`${acLabel(tp.aircraftType)}\`  ${route}${linkSuffix}`);
+        lines.push(`     _${vendorDetail}_`);
+      }
+    }
   }
 
   const savingsTotal = fleetTotals?.tankerSavings ?? 0;
@@ -189,7 +235,7 @@ export async function GET(req: NextRequest) {
   const blocks = [
     {
       type: "header",
-      text: { type: "plain_text", text: `${runLabel} Tankering Summary — ${dateStr}`, emoji: true },
+      text: { type: "plain_text", text: `${runLabel} Fuel Briefing — ${dateStr}`, emoji: true },
     },
     {
       type: "section",
@@ -204,7 +250,7 @@ export async function GET(req: NextRequest) {
   try {
     const slackResult = await postSlackMessage({
       channel: FUEL_PLANNING_CHANNEL,
-      text: `${runLabel} Tankering Summary — ${dateStr} | ${fmtDollars(savingsTotal)} saved`,
+      text: `${runLabel} Fuel Briefing — ${dateStr} | ${fmtDollars(savingsTotal)} saved`,
       blocks,
     });
 

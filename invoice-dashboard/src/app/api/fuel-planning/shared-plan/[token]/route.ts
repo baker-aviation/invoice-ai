@@ -45,6 +45,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     date: data.date,
     plan: data.plan_data,
     expires_at: data.expires_at,
+    overrides: data.overrides ?? null,
   });
 }
 
@@ -148,6 +149,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       departurePricePerGal: leg.departurePricePerGal,
       waiveFeesGallons: waiverGal,
       feesWaivedDollars: fee,
+      feeForced: feeOverrides[String(i)] != null,
     };
   });
 
@@ -160,6 +162,25 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   };
 
   const optimized = optimizeMultiLeg(inputs, ppg);
+
+  // Persist overrides to DB so they survive page refresh
+  const hasOverrides = Object.keys(mlwOverrides).length > 0 ||
+    Object.keys(zfwOverrides).length > 0 ||
+    Object.keys(feeOverrides).length > 0 ||
+    Object.keys(waiverGalOverrides).length > 0 ||
+    Object.keys(fuelBurnOverrides).length > 0;
+
+  if (hasOverrides) {
+    await supa.from("fuel_plan_links").update({
+      overrides: {
+        mlw: mlwOverrides,
+        zfw: zfwOverrides,
+        fee: feeOverrides,
+        waiver_gal: waiverGalOverrides,
+        fuel_burn: fuelBurnOverrides,
+      },
+    }).eq("token", token);
+  }
 
   if (!optimized) {
     return NextResponse.json({

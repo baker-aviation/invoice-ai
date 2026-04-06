@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
-import { buildBestRateByAirport, airportVariants, getBestRateAtFbo } from "@/lib/fuelLookup";
+import { buildBestRateByAirport, airportVariants, getBestRateAtFbo, getAllRatesAtFbo } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, STD_AIRCRAFT, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
 import { getFboWaiver, preloadDbFees } from "@/lib/fboFeeLookup";
 
@@ -113,6 +113,7 @@ interface LegData {
   priceSource: "trip_notes" | "contract" | "retail" | "airport_fallback" | "none";
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
+  allVendors?: Array<{ vendor: string; price: number; tier: string }>;
   ffSource: "foreflight" | "estimate";
   ffZfw: number | null;   // ForeFlight actual ZFW for this leg
   ffMlw: number | null;   // ForeFlight actual MLW for this leg
@@ -399,6 +400,12 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // All available vendors at this FBO (for vendor plan display)
+        const allVendors = fboName
+          ? getAllRatesAtFbo(advertisedPrices, leg.departure_icao, fboName)
+              .map((r) => ({ vendor: r.vendor, price: r.price, tier: r.tier }))
+          : [];
+
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
@@ -412,6 +419,7 @@ export async function POST(req: NextRequest) {
           priceSource: depRate > 0 ? priceSource : "none" as const,
           bestPriceAtFbo: bestAtFbo,
           bestVendorAtFbo: bestVendorAtFbo,
+          allVendors,
           ffSource: "estimate" as const,
           ffZfw: null,
           ffMlw: null,

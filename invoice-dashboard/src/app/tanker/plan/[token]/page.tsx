@@ -3,6 +3,12 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { STD_AIRCRAFT, type AircraftType } from "@/app/tanker/model";
 
+type VendorOption = {
+  vendor: string;
+  price: number;
+  tier: string;
+};
+
 type LegData = {
   from: string;
   to: string;
@@ -13,6 +19,10 @@ type LegData = {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
+  priceSource?: "trip_notes" | "contract" | "retail" | "airport_fallback" | "none";
+  bestPriceAtFbo?: number | null;
+  bestVendorAtFbo?: string | null;
+  allVendors?: VendorOption[];
   ffSource: string;
   ffZfw: number | null;
   ffMlw: number | null;
@@ -85,6 +95,13 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const [feeOverrides, setFeeOverrides] = useState<Record<string, number>>({});
   const [waiverGalOverrides, setWaiverGalOverrides] = useState<Record<string, number>>({});
   const [fuelBurnOverrides, setFuelBurnOverrides] = useState<Record<string, number>>({});
+  const [priceHistory, setPriceHistory] = useState<Record<string, {
+    avgPrice: number;
+    minPrice: number;
+    maxPrice: number;
+    recentPrices: Array<{ price: number; vendor: string; date: string; gallons: number; tail: string }>;
+  }> | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => { params.then((p) => setToken(p.token)); }, [params]);
 
@@ -97,11 +114,33 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
       setPlan(data.plan);
       setDate(data.date);
       setExpiresAt(data.expires_at);
+      // Restore persisted overrides (survive page refresh)
+      if (data.overrides) {
+        if (data.overrides.mlw) setMlwOverrides(data.overrides.mlw);
+        if (data.overrides.zfw) setZfwOverrides(data.overrides.zfw);
+        if (data.overrides.fee) setFeeOverrides(data.overrides.fee);
+        if (data.overrides.waiver_gal) setWaiverGalOverrides(data.overrides.waiver_gal);
+        if (data.overrides.fuel_burn) setFuelBurnOverrides(data.overrides.fuel_burn);
+      }
     } catch { setError("Failed to load plan"); }
     setLoading(false);
   }, [token]);
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
+
+  // Fetch price history when plan loads
+  useEffect(() => {
+    if (!plan?.legs?.length) return;
+    const airports = [...new Set(plan.legs.map((l) => {
+      const c = l.from;
+      return c.length === 4 && c.startsWith("K") ? c.slice(1) : c;
+    }))];
+    if (!airports.length) return;
+    fetch(`/api/fuel-planning/price-history?airports=${airports.join(",")}&limit=5`)
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setPriceHistory(d.history); })
+      .catch(() => {});
+  }, [plan]);
 
   // Check if viewer is authenticated (for fuel release buttons)
   useEffect(() => {
@@ -286,7 +325,126 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
             </div>
           </div>
 
-          {optimized && plan.legs.length > 0 && (
+          {/* Fuel Vendor Plan */}
+        {plan.legs.length > 0 && plan.legs.some((l) => (l.allVendors?.length ?? 0) > 0 || l.departureFboVendor) && (
+          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+            <div className="px-4 sm:px-5 py-3 bg-blue-50 border-b border-blue-100">
+              <span className="text-sm font-semibold text-blue-900">Fuel Vendor Plan</span>
+              <span className="text-xs text-blue-600 ml-2">Best vendor at each stop</span>
+            </div>
+            <div className="px-4 sm:px-5 py-3">
+              <div className="space-y-2">
+                {plan.legs.map((leg, i) => {
+                  const vendors = leg.allVendors ?? [];
+                  const chosen = leg.departureFboVendor;
+                  const chosenPrice = leg.departurePricePerGal;
+                  const best = vendors[0];
+                  const isOverpaying = best && chosenPrice > 0 && chosenPrice > best.price + 0.005;
+                  const sourceLabel = leg.priceSource === "trip_notes" ? "Rep pick" : leg.priceSource === "contract" ? "Contract" : leg.priceSource === "retail" ? "Retail" : "";
+
+                  return (
+                    <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 py-2 border-b border-gray-50 last:border-0">
+                      <div className="flex items-center gap-2 min-w-[120px]">
+                        <span className="font-semibold text-gray-900 text-sm">{leg.from}</span>
+                        <span className="text-gray-400 text-xs">&rarr;</span>
+                        <span className="text-gray-500 text-sm">{leg.to}</span>
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {/* Current choice */}
+                          {chosen && chosenPrice > 0 ? (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              isOverpaying ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"
+                            }`}>
+                              {chosen} @ ${chosenPrice.toFixed(4)}/gal
+                              {sourceLabel && <span className="ml-1 opacity-60">({sourceLabel})</span>}
+                            </span>
+                          ) : (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">No vendor selected</span>
+                          )}
+
+                          {/* Overpay warning */}
+                          {isOverpaying && best && (
+                            <span className="text-xs text-amber-600 font-medium">
+                              Better: {best.vendor} @ ${best.price.toFixed(4)} (save ${(chosenPrice - best.price).toFixed(4)}/gal)
+                            </span>
+                          )}
+                        </div>
+
+                        {/* FBO name */}
+                        {leg.departureFbo && (
+                          <div className="text-[10px] text-gray-400 mt-0.5">{leg.departureFbo}</div>
+                        )}
+                      </div>
+
+                      {/* All vendor options dropdown-style list */}
+                      {vendors.length > 1 && (
+                        <div className="flex gap-1 flex-wrap">
+                          {vendors.slice(0, 4).map((v, vi) => (
+                            <span key={vi} className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                              vi === 0 ? "border-green-200 bg-green-50 text-green-700 font-medium" : "border-gray-100 text-gray-500"
+                            }`}>
+                              {v.vendor} ${v.price.toFixed(4)} <span className="opacity-50">{v.tier}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Price History — collapsible */}
+        {priceHistory && Object.keys(priceHistory).length > 0 && (
+          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+            <button onClick={() => setShowHistory(!showHistory)}
+              className="w-full px-4 sm:px-5 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors">
+              <span className="text-sm font-medium text-gray-700">Price History</span>
+              <svg className={`w-4 h-4 text-gray-400 transition-transform ${showHistory ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showHistory && (
+              <div className="px-4 sm:px-5 py-3 border-t border-gray-200 space-y-3">
+                {plan.legs.map((leg, i) => {
+                  const ap = leg.from.length === 4 && leg.from.startsWith("K") ? leg.from.slice(1) : leg.from;
+                  const hist = priceHistory[ap];
+                  if (!hist || hist.recentPrices.length === 0) return null;
+                  return (
+                    <div key={i} className="border-b border-gray-50 pb-2 last:border-0 last:pb-0">
+                      <div className="flex items-center gap-3 mb-1">
+                        <span className="font-semibold text-sm text-gray-900">{ap}</span>
+                        <span className="text-xs text-gray-500">
+                          Avg ${hist.avgPrice.toFixed(4)} · Low ${hist.minPrice.toFixed(4)} · High ${hist.maxPrice.toFixed(4)}
+                        </span>
+                        {leg.departurePricePerGal > 0 && hist.avgPrice > 0 && (
+                          <span className={`text-xs font-medium ${
+                            leg.departurePricePerGal < hist.avgPrice ? "text-green-600" : leg.departurePricePerGal > hist.avgPrice + 0.05 ? "text-red-600" : "text-gray-500"
+                          }`}>
+                            {leg.departurePricePerGal < hist.avgPrice ? "Below avg" : leg.departurePricePerGal > hist.avgPrice + 0.05 ? "Above avg" : "Near avg"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {hist.recentPrices.map((p, pi) => (
+                          <span key={pi} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-100 text-gray-500">
+                            ${p.price.toFixed(4)} · {p.vendor} · {p.date} · {Math.round(p.gallons)} gal
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {optimized && plan.legs.length > 0 && (
             <div className="px-4 sm:px-5 py-4">
 
               {/* Desktop table — hidden on mobile */}
@@ -295,7 +453,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                   <thead>
                     <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
                       <th className="pb-2 pr-3">Leg</th>
-                      <th className="pb-2 pr-3 text-right">Fuel Burn</th>
+                      <th className="pb-2 pr-3 text-right">Fuel to Dest</th>
                       <th className="pb-2 pr-3 text-right">Flight Time</th>
                       <th className="pb-2 pr-3 text-right">Price/gal</th>
                       <th className="pb-2 pr-3">FBO</th>
@@ -584,7 +742,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       <div className="text-sm text-gray-700 font-semibold mb-2">{leg.from} &rarr; {leg.to}</div>
                       <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3">
                         <div className="flex items-center gap-1">
-                          <label className="text-xs text-gray-500 w-14">Fuel Burn</label>
+                          <label className="text-xs text-gray-500 w-14">To Dest</label>
                           <input type="number" value={fuelBurnOverrides[String(i)] ?? leg.fuelToDestLbs}
                             onChange={(e) => setFuelBurnOverrides({ ...fuelBurnOverrides, [String(i)]: parseInt(e.target.value) || leg.fuelToDestLbs })}
                             className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
