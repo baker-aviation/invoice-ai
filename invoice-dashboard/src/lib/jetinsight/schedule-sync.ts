@@ -355,9 +355,11 @@ export async function syncSalespersons(): Promise<{
   if (tripIds.length === 0) return result;
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const deadline = Date.now() + 4.5 * 60 * 1000; // 4.5 min hard stop (within 5 min maxDuration)
 
-  for (const tripId of tripIds.slice(0, 80)) { // Cap at 80 per run
-    await sleep(1000);
+  for (const tripId of tripIds) {
+    if (Date.now() > deadline) break;
+    await sleep(500);
     try {
       const res = await fetch(`${BASE_URL}/trips/${tripId}`, {
         method: "GET",
