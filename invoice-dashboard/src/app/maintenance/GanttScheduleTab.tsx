@@ -391,7 +391,7 @@ function MxQueueCard({ note, isOverdue }: { note: MxNote; isOverdue?: boolean })
 // Tail Detail Popup
 // ---------------------------------------------------------------------------
 
-function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, onCreateMx }: {
+function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, onCreateMx, onAcknowledgeMx }: {
   tail: string;
   mxNotes: MxNote[];
   aircraftType: string;
@@ -399,6 +399,7 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
   onClose: () => void;
   onEditMx: (noteId: string, pos: { top: number; left: number }) => void;
   onCreateMx: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
+  onAcknowledgeMx: (noteId: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -434,13 +435,20 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
               <div key={n.id} className="rounded border border-orange-200 bg-orange-50 p-1.5 mb-1 text-[10px]">
                 <div className="flex items-start justify-between">
                   <div className="font-bold text-orange-800">{n.subject ?? "MEL"}</div>
-                  <button
-                    onClick={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
-                    }}
-                    className="text-blue-500 hover:text-blue-700 text-[9px] font-medium ml-1 flex-shrink-0"
-                  >Edit</button>
+                  <div className="flex items-center gap-1.5 ml-1 flex-shrink-0">
+                    <button
+                      onClick={(e) => {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
+                      }}
+                      className="text-blue-500 hover:text-blue-700 text-[9px] font-medium"
+                    >Edit</button>
+                    <button
+                      onClick={() => onAcknowledgeMx(n.id)}
+                      className="text-red-400 hover:text-red-600 text-[9px] font-bold leading-none"
+                      title="Acknowledge / remove"
+                    >&times;</button>
+                  </div>
                 </div>
                 {n.description && <div className="text-orange-700 mt-0.5">{n.description}</div>}
                 <div className="text-orange-500 mt-0.5 flex gap-2">
@@ -460,13 +468,20 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
             <div key={n.id} className="rounded border border-red-200 bg-red-50 p-1.5 mb-1 text-[10px]">
               <div className="flex items-start justify-between">
                 <div className="font-bold text-red-800">{n.subject ?? n.description ?? "Maintenance"}</div>
-                <button
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
-                  }}
-                  className="text-blue-500 hover:text-blue-700 text-[9px] font-medium ml-1 flex-shrink-0"
-                >Edit</button>
+                <div className="flex items-center gap-1.5 ml-1 flex-shrink-0">
+                  <button
+                    onClick={(e) => {
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
+                    }}
+                    className="text-blue-500 hover:text-blue-700 text-[9px] font-medium"
+                  >Edit</button>
+                  <button
+                    onClick={() => onAcknowledgeMx(n.id)}
+                    className="text-red-400 hover:text-red-600 text-[9px] font-bold leading-none"
+                    title="Acknowledge / remove"
+                  >&times;</button>
+                </div>
               </div>
               {n.body && n.body !== n.subject && <div className="text-red-700 mt-0.5 whitespace-pre-wrap">{n.body}</div>}
               <div className="text-red-500 mt-0.5 flex gap-2">
@@ -1228,6 +1243,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             setMxPopoverId(noteId);
           }}
           onCreateMx={createMx}
+          onAcknowledgeMx={acknowledgeMx}
         />
         </>
       )}
