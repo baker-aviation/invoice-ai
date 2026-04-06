@@ -1837,10 +1837,10 @@ function CrewInfoPanel({ data }: { data: CrewInfoData }) {
         </CollapsibleSection>
       )}
 
-      {/* Calendar — Target Week Crew */}
+      {/* Calendar — Oncoming Crew */}
       {data.target_week_crew && (
         <CollapsibleSection
-          title="Target Week Crew"
+          title="Oncoming Crew"
           open={showCalendar}
           toggle={() => setShowCalendar(!showCalendar)}
           color="text-purple-700"
@@ -1944,6 +1944,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [optimizing, setOptimizing] = useState(false);
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  const [optimizeStatus, setOptimizeStatus] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const swapPlanRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -3483,6 +3485,38 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     }
   }
 
+  // One-click full optimize: detect rotation → seed flights → compute routes → optimize
+  async function runFullOptimize() {
+    setOptimizing(true);
+    setOptimizeError(null);
+    try {
+      // Step 1: Auto-detect rotation (if not already detected)
+      if (!rotationSource) {
+        setOptimizeStatus("Detecting rotation...");
+        await detectRotation();
+      }
+
+      // Step 2: Seed flights (fill mode — skips pairs already cached)
+      setOptimizeStatus("Checking flight cache...");
+      await seedFlights();
+
+      // Step 3: Compute routes (skips already-cached drive times)
+      setOptimizeStatus("Computing routes...");
+      await computeRoutes();
+
+      // Step 4: Run optimizer
+      setOptimizeStatus("Optimizing...");
+      await runOptimizer();
+
+      setOptimizeStatus(null);
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Optimization failed");
+      setOptimizeStatus(null);
+    } finally {
+      setOptimizing(false);
+    }
+  }
+
   // Derived: impacted tails set
   const impactedTails = useMemo(
     () => new Set(swapAlerts.filter((a) => !a.acknowledged).map((a) => a.tail_number)),
@@ -4527,7 +4561,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               <input type="checkbox" checked={reviewChecks.calendar_reviewed}
                 onChange={(e) => setReviewChecks((p) => ({ ...p, calendar_reviewed: e.target.checked }))}
                 className="rounded border-gray-300" />
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">5. Calendar Confirmation</h3>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">5. Oncoming Rotation</h3>
             </div>
             <span className="text-[10px] text-gray-400">
               {crewInfoData?.target_week_crew ? `Rotation ${crewInfoData.target_week_crew.rotation}` : "—"}
@@ -5002,42 +5036,23 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               </button>
             </div>
             <button
-              onClick={detectRotation}
-              disabled={detectingRotation || optimizing}
-              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                detectingRotation ? "bg-gray-100 text-gray-400" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
+              onClick={runFullOptimize}
+              disabled={optimizing || computingRoutes || seedingFlights || detectingRotation}
+              className={`px-4 py-1.5 text-xs font-semibold border rounded-lg ${
+                optimizing || computingRoutes || seedingFlights || detectingRotation
+                  ? "bg-gray-100 text-gray-400 border-gray-200"
+                  : "bg-blue-600 text-white hover:bg-blue-700 border-blue-600 shadow-sm"
               }`}
+              title="Auto-detect rotation → seed flights → compute routes → optimize"
             >
-              {detectingRotation ? "Detecting..." : "Auto-Detect Rotation"}
+              {optimizing ? (optimizeStatus ?? "Optimizing...") : "Optimize"}
             </button>
             <button
-              onClick={computeRoutes}
-              disabled={computingRoutes || optimizing}
-              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-gray-50 text-gray-700 hover:bg-gray-100 border-gray-200"
-              }`}
-              title="Compute drive times for all crew-to-swap routes"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="px-2 py-1.5 text-[10px] font-medium text-gray-400 hover:text-gray-600"
+              title="Show individual step buttons"
             >
-              {computingRoutes ? "Computing..." : "Compute Routes"}
-            </button>
-            <button
-              onClick={seedFlights}
-              disabled={seedingFlights || optimizing}
-              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
-              }`}
-              title="Seed commercial flight cache from Google Flights via HasData"
-            >
-              {seedingFlights ? "Seeding Flights..." : "Seed Flights"}
-            </button>
-            <button
-              onClick={() => runOptimizer()}
-              disabled={optimizing || computingRoutes}
-              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
-              }`}
-            >
-              {optimizing ? "Optimizing..." : "Optimize"}
+              {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
             </button>
             {swapPlan && (
               <>
@@ -5102,6 +5117,51 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             )}
           </div>
         </div>
+
+        {/* Advanced: individual step buttons */}
+        {showAdvanced && (
+          <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-2 text-[10px]">
+            <span className="text-gray-400 font-medium mr-1">Manual steps:</span>
+            <button
+              onClick={detectRotation}
+              disabled={detectingRotation || optimizing}
+              className={`px-2.5 py-1 font-medium border rounded ${
+                detectingRotation ? "bg-gray-100 text-gray-400" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
+              }`}
+            >
+              {detectingRotation ? "Detecting..." : "Auto-Detect Rotation"}
+            </button>
+            <button
+              onClick={seedFlights}
+              disabled={seedingFlights || optimizing}
+              className={`px-2.5 py-1 font-medium border rounded ${
+                seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+              }`}
+              title="Seed commercial flight cache from Google Flights via HasData"
+            >
+              {seedingFlights ? "Seeding Flights..." : "Seed Flights"}
+            </button>
+            <button
+              onClick={computeRoutes}
+              disabled={computingRoutes || optimizing}
+              className={`px-2.5 py-1 font-medium border rounded ${
+                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200"
+              }`}
+              title="Compute drive times for all crew-to-swap routes"
+            >
+              {computingRoutes ? "Computing..." : "Compute Routes"}
+            </button>
+            <button
+              onClick={() => runOptimizer()}
+              disabled={optimizing || computingRoutes}
+              className={`px-2.5 py-1 font-medium border rounded ${
+                optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+              }`}
+            >
+              {optimizing ? "Optimizing..." : "Run Optimizer Only"}
+            </button>
+          </div>
+        )}
 
         {optimizeError && (
           <div className="px-4 py-3 bg-red-50 border-b border-red-200 text-sm text-red-700">

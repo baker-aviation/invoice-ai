@@ -454,14 +454,15 @@ export async function POST(req: NextRequest) {
     if (swapDate) {
       const targetTs = new Date(swapDate + "T12:00:00Z").getTime();
 
+      // Find the rotation that starts on swap day (oncoming crew, not current/offgoing)
       for (const week of result.calendar_weeks) {
         // date_range looks like "March 18, 2026 - March 25, 2026"
         const rangeParts = week.date_range.split(/\s*-\s*/);
         if (rangeParts.length !== 2) continue;
         const startTs = new Date(rangeParts[0].trim() + " 00:00:00 UTC").getTime();
-        const endTs = new Date(rangeParts[1].trim() + " 23:59:59 UTC").getTime();
-        if (isNaN(startTs) || isNaN(endTs)) continue;
-        if (targetTs >= startTs && targetTs <= endTs) {
+        if (isNaN(startTs)) continue;
+        // Match the week that starts on or within 1 day of the swap date
+        if (Math.abs(startTs - targetTs) <= 86400_000) {
           targetWeekCrew = week;
           break;
         }
