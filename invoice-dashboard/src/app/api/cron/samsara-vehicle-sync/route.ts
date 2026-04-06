@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { postSlackMessage } from "@/lib/slack";
 
 const SAMSARA_BASE = "https://api.samsara.com";
 const SLACK_CHANNEL = "C0AR2R54BPC"; // #vehicles
@@ -195,7 +194,18 @@ export async function GET(req: NextRequest) {
 
   if (blocks.length > 0) {
     blocks.unshift({ type: "header", text: { type: "plain_text", text: "Samsara Fleet Update" } });
-    await postSlackMessage({ channel: SLACK_CHANNEL, text: "Samsara fleet change detected", blocks });
+    const slackToken = process.env.SLACK_BOT_TOKEN;
+    if (slackToken) {
+      const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${slackToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: SLACK_CHANNEL, text: "Samsara fleet change detected", blocks }),
+      });
+      const slackData = await slackRes.json();
+      if (!slackData.ok) console.error("[samsara-vehicle-sync] Slack error:", slackData.error);
+    } else {
+      console.warn("[samsara-vehicle-sync] SLACK_BOT_TOKEN not set — skipping Slack");
+    }
   }
 
   const summary = {
