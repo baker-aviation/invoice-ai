@@ -189,6 +189,18 @@ function VehicleFleetRow({
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
             <span className="font-medium text-gray-800">{v.name || v.id}</span>
+            {(() => {
+              const t = inferTypeFromName(v.name);
+              const badge = t === "van" ? { label: "Van", cls: "bg-blue-100 text-blue-700" }
+                : t === "truck" ? { label: "Truck", cls: "bg-purple-100 text-purple-700" }
+                : t === "crew_car" ? { label: "Crew Car", cls: "bg-emerald-100 text-emerald-700" }
+                : null;
+              return badge ? (
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badge.cls}`}>
+                  {badge.label}
+                </span>
+              ) : null;
+            })()}
             {celOn && (
               <span className="text-xs bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">
                 Check Engine
@@ -638,6 +650,23 @@ function MaintenanceSchedule({
 // ─── Main client component ────────────────────────────────────────────────────
 
 type ActiveTab = "fleet" | "maintenance";
+type VehicleFilter = "all" | "van" | "truck" | "crew_car" | "other";
+
+const VEHICLE_FILTERS: { key: VehicleFilter; label: string; icon: string }[] = [
+  { key: "all", label: "All", icon: "" },
+  { key: "van", label: "AOG Vans", icon: "🚐" },
+  { key: "truck", label: "Trucks", icon: "🚛" },
+  { key: "crew_car", label: "Crew Cars", icon: "🚗" },
+  { key: "other", label: "Other", icon: "📦" },
+];
+
+function inferTypeFromName(name: string): VehicleFilter {
+  const u = (name || "").toUpperCase();
+  if (u.includes("BRONCO") || u.includes("TRUCK")) return "truck";
+  if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
+  if (u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
+  return "other";
+}
 
 export default function VehiclesClient() {
   const [vans, setVans] = useState<SamsaraVan[]>([]);
@@ -645,6 +674,7 @@ export default function VehiclesClient() {
   const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("fleet");
+  const [vehicleFilter, setVehicleFilter] = useState<VehicleFilter>("all");
 
   async function load() {
     setLoading(true);
@@ -687,6 +717,21 @@ export default function VehiclesClient() {
   }, []);
 
   const allVehicles = vans;
+
+  const filteredVehicles = useMemo(() => {
+    if (vehicleFilter === "all") return allVehicles;
+    return allVehicles.filter((v) => inferTypeFromName(v.name) === vehicleFilter);
+  }, [allVehicles, vehicleFilter]);
+
+  const filterCounts = useMemo(() => {
+    const counts: Record<VehicleFilter, number> = { all: allVehicles.length, van: 0, truck: 0, crew_car: 0, other: 0 };
+    for (const v of allVehicles) {
+      const t = inferTypeFromName(v.name);
+      counts[t]++;
+    }
+    return counts;
+  }, [allVehicles]);
+
   const celVehicles = allVehicles.filter((v) => diagData.get(v.id)?.check_engine_on === true);
   const lowFuelVehicles = allVehicles.filter((v) => {
     const fp = diagData.get(v.id)?.fuel_percent;
@@ -821,6 +866,27 @@ export default function VehiclesClient() {
         )}
       </div>
 
+      {/* Vehicle type filter */}
+      <div className="flex flex-wrap gap-2">
+        {VEHICLE_FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setVehicleFilter(f.key)}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
+              vehicleFilter === f.key
+                ? "bg-slate-800 text-white shadow-sm"
+                : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            {f.icon && <span>{f.icon}</span>}
+            {f.label}
+            <span className={`text-xs ml-0.5 ${vehicleFilter === f.key ? "text-slate-300" : "text-gray-400"}`}>
+              {filterCounts[f.key]}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {/* Tab switcher */}
       <div className="flex gap-1 border-b border-gray-200">
         {([
@@ -843,10 +909,10 @@ export default function VehiclesClient() {
 
       {/* Tab content */}
       {activeTab === "fleet" && (
-        <VehicleFleetTable vehicles={allVehicles} diags={diagData} />
+        <VehicleFleetTable vehicles={filteredVehicles} diags={diagData} />
       )}
       {activeTab === "maintenance" && (
-        <MaintenanceSchedule vehicles={allVehicles} diags={diagData} />
+        <MaintenanceSchedule vehicles={filteredVehicles} diags={diagData} />
       )}
     </div>
   );

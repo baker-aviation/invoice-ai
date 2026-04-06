@@ -18,6 +18,27 @@ interface SamsaraVehicleStat {
   faultCodes?: { value?: unknown; time?: string };
 }
 
+// ── Vehicle type inference from Samsara name ──────────────────────────────
+
+function inferVehicleType(name: string): string {
+  const u = (name || "").toUpperCase();
+  if (u.includes("CLEANING")) return "cleaning";
+  if (u.includes("BRONCO") || u.includes("TRUCK")) return "truck";
+  if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
+  if (u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
+  return "unknown";
+}
+
+function inferVehicleRole(type: string): string {
+  switch (type) {
+    case "van": return "aog_response";
+    case "truck": return "parts_transport";
+    case "crew_car": return "crew_shuttle";
+    case "cleaning": return "utility";
+    default: return "unassigned";
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function fetchAllVehicles(apiKey: string): Promise<SamsaraVehicle[]> {
@@ -121,6 +142,15 @@ export async function GET(req: NextRequest) {
         first_seen_at: now,
         last_seen_at: now,
         check_engine: faultMap.get(v.id) ?? false,
+      });
+      // Auto-create registry entry with inferred type
+      const vType = inferVehicleType(v.name ?? "");
+      const vRole = inferVehicleRole(vType);
+      await supa.from("vehicle_registry").insert({
+        samsara_id: v.id,
+        name: v.name ?? null,
+        vehicle_type: vType,
+        vehicle_role: vRole,
       });
     } else {
       // Vehicle exists — update last_seen and check for return
