@@ -226,7 +226,7 @@ export async function fetchFlightsLite(params: {
 
   const { data: flightRows, error } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo, diverted")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -265,6 +265,7 @@ export async function fetchFlightsLite(params: {
       customer_name: f.customer_name as string | null,
       origin_fbo: f.origin_fbo as string | null,
       destination_fbo: f.destination_fbo as string | null,
+      diverted: (f.diverted as boolean | null) ?? false,
       alerts: [],
     });
   }
@@ -287,7 +288,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id, salesperson, customer_name, origin_fbo, destination_fbo, diverted")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -462,6 +463,7 @@ export async function fetchFlights(params: {
     customer_name: f.customer_name as string | null,
     origin_fbo: f.origin_fbo as string | null,
     destination_fbo: f.destination_fbo as string | null,
+    diverted: (f.diverted as boolean | null) ?? false,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
 
@@ -549,6 +551,7 @@ export async function fetchFlights(params: {
         customer_name: null,
         origin_fbo: null,
         destination_fbo: null,
+        diverted: false,
         alerts: [alert],
       });
     }
