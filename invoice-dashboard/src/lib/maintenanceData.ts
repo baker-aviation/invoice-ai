@@ -25,6 +25,38 @@ export function isContiguous48(state: string): boolean {
   return CONTIGUOUS_48.has(state);
 }
 
+/**
+ * Check if an ICAO code belongs to a US airport (including AK, HI, territories).
+ * Uses ICAO prefix convention — more reliable than state field which may be empty
+ * for airports not in the curated Baker list.
+ */
+export function isDomesticUS(icao: string | null | undefined): boolean {
+  if (!icao) return false;
+  if (icao.startsWith("K")) return true;     // Contiguous US (KJFK, KLAX, etc.)
+  if (icao.startsWith("PA")) return true;     // Alaska (PANC, PAFA, etc.)
+  if (icao.startsWith("PH")) return true;     // Hawaii (PHNL, PHOG, etc.)
+  if (icao.startsWith("PG")) return true;     // Guam
+  if (icao.startsWith("PW")) return true;     // Wake Island
+  if (icao.startsWith("PM")) return true;     // Midway
+  if (icao.startsWith("TJ")) return true;     // Puerto Rico
+  if (icao.startsWith("TI")) return true;     // US Virgin Islands
+  return false;
+}
+
+/**
+ * Check if an ICAO code belongs to a contiguous-48 US airport.
+ * Falls back to ICAO K-prefix when state data is missing.
+ */
+export function isContiguous48ByIcao(icao: string | null | undefined): boolean {
+  if (!icao) return false;
+  // First try state lookup
+  const iata = icao.replace(/^K/, "");
+  const info = getAirportInfo(iata);
+  if (info && info.state) return CONTIGUOUS_48.has(info.state);
+  // Fallback: K-prefix = contiguous US (excludes AK=PA*, HI=PH*, territories)
+  return icao.startsWith("K");
+}
+
 // ---------------------------------------------------------------------------
 // Fixed van zones — 16 home bases covering major US private aviation hubs.
 // Samsara GPS matching assigns the closest physical van to each zone.
