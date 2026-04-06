@@ -9,6 +9,8 @@ import {
   assignVans,
   getDateRange,
   isContiguous48,
+  isContiguous48ByIcao,
+  isDomesticUS,
   haversineKm,
   findNearestVanZone,
   FIXED_VAN_ZONES,
@@ -632,7 +634,8 @@ function computeZoneItems(
     if (cat === "other") return false;
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
-    return !!(info && isContiguous48(info.state));
+    // Use ICAO-based check — state field is empty for airports not in curated list
+    return !!(info && isContiguous48ByIcao(f.arrival_icao));
   });
 
   // Build VanFlightItems with next departure info
@@ -3561,6 +3564,53 @@ function ScheduleTab({
     });
   }, [allDayArrivals, finalItemsByVan]);
 
+  // Auto-assign uncovered aircraft to nearest van on initial load
+  // Runs once per date after published overrides are restored
+  const autoAssignedRef = useRef<string>("");
+  useEffect(() => {
+    if (autoAssignedRef.current === date) return;
+    if (baseItemsByVan.size === 0) return;
+    // Wait for published overrides to restore first
+    if (publishedAssignments.length > 0 && overridesRestoredRef.current !== date) return;
+
+    autoAssignedRef.current = date;
+    if (uncoveredItems.length === 0) return;
+
+    const newOverrides = new Map<string, number>(overrides);
+    let changed = false;
+
+    const MAX_AUTO_ASSIGN_KM = 402; // ~250 miles
+
+    for (const item of uncoveredItems) {
+      if (removals.has(item.arrFlight.id)) continue;
+      // Skip international airports — vans don't service those
+      if (!isDomesticUS(item.arrFlight.arrival_icao)) continue;
+      const info = item.airportInfo;
+      if (!info) continue;
+
+      let bestVanId = -1;
+      let bestDist = Infinity;
+      for (const z of FIXED_VAN_ZONES) {
+        if (coveredVanIds.has(z.vanId)) continue;
+        const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+        const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+        const d = haversineKm(vanLat, vanLon, info.lat, info.lon);
+        if (d < bestDist) {
+          bestDist = d;
+          bestVanId = z.vanId;
+        }
+      }
+
+      if (bestVanId !== -1 && bestDist <= MAX_AUTO_ASSIGN_KM) {
+        newOverrides.set(item.arrFlight.id, bestVanId);
+        changed = true;
+      }
+    }
+
+    if (changed) setOverrides(newOverrides);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uncoveredItems, date, baseItemsByVan, publishedAssignments]);
+
   // Unscheduled aircraft: fleet tails with NO flights on this date
   const unscheduledAircraft = useMemo(() => {
     // All fleet tails = tails from live flights + fallback roster
@@ -5026,7 +5076,7 @@ function ScheduleTab({
                         const cat = getFilterCategory(ft);
                         const isMaint = dep === arrIcao;
                         const nearest = findNearestVan(item.arrFlight.arrival_icao);
-                        const isInternational = item.airportInfo && !isContiguous48(item.airportInfo.state ?? "");
+                        const isInternational = !isDomesticUS(item.arrFlight.departure_icao) || !isDomesticUS(item.arrFlight.arrival_icao);
                         return (
                           <div
                             key={item.arrFlight.id}
