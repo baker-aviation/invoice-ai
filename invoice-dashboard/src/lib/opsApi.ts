@@ -209,8 +209,8 @@ const ALERT_COLUMNS =
   "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, acknowledged_by, created_at, raw_data, source_message_id";
 
 /**
- * Lightweight flight fetch — returns flights with empty alerts arrays.
- * Use this when you only need flight schedule data (no EDCT/NOTAM/alert loading).
+ * Lightweight flight fetch — skips NOTAMs but includes EDCT alerts.
+ * NOTAMs are the payload hog (hundreds of rows); EDCTs are tiny (0-10).
  */
 export async function fetchFlightsLite(params: {
   lookahead_hours?: number;
@@ -268,6 +268,128 @@ export async function fetchFlightsLite(params: {
       diverted: (f.diverted as boolean | null) ?? false,
       alerts: [],
     });
+  }
+
+  // ── Fetch EDCT alerts (lightweight — typically 0-10 rows) ──
+  // The full fetchFlights skips NOTAMs+alerts for perf, but EDCTs are tiny
+  // and essential for the Current Ops display.
+  const edctPast = new Date(now.getTime() - 48 * 3600_000).toISOString();
+  const flightIds = flights.map((f) => f.id);
+
+  // Per-flight EDCT alerts + orphan (no flight_id) EDCT alerts — in parallel
+  const edctBatches: string[][] = [];
+  for (let i = 0; i < flightIds.length; i += 200) {
+    edctBatches.push(flightIds.slice(i, i + 200));
+  }
+
+  const [perFlightResults, { data: orphanEdcts }] = await Promise.all([
+    Promise.all(edctBatches.map((batch) =>
+      supa.from("ops_alerts").select(ALERT_COLUMNS)
+        .eq("alert_type", "EDCT")
+        .in("flight_id", batch)
+    )),
+    supa.from("ops_alerts").select(ALERT_COLUMNS)
+      .eq("alert_type", "EDCT")
+      .is("flight_id", null)
+      .is("acknowledged_at", null)
+      .gte("created_at", edctPast)
+      .order("created_at", { ascending: false })
+      .limit(50),
+  ]);
+
+  function rowToAlertLite(row: Record<string, unknown>): OpsAlert {
+    return {
+      id: row.id as string,
+      flight_id: row.flight_id as string | null,
+      alert_type: row.alert_type as string,
+      severity: row.severity as string,
+      airport_icao: row.airport_icao as string | null,
+      departure_icao: row.departure_icao as string | null,
+      arrival_icao: row.arrival_icao as string | null,
+      tail_number: row.tail_number as string | null,
+      subject: row.subject as string | null,
+      body: row.body as string | null,
+      edct_time: row.edct_time as string | null,
+      original_departure_time: row.original_departure_time as string | null,
+      acknowledged_at: row.acknowledged_at as string | null,
+      acknowledged_by: row.acknowledged_by as string | null,
+      created_at: row.created_at as string,
+      notam_dates: null,
+      source_message_id: row.source_message_id as string | null,
+    };
+  }
+
+  // Attach per-flight EDCT alerts
+  const flightIndexById = new Map<string, number>();
+  for (let i = 0; i < flights.length; i++) flightIndexById.set(flights[i].id, i);
+
+  for (const { data: rows } of perFlightResults) {
+    for (const row of rows ?? []) {
+      const idx = flightIndexById.get(row.flight_id as string);
+      if (idx !== undefined) flights[idx].alerts.push(rowToAlertLite(row));
+    }
+  }
+
+  // Match orphan EDCTs to flights by tail + airports (same logic as fetchFlights)
+  const airportKeys = (c: string | null): string[] => {
+    if (!c) return [];
+    const u = c.toUpperCase();
+    const keys = [u];
+    if (u.length === 4 && u.startsWith("K")) {
+      const stripped = u.slice(1);
+      keys.push(stripped);
+      const icao = toIcao(stripped);
+      if (icao && icao !== u) keys.push(icao);
+    }
+    if (u.length === 3) {
+      keys.push(`K${u}`);
+      const icao = toIcao(u);
+      if (icao) keys.push(icao);
+    }
+    return keys;
+  };
+  const sameAirport = (a: string | null, b: string | null): boolean => {
+    if (!a || !b) return false;
+    if (a.toUpperCase() === b.toUpperCase()) return true;
+    const aKeys = airportKeys(a);
+    const bKeys = airportKeys(b);
+    return aKeys.some((k) => bKeys.includes(k));
+  };
+
+  for (const row of orphanEdcts ?? []) {
+    const alert = rowToAlertLite(row);
+    const aTail = alert.tail_number?.toUpperCase() ?? "";
+    const matchIdx = flights.findIndex((f) => {
+      if (!f.tail_number || f.tail_number.toUpperCase() !== aTail) return false;
+      return sameAirport(alert.departure_icao, f.departure_icao)
+        && sameAirport(alert.arrival_icao, f.arrival_icao);
+    });
+    if (matchIdx !== -1) {
+      flights[matchIdx].alerts.push(alert);
+    } else {
+      flights.push({
+        id: `edct-orphan-${alert.id}`,
+        ics_uid: "",
+        tail_number: alert.tail_number,
+        departure_icao: alert.departure_icao,
+        arrival_icao: alert.arrival_icao,
+        scheduled_departure: alert.created_at,
+        scheduled_arrival: null,
+        summary: alert.subject,
+        flight_type: null,
+        pic: null,
+        sic: null,
+        pax_count: null,
+        jetinsight_url: null,
+        fa_flight_id: null,
+        salesperson: null,
+        customer_name: null,
+        origin_fbo: null,
+        destination_fbo: null,
+        diverted: false,
+        alerts: [alert],
+      });
+    }
   }
 
   return { ok: true, flights, count: flights.length };
