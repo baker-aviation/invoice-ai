@@ -652,11 +652,9 @@ function buildCandidates(
   // For offgoing crew: duty-end = when they arrive home (checked per-candidate)
   let oncomingDutyEnd: Date | null = null;
   if (task.direction === "oncoming" && tailLegs) {
-    // Use local date at departure airport (same as extractSwapPoints) — not UTC slice
-    const wedLegs = tailLegs.filter((f) => {
-      const tz = getAirportTimezone(f.departure_icao) ?? "America/New_York";
-      return new Date(f.scheduled_departure).toLocaleDateString("en-CA", { timeZone: tz }) === swapDate;
-    });
+    // Use stored date portion (same as extractSwapPoints) — JetInsight stores
+    // local times as UTC, so slice(0,10) gives the intended schedule date.
+    const wedLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
     const lastLeg = wedLegs[wedLegs.length - 1];
     if (lastLeg?.scheduled_arrival) {
       oncomingDutyEnd = dutyOff(new Date(lastLeg.scheduled_arrival), false);
@@ -1933,18 +1931,30 @@ function extractSwapPoints(
 ): { swapPoints: SwapPoint[]; overnightAirport: string | null; aircraftType: string } {
   const legs = byTail.get(tail) ?? [];
 
-  // Classify legs by LOCAL date at departure airport, not UTC.
-  // A leg departing at 8:30pm ET (00:30 UTC next day) must be treated as the prior day.
-  const localDate = (isoStr: string, icao: string): string => {
-    const tz = getAirportTimezone(icao) ?? "America/New_York";
-    return new Date(isoStr).toLocaleDateString("en-CA", { timeZone: tz }); // YYYY-MM-DD
-  };
+  // ── Date classification ──────────────────────────────────────────────
+  // JetInsight schedule JSON provides departure times in LOCAL airport time
+  // without a timezone indicator (e.g. "2026-04-09T10:00:00"). The schedule-sync
+  // stores these directly into a Postgres timestamptz column, which assumes UTC.
+  // This means the date portion of the stored ISO string (slice 0..10) preserves
+  // the INTENDED local date from JetInsight, even though the full timestamp is
+  // technically wrong by the airport's UTC offset.
+  //
+  // Using new Date(isoStr).toLocaleDateString(tz) to "correct" back to local
+  // time double-converts: it treats the already-local digits as UTC, then shifts
+  // again, pushing early-morning flights (midnight–4am local) to the previous day.
+  // Example: PBI→TEB departing April 9 01:00 local is stored as 01:00 UTC.
+  //   → toLocaleDateString("America/New_York") = April 8 21:00 ET → "2026-04-08"
+  //   → WRONG — the flight is April 9, not April 8.
+  //
+  // Fix: use the stored date portion directly. This matches JetInsight's intended
+  // schedule date and avoids the double-conversion trap.
+  const storedDate = (isoStr: string): string => isoStr.slice(0, 10);
 
-  const wedLegs = legs.filter((f) => localDate(f.scheduled_departure, f.departure_icao) === swapDate);
+  const wedLegs = legs.filter((f) => storedDate(f.scheduled_departure) === swapDate);
   const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
 
   const priorLegs = legs.filter(
-    (f) => localDate(f.scheduled_departure, f.departure_icao) < swapDate,
+    (f) => storedDate(f.scheduled_departure) < swapDate,
   );
   const lastPrior = priorLegs[priorLegs.length - 1];
   const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;

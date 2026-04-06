@@ -747,6 +747,29 @@ function isLiveFlightType(type: string | null): boolean {
 
 // ─── Swap Sheet (Excel-matching layout) ─────────────────────────────────────
 
+/** Duty day duration tag — shows hours or duty-on time for oncoming without duty_off */
+function DutyDayTag({ row }: { row: CrewSwapRow }) {
+  if (row.duty_on_time && row.duty_off_time) {
+    const hrs = (new Date(row.duty_off_time).getTime() - new Date(row.duty_on_time).getTime()) / 3600000;
+    const display = hrs.toFixed(1) + "h";
+    const cls = hrs > 14
+      ? "bg-red-100 text-red-700"
+      : hrs > 12
+      ? "bg-amber-100 text-amber-700"
+      : hrs > 10
+      ? "bg-yellow-100 text-yellow-700"
+      : "bg-gray-100 text-gray-600";
+    return <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{display}</span>;
+  }
+  if (row.duty_on_time) {
+    const d = new Date(row.duty_on_time);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600">on {hh}:{mm}</span>;
+  }
+  return null;
+}
+
 function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSwapRow; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void; onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void }) {
   const ac = AIRCRAFT_COLORS[row.aircraft_type];
   const rowBg = ac ? `${ac.bg}/30` : "";
@@ -777,6 +800,7 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
             <span className={`inline-block w-2.5 h-2.5 rounded-full ${ac.bg} border ${ac.text.replace("text-", "border-")}`} />
           )}
           <span className="font-medium text-gray-900">{row.name}</span>
+          <DutyDayTag row={row} />
           {row.duration_minutes ? <span className="text-xs text-gray-400 ml-1">({Math.round(row.duration_minutes / 60 * 10) / 10}hr travel)</span> : null}
           <span className="text-gray-400 text-xs">
             ({row.home_airports.join("/") || "??"})
@@ -1150,6 +1174,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
+                  <DutyDayTag row={row} />
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
                   {/* Per-crew swap point — show if different from tail swap point or if multiple available */}
                   {row.swap_location && (() => {
@@ -1967,20 +1992,45 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [swapAlerts, setSwapAlerts] = useState<SwapAlert[]>([]);
   const [alertCount, setAlertCount] = useState(0);
   // Gap detection (new airports + missing cache pairs)
-  const [gapAlerts, setGapAlerts] = useState<{ newAirports: { icao: string; iata: string; suggested: string | null; distance: number | null; flights: number }[]; missingPairs: number } | null>(null);
-  useEffect(() => {
+  const [gapAlerts, setGapAlerts] = useState<{ newAirports: { icao: string; iata: string; suggested: string | null; suggestedIcao: string | null; distance: number | null; flights: number }[]; missingPairs: number } | null>(null);
+  const [addedAliases, setAddedAliases] = useState<Set<string>>(new Set());
+  const [addingAlias, setAddingAlias] = useState<string | null>(null);
+  const [manualAliasInputs, setManualAliasInputs] = useState<Record<string, string>>({});
+  const refreshGapAlerts = useCallback(() => {
     const wedStr = selectedDate.toISOString().slice(0, 10);
     fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (!d) return;
         const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
-          icao: a.icao, iata: a.iata, suggested: a.suggested_alias_iata, distance: a.distance_miles, flights: a.appears_in_flights,
+          icao: a.icao as string, iata: a.iata as string, suggested: (a.suggested_alias_iata as string) ?? null, suggestedIcao: (a.suggested_alias as string) ?? null, distance: (a.distance_miles as number) ?? null, flights: a.appears_in_flights as number,
         }));
         setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
       })
       .catch(() => {});
   }, [selectedDate]);
+  useEffect(() => { refreshGapAlerts(); }, [refreshGapAlerts]);
+  const iataToIcao = (iata: string) => {
+    const u = iata.toUpperCase();
+    if (u.length === 4) return u;
+    return `K${u}`;
+  };
+  const handleAddAlias = async (fboIcao: string, commercialIata: string, commercialIcao?: string | null) => {
+    const commIcao = commercialIcao ?? iataToIcao(commercialIata);
+    setAddingAlias(fboIcao);
+    try {
+      const res = await fetch("/api/crew/airport-aliases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fbo_icao: fboIcao, commercial_icao: commIcao, preferred: true }),
+      });
+      if (res.ok) {
+        setAddedAliases(prev => new Set(prev).add(fboIcao));
+        setTimeout(refreshGapAlerts, 500);
+      }
+    } catch { /* ignore */ }
+    setAddingAlias(null);
+  };
   // Excluded tails (MX, owner-flown, etc.)
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // ICS fleet (all tails from ics_sources)
@@ -3070,16 +3120,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const data = await safeJson(res, "Flight seeding failed");
       if (res.ok) {
         // Refresh gap alerts after seeding
-        const wedStr = selectedDate.toISOString().slice(0, 10);
-        fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
-          .then((r) => r.json())
-          .then((d) => {
-            const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
-              icao: a.icao, iata: a.iata, suggested: a.suggested_alias_iata, distance: a.distance_miles, flights: a.appears_in_flights,
-            }));
-            setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
-          })
-          .catch(() => {});
+        refreshGapAlerts();
       } else {
         setOptimizeError(data.error ?? "Flight seeding failed");
       }
@@ -4095,10 +4136,41 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 <div key={a.icao} className="flex items-center gap-2 ml-2">
                   <span className="font-mono font-bold">{a.iata}</span>
                   <span className="text-amber-500">({a.flights} flights)</span>
-                  {a.suggested ? (
-                    <span className="text-amber-600">suggested: <span className="font-mono font-bold">{a.suggested}</span> ({a.distance}mi)</span>
+                  {addedAliases.has(a.icao) ? (
+                    <span className="text-green-600 font-medium">&#10003; Added</span>
+                  ) : a.suggested ? (
+                    <>
+                      <span className="text-amber-600">suggested: <span className="font-mono font-bold">{a.suggested}</span> ({a.distance}mi)</span>
+                      <button
+                        onClick={() => handleAddAlias(a.icao, a.suggested!, a.suggestedIcao)}
+                        disabled={addingAlias === a.icao}
+                        className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
+                      >
+                        {addingAlias === a.icao ? "..." : "Add"}
+                      </button>
+                    </>
                   ) : (
-                    <span className="text-red-600">no nearby commercial airport found</span>
+                    <>
+                      <span className="text-red-600">no nearby commercial airport found</span>
+                      <input
+                        type="text"
+                        placeholder="IATA"
+                        maxLength={4}
+                        className="w-12 text-[9px] px-1 py-0.5 border rounded font-mono uppercase"
+                        value={manualAliasInputs[a.icao] ?? ""}
+                        onChange={e => setManualAliasInputs(prev => ({ ...prev, [a.icao]: e.target.value.toUpperCase() }))}
+                      />
+                      <button
+                        onClick={() => {
+                          const val = (manualAliasInputs[a.icao] ?? "").trim();
+                          if (val.length >= 2) handleAddAlias(a.icao, val);
+                        }}
+                        disabled={addingAlias === a.icao || !(manualAliasInputs[a.icao]?.trim()?.length >= 2)}
+                        className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
+                      >
+                        {addingAlias === a.icao ? "..." : "Add"}
+                      </button>
+                    </>
                   )}
                 </div>
               ))}
