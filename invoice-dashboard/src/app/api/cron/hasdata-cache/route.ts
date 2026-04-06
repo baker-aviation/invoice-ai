@@ -54,7 +54,9 @@ export async function GET(req: NextRequest) {
 function getNextWednesday(): string {
   const now = new Date();
   const day = now.getUTCDay();
-  const daysUntilWed = (3 - day + 7) % 7 || 7;
+  // Include today if it's Wednesday (manual trigger on swap day itself).
+  // The weekly cron fires on Tuesday, so this only matters for manual triggers.
+  const daysUntilWed = day === 3 ? 0 : (3 - day + 7) % 7 || 7;
   const wed = new Date(now.getTime() + daysUntilWed * 86400_000);
   return wed.toISOString().slice(0, 10);
 }

@@ -219,6 +219,110 @@ export async function computeCityPairMatrix(swapDate: string): Promise<CityPair[
   return pairs;
 }
 
+// ─── Targeted pair seeding ───────────────────────────────────────────────────
+
+/**
+ * Seed specific city pairs into the HasData cache.
+ *
+ * Takes explicit CityPair[] (each pair must have origin, destination, date)
+ * and processes them in batches, upserting results to hasdata_flight_cache.
+ *
+ * Used by buildHasdataCache() internally and by the on-demand seed-flights API.
+ */
+export async function seedTargetedPairs(
+  pairs: CityPair[],
+  options?: { batchSize?: number; delayMs?: number },
+): Promise<HasdataCacheResult> {
+  const start = Date.now();
+  const supa = createServiceClient();
+  const errors: string[] = [];
+  let offersCached = 0;
+
+  const BATCH_SIZE = options?.batchSize ?? 25;
+  const DELAY_MS = options?.delayMs ?? 200;
+
+  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
+    const batch = pairs.slice(i, i + BATCH_SIZE);
+
+    const results = await Promise.all(
+      batch.map(async (pair) => {
+        try {
+          const result = await searchFlights({
+            origin: pair.origin,
+            destination: pair.destination,
+            date: pair.date!,
+            max: 10,
+          });
+          return { pair, offers: result.offers, error: null };
+        } catch (e) {
+          const msg = `${pair.origin}-${pair.destination}: ${e instanceof Error ? e.message : "unknown"}`;
+          return { pair, offers: [] as FlightOffer[], error: msg };
+        }
+      }),
+    );
+
+    // Upsert this batch immediately (survives timeouts)
+    const rows = [];
+    for (const r of results) {
+      if (r.error) {
+        errors.push(r.error);
+        // Still upsert an empty row so we know we tried this pair
+      }
+
+      const offers = r.offers;
+      const minPrice = offers.length > 0
+        ? Math.min(...offers.map((o) => parseFloat(o.price.total)))
+        : null;
+      const hasDirect = offers.some((o) =>
+        o.itineraries.length > 0 && o.itineraries[0].segments.length === 1,
+      );
+
+      rows.push({
+        cache_date: r.pair.date!,
+        origin_iata: r.pair.origin,
+        destination_iata: r.pair.destination,
+        flight_offers: JSON.stringify(offers),
+        offer_count: offers.length,
+        min_price: minPrice != null ? Math.round(minPrice) : null,
+        has_direct: hasDirect,
+        fetched_at: new Date().toISOString(),
+      });
+
+      offersCached += offers.length;
+    }
+
+    if (rows.length > 0) {
+      const { error } = await supa
+        .from("hasdata_flight_cache")
+        .upsert(rows, { onConflict: "cache_date,origin_iata,destination_iata" });
+
+      if (error) {
+        errors.push(`Upsert at batch ${i}: ${error.message}`);
+      }
+    }
+
+    const progress = Math.min(i + BATCH_SIZE, pairs.length);
+    if (progress % BATCH_SIZE === 0 || progress === pairs.length) {
+      console.log(`[HasdataCache] ${progress}/${pairs.length} pairs queried, ${offersCached} offers cached`);
+    }
+
+    // Rate limit delay between batches
+    if (i + BATCH_SIZE < pairs.length) {
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+  }
+
+  const duration = Date.now() - start;
+  console.log(`[HasdataCache] Done: ${pairs.length} pairs, ${offersCached} offers in ${(duration / 1000).toFixed(1)}s (${errors.length} errors)`);
+
+  return {
+    pairs_queried: pairs.length,
+    offers_cached: offersCached,
+    errors,
+    duration_ms: duration,
+  };
+}
+
 // ─── Cache seeding ──────────────────────────────────────────────────────────
 
 /**
@@ -236,8 +340,6 @@ export async function buildHasdataCache(
 ): Promise<HasdataCacheResult> {
   const start = Date.now();
   const supa = createServiceClient();
-  const errors: string[] = [];
-  let offersCached = 0;
 
   // Seed both swap day and next day. The optimizer searches next-day flights
   // for offgoing crew (late arrivals need Thursday morning flights home).
@@ -246,7 +348,7 @@ export async function buildHasdataCache(
   const nextDayStr = nextDay.toISOString().slice(0, 10);
   const datesToSeed = [swapDate, nextDayStr];
 
-  let pairs = await computeCityPairMatrix(swapDate);
+  const pairs = await computeCityPairMatrix(swapDate);
   // Duplicate pairs for next day
   const nextDayPairs = pairs.map((p) => ({ ...p, date: nextDayStr }));
   const swapDayPairs = pairs.map((p) => ({ ...p, date: swapDate }));
@@ -276,99 +378,17 @@ export async function buildHasdataCache(
     }
     const before = allPairs.length;
     allPairs = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`));
-    const retrying = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`)).length;
     console.log(`[HasdataCache] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} already have flights, retrying empty/failed pairs)`);
     if (allPairs.length === 0) {
       console.log(`[HasdataCache] Cache is complete for ${datesToSeed.join("+")} — nothing to fetch`);
       return { pairs_queried: 0, offers_cached: 0, errors: [], duration_ms: Date.now() - start };
     }
   }
-  pairs = allPairs;
 
-  // Process in batches of 50 concurrent, 200ms delay between batches
-  const BATCH_SIZE = 50;
-  const DELAY_MS = 200;
+  // Delegate to seedTargetedPairs with cron-sized batches (50 concurrent, 200ms delay)
+  const result = await seedTargetedPairs(allPairs, { batchSize: 50, delayMs: 200 });
 
-  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
-    const batch = pairs.slice(i, i + BATCH_SIZE);
-
-    const results = await Promise.all(
-      batch.map(async (pair) => {
-        try {
-          const result = await searchFlights({
-            origin: pair.origin,
-            destination: pair.destination,
-            date: pair.date ?? swapDate,
-            max: 10,
-          });
-          return { pair, offers: result.offers, error: null };
-        } catch (e) {
-          const msg = `${pair.origin}-${pair.destination}: ${e instanceof Error ? e.message : "unknown"}`;
-          return { pair, offers: [] as FlightOffer[], error: msg };
-        }
-      }),
-    );
-
-    // Upsert this batch immediately (survives timeouts)
-    const rows = [];
-    for (const r of results) {
-      if (r.error) {
-        errors.push(r.error);
-        // Still upsert an empty row so we know we tried this pair
-      }
-
-      const offers = r.offers;
-      const minPrice = offers.length > 0
-        ? Math.min(...offers.map((o) => parseFloat(o.price.total)))
-        : null;
-      const hasDirect = offers.some((o) =>
-        o.itineraries.length > 0 && o.itineraries[0].segments.length === 1,
-      );
-
-      rows.push({
-        cache_date: r.pair.date ?? swapDate,
-        origin_iata: r.pair.origin,
-        destination_iata: r.pair.destination,
-        flight_offers: JSON.stringify(offers),
-        offer_count: offers.length,
-        min_price: minPrice != null ? Math.round(minPrice) : null,
-        has_direct: hasDirect,
-        fetched_at: new Date().toISOString(),
-      });
-
-      offersCached += offers.length;
-    }
-
-    if (rows.length > 0) {
-      const { error } = await supa
-        .from("hasdata_flight_cache")
-        .upsert(rows, { onConflict: "cache_date,origin_iata,destination_iata" });
-
-      if (error) {
-        errors.push(`Upsert at batch ${i}: ${error.message}`);
-      }
-    }
-
-    const progress = Math.min(i + BATCH_SIZE, pairs.length);
-    if (progress % 50 === 0 || progress === pairs.length) {
-      console.log(`[HasdataCache] ${progress}/${pairs.length} pairs queried, ${offersCached} offers cached`);
-    }
-
-    // Rate limit delay between batches
-    if (i + BATCH_SIZE < pairs.length) {
-      await new Promise((r) => setTimeout(r, DELAY_MS));
-    }
-  }
-
-  const duration = Date.now() - start;
-  console.log(`[HasdataCache] Done: ${pairs.length} pairs, ${offersCached} offers in ${(duration / 1000).toFixed(1)}s (${errors.length} errors)`);
-
-  return {
-    pairs_queried: pairs.length,
-    offers_cached: offersCached,
-    errors,
-    duration_ms: duration,
-  };
+  return result;
 }
 
 // ─── Cache reading (for optimizer) ──────────────────────────────────────────
