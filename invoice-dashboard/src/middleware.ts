@@ -87,7 +87,10 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // Allow service-key auth to bypass middleware for CLI/script access
-  const hasServiceKey = request.headers.get("x-service-key");
+  // Note: using === instead of crypto.timingSafeEqual because Next.js middleware
+  // runs on the Edge runtime where Node's crypto module is not available.
+  const serviceKey = request.headers.get("x-service-key");
+  const hasServiceKey = serviceKey && serviceKey === process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!user && !hasServiceKey && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && !request.nextUrl.pathname.startsWith("/van/") && !request.nextUrl.pathname.startsWith("/tanker/plan/") && request.nextUrl.pathname !== "/invite") {
     // API routes get a 401 JSON response, not a redirect to /login

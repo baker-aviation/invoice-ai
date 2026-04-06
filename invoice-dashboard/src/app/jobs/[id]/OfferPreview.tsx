@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import SafeHTML from "@/components/SafeHTML";
 
 const OFFER_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   draft: { label: "Draft", cls: "bg-gray-100 text-gray-600 border-gray-200" },
@@ -196,11 +197,12 @@ export default function OfferPreview({
             </div>
 
             {/* Offer letter content */}
-            <div
-              id="offer-letter-print"
-              className="p-8 print:p-0"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
+            <div id="offer-letter-print">
+              <SafeHTML
+                html={html}
+                className="p-8 print:p-0"
+              />
+            </div>
           </div>
 
           {/* Print-only styles */}

@@ -76,6 +76,14 @@
     {
       "path": "/api/cron/sync-health",
       "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/cron/foreflight-preflight-sync",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/tankering-plans",
+      "schedule": "0 0,11 * * *"
     }
   ]
 }

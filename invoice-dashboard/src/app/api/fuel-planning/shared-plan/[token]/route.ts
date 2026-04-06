@@ -82,6 +82,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const zfwOverrides = (body.zfw_overrides ?? {}) as Record<string, number>;
   const feeOverrides = (body.fee_overrides ?? {}) as Record<string, number>;
   const waiverGalOverrides = (body.waiver_gal_overrides ?? {}) as Record<string, number>;
+  const fuelBurnOverrides = (body.fuel_burn_overrides ?? {}) as Record<string, number>;
 
   const plan = data.plan_data as {
     tail: string;
@@ -95,6 +96,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       totalFuelLbs: number;
       flightTimeHours: number;
       departurePricePerGal: number;
+      ffZfw?: number | null;
+      ffMlw?: number | null;
       waiver: {
         fboName: string;
         minGallons: number;
@@ -116,8 +119,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   // Rebuild multi-leg inputs with overrides
   const multiLegs: MultiLeg[] = plan.legs.map((leg, i) => {
-    const mlw = mlwOverrides[String(i)] ?? defaults.mlw;
-    const zfw = zfwOverrides[String(i)] ?? defaults.zfw;
+    const mlw = mlwOverrides[String(i)] ?? leg.ffMlw ?? defaults.mlw;
+    const zfw = zfwOverrides[String(i)] ?? leg.ffZfw ?? defaults.zfw;
 
     const waiver = leg.waiver ?? getFboWaiver(leg.from, null, acType) ?? {
       fboName: "", minGallons: 0, feeWaived: 0, landingFee: 0, securityFee: 0, overnightFee: 0,
@@ -127,12 +130,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const fee = feeOverrides[String(i)] ?? defaultFee;
     const waiverGal = waiverGalOverrides[String(i)] ?? waiver.minGallons;
 
+    // Fuel burn override: recalculate totalFuelLbs proportionally
+    const fuelBurn = fuelBurnOverrides[String(i)] ?? leg.fuelToDestLbs;
+    const reserveFuel = leg.totalFuelLbs - leg.fuelToDestLbs; // preserve original reserve
+    const totalFuel = fuelBurn + reserveFuel;
+
     return {
       id: String(i),
       from: leg.from,
       to: leg.to,
-      requiredStartFuelLbs: leg.totalFuelLbs,
-      fuelToDestLbs: leg.fuelToDestLbs,
+      requiredStartFuelLbs: totalFuel,
+      fuelToDestLbs: fuelBurn,
       flightTimeHours: leg.flightTimeHours,
       maxLandingGrossWeightLbs: mlw,
       zeroFuelWeightLbs: zfw,
@@ -145,9 +153,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
   const inputs: MultiRouteInputs = {
     startShutdownFuelLbs: plan.shutdownFuel,
-    carryCostPctPerHour: 0.0394,
+    carryCostPctPerHour: 3.94,
     fuelTemperatureC: 15,
-    arrivalBufferLbs: 0,
+    arrivalBufferLbs: 300,
     legs: multiLegs,
   };
 
@@ -177,5 +185,6 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     zfw_overrides: zfwOverrides,
     fee_overrides: feeOverrides,
     waiver_gal_overrides: waiverGalOverrides,
+    fuel_burn_overrides: fuelBurnOverrides,
   });
 }

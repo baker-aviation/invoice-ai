@@ -1,15 +1,20 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
+import dynamic from "next/dynamic";
 import type { Flight, MxNote, SwimFlowEvent } from "@/lib/opsApi";
-import type { AllRwysClosedAlert } from "@/lib/runwayData";
 import type { AdvertisedPriceRow } from "@/lib/types";
 import CurrentOps from "./CurrentOps";
-import OpsBoard from "./OpsBoard";
-import DutyTracker from "./DutyTracker";
-import CrewSwap from "./CrewSwap";
-import InternationalOps from "./InternationalOps";
-import SwapStatus from "./SwapStatus";
+
+function TabSkeleton() {
+  return <div className="flex items-center justify-center py-12 text-sm text-gray-400">Loading...</div>;
+}
+
+const OpsBoard = dynamic(() => import("./OpsBoard"), { loading: () => <TabSkeleton /> });
+const DutyTracker = dynamic(() => import("./DutyTracker"), { loading: () => <TabSkeleton /> });
+const CrewSwap = dynamic(() => import("./CrewSwap"), { loading: () => <TabSkeleton /> });
+const InternationalOps = dynamic(() => import("./InternationalOps"), { loading: () => <TabSkeleton /> });
+const SwapStatus = dynamic(() => import("./SwapStatus"), { loading: () => <TabSkeleton /> });
 
 const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "Swap Status", "International"] as const;
 type Tab = (typeof TABS)[number];
@@ -26,35 +31,13 @@ const SLUG_TO_TAB: Record<string, Tab> = Object.fromEntries(
   Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab as Tab])
 ) as Record<string, Tab>;
 
-export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [], initialTab }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[]; initialTab?: string | null }) {
+export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], initialTab }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; initialTab?: string | null }) {
   const [tab, setTab] = useState<Tab>(
     (initialTab ? SLUG_TO_TAB[initialTab] : null) ?? "Current Ops"
   );
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
-
-  // Lazy-load full flights+alerts once (persists across tab switches).
-  // initialFlights from page.tsx use fetchFlightsLite (no alerts).
-  const [alertFlights, setAlertFlights] = useState<Flight[] | null>(null);
-  const [alertSuppressedIds, setAlertSuppressedIds] = useState(suppressedRunwayNotamIds);
-  const [alertRwysClosed, setAlertRwysClosed] = useState(allRunwaysClosedAlerts);
-  const [alertsLoading, setAlertsLoading] = useState(true);
-  const fetchedRef = useRef(false);
-
-  useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
-    fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=12")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.flights) setAlertFlights(data.flights);
-        if (data.suppressedRunwayNotamIds) setAlertSuppressedIds(data.suppressedRunwayNotamIds);
-        if (data.allRunwaysClosedAlerts) setAlertRwysClosed(data.allRunwaysClosedAlerts);
-      })
-      .catch((err) => console.error("[OpsTabs] alert fetch error:", err))
-      .finally(() => setAlertsLoading(false));
-  }, []);
 
   function switchToDuty(tail?: string) {
     setScrollToTail(tail ?? null);
@@ -121,11 +104,11 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
 
       {/* Tab content */}
       {tab === "Current Ops" ? (
-        <CurrentOps flights={alertFlights ?? flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} />
+        <CurrentOps flights={flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} />
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
-        <OpsBoard initialFlights={alertFlights ?? flights} bakerPprAirports={bakerPprAirports} suppressedRunwayNotamIds={alertSuppressedIds} allRunwaysClosedAlerts={alertRwysClosed} alertsLoading={alertsLoading} />
+        <OpsBoard bakerPprAirports={bakerPprAirports} />
       ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
       ) : tab === "Swap Status" ? (

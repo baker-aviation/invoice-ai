@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
   const { data: flights } = await supa
     .from("flights")
-    .select("*")
+    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, flight_type, status")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
     if (missingIds.length > 0) {
       const { data: extra } = await supa
         .from("flights")
-        .select("*")
+        .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, flight_type, status")
         .in("id", missingIds);
       if (extra) allFlights.push(...extra);
     }

@@ -959,10 +959,27 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [], alertsLoading = false }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[]; alertsLoading?: boolean }) {
+export default function OpsBoard({ bakerPprAirports }: { bakerPprAirports: string[] }) {
   const now = useMemo(() => new Date(), []);
   const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
-  const flights = initialFlights;
+
+  // Self-contained 720hr flight + alert fetch (deferred from OpsTabs to only run when this tab is active)
+  const [flights, setFlights] = useState<Flight[]>([]);
+  const [suppressedRunwayNotamIds, setSuppressedRunwayNotamIds] = useState<string[]>([]);
+  const [allRunwaysClosedAlerts, setAllRunwaysClosedAlerts] = useState<AllRwysClosedAlert[]>([]);
+  const [alertsLoading, setAlertsLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=12")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.flights) setFlights(data.flights);
+        if (data.suppressedRunwayNotamIds) setSuppressedRunwayNotamIds(data.suppressedRunwayNotamIds);
+        if (data.allRunwaysClosedAlerts) setAllRunwaysClosedAlerts(data.allRunwaysClosedAlerts);
+      })
+      .catch((err) => console.error("[OpsBoard] alert fetch error:", err))
+      .finally(() => setAlertsLoading(false));
+  }, []);
 
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");

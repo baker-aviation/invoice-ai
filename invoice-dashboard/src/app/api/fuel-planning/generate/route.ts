@@ -9,6 +9,75 @@ import { getFboWaiver, preloadDbFees } from "@/lib/fboFeeLookup";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// ─── ForeFlight integration ───────────────────────────────────────────
+
+/** Normalize ICAO: strip leading K for US airports so KMIA matches MIA */
+function normIcao(icao: string): string {
+  const u = icao.toUpperCase().trim();
+  return u.length === 4 && u.startsWith("K") ? u.slice(1) : u;
+}
+
+interface FFPerf {
+  fuelToDestLbs: number;
+  totalFuelLbs: number;
+  flightFuelLbs: number;
+  taxiFuelLbs: number;
+  reserveFuelLbs: number;
+  flightTimeHours: number;
+  zeroFuelWeight: number | null;
+  landingWeight: number | null;
+}
+
+/**
+ * Load pre-flight ForeFlight predictions from the database.
+ * These are synced by the foreflight-preflight-sync cron job.
+ *
+ * Returns a Map keyed by "TAIL|normDep|normArr" → FFPerf
+ */
+async function loadForeFlightFromDB(
+  supa: ReturnType<typeof createServiceClient>,
+  targetDate: string,
+  tails: string[],
+): Promise<Map<string, FFPerf>> {
+  const result = new Map<string, FFPerf>();
+
+  // Query pre-flight predictions for target date + next day (multi-day trips)
+  const nextDay = new Date(targetDate + "T12:00:00Z");
+  nextDay.setDate(nextDay.getDate() + 1);
+  const nextDateStr = nextDay.toISOString().split("T")[0];
+
+  const { data: rows, error } = await supa
+    .from("foreflight_predictions")
+    .select("tail_number, departure_icao, destination_icao, fuel_to_dest_lbs, total_fuel_lbs, flight_fuel_lbs, taxi_fuel_lbs, reserve_fuel_lbs, time_to_dest_min, zero_fuel_weight, landing_weight")
+    .eq("snapshot_type", "pre_flight")
+    .in("tail_number", tails)
+    .gte("flight_date", targetDate)
+    .lte("flight_date", nextDateStr);
+
+  if (error) {
+    console.warn("[fuel-planning/generate] FF DB query failed:", error.message);
+    return result;
+  }
+
+  for (const row of rows ?? []) {
+    if (!row.fuel_to_dest_lbs || !row.tail_number) continue;
+    const key = `${row.tail_number.toUpperCase()}|${normIcao(row.departure_icao)}|${normIcao(row.destination_icao)}`;
+    result.set(key, {
+      fuelToDestLbs: Number(row.fuel_to_dest_lbs),
+      totalFuelLbs: Number(row.total_fuel_lbs),
+      flightFuelLbs: Number(row.flight_fuel_lbs ?? row.fuel_to_dest_lbs),
+      taxiFuelLbs: Number(row.taxi_fuel_lbs ?? 0),
+      reserveFuelLbs: Number(row.reserve_fuel_lbs ?? 0),
+      flightTimeHours: row.time_to_dest_min ? Number(row.time_to_dest_min) / 60 : 0,
+      zeroFuelWeight: row.zero_fuel_weight ? Number(row.zero_fuel_weight) : null,
+      landingWeight: row.landing_weight ? Number(row.landing_weight) : null,
+    });
+  }
+
+  console.log(`[fuel-planning/generate] Loaded ${result.size} ForeFlight predictions from DB for ${tails.length} tails`);
+  return result;
+}
+
 // ─── Standard aircraft parameters ──────────────────────────────────────
 const AIRCRAFT_DEFAULTS: Record<AircraftType, {
   mlw: number;
@@ -45,6 +114,8 @@ interface LegData {
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
   ffSource: "foreflight" | "estimate";
+  ffZfw: number | null;   // ForeFlight actual ZFW for this leg
+  ffMlw: number | null;   // ForeFlight actual MLW for this leg
   waiver: {
     fboName: string;
     minGallons: number;
@@ -216,9 +287,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Build plans per tail (no ForeFlight calls — uses schedule times + burn rates)
+    // 5. Build plans per tail
     const plans: TailPlan[] = [];
     const ppg = calcPpg(15);
+
+    // Pre-build estimate-based leg data for all tails first, then selectively
+    // enrich with ForeFlight performance data only for tails with tankering potential
+    // (multi-leg + price variation across stops). This avoids slow FF API calls
+    // for single-leg tails or tails where prices are identical.
+
+    // Phase 1: Build legs with estimates, identify tails worth enriching
+    const tailLegData = new Map<string, { schedule: ScheduleLeg[]; legs: LegData[]; acType: AircraftType; shutdown: { fuel: number; airport: string } }>();
 
     for (const [tail, schedule] of scheduleByTail) {
       const shutdown = shutdownMap.get(tail);
@@ -236,16 +315,13 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // Build leg data from schedule + burn rate estimates
       const legData: LegData[] = schedule.map((leg, idx) => {
-        // Estimate flight time from schedule
         let flightHrs: number;
         if (leg.scheduled_arrival) {
           const dep = new Date(leg.scheduled_departure).getTime();
           const arr = new Date(leg.scheduled_arrival).getTime();
           flightHrs = Math.max(0.3, (arr - dep) / 3_600_000);
         } else {
-          // Fallback: estimate from next leg's departure or 2 hours
           const dep = new Date(leg.scheduled_departure).getTime();
           const nextLeg = schedule[idx + 1];
           const nextDep = nextLeg ? new Date(nextLeg.scheduled_departure).getTime() : dep + 2 * 3_600_000;
@@ -337,6 +413,8 @@ export async function POST(req: NextRequest) {
           bestPriceAtFbo: bestAtFbo,
           bestVendorAtFbo: bestVendorAtFbo,
           ffSource: "estimate" as const,
+          ffZfw: null,
+          ffMlw: null,
           waiver: {
             fboName: legWaiver.fboName,
             minGallons: legWaiver.minGallons,
@@ -348,7 +426,44 @@ export async function POST(req: NextRequest) {
         };
       });
 
-      // Build optimizer input (with per-airport/aircraft fee waiver rules from fbo-fees.json)
+      tailLegData.set(tail, { schedule, legs: legData, acType, shutdown: { fuel: shutdown.fuel, airport: shutdown.airport } });
+    }
+
+    // Phase 2: Identify tails with tankering potential (multi-leg + price variation or fee waivers)
+    const tailsNeedingFF: string[] = [];
+    for (const [tail, data] of tailLegData) {
+      if (data.legs.length < 2) continue;
+      const prices = data.legs.map((l) => l.departurePricePerGal).filter((p) => p > 0);
+      const hasPriceVariation = prices.length >= 2 && Math.max(...prices) - Math.min(...prices) > 0.10;
+      const hasFeeWaiver = data.legs.some((l) => l.waiver.minGallons > 0 && l.waiver.feeWaived > 0);
+      if (hasPriceVariation || hasFeeWaiver) tailsNeedingFF.push(tail);
+    }
+
+    // Load ForeFlight pre-flight predictions from DB (synced by cron)
+    const ffPerf = tailsNeedingFF.length > 0
+      ? await loadForeFlightFromDB(supa, targetDate, tailsNeedingFF)
+      : new Map<string, FFPerf>();
+
+    // Phase 3: Enrich legs with ForeFlight data and run optimizer
+    for (const [tail, data] of tailLegData) {
+      const { legs: legData, acType, shutdown } = data;
+      const defaults = AIRCRAFT_DEFAULTS[acType];
+
+      // Enrich with ForeFlight performance if available
+      for (const ld of legData) {
+        const ffKey = `${tail}|${normIcao(ld.from)}|${normIcao(ld.to)}`;
+        const ff = ffPerf.get(ffKey);
+        if (ff) {
+          ld.fuelToDestLbs = Math.round(ff.fuelToDestLbs);
+          ld.totalFuelLbs = Math.round(ff.totalFuelLbs);
+          if (ff.flightTimeHours > 0) ld.flightTimeHours = ff.flightTimeHours;
+          ld.ffSource = "foreflight";
+          ld.ffZfw = ff.zeroFuelWeight;
+          ld.ffMlw = ff.landingWeight;
+        }
+      }
+
+      // Build optimizer input
       const multiLegs: MultiLeg[] = legData.map((ld) => {
         const waiver = ld.waiver;
         return {
@@ -357,8 +472,8 @@ export async function POST(req: NextRequest) {
           requiredStartFuelLbs: ld.totalFuelLbs,
           fuelToDestLbs: ld.fuelToDestLbs,
           flightTimeHours: ld.flightTimeHours,
-          maxLandingGrossWeightLbs: defaults.mlw,
-          zeroFuelWeightLbs: defaults.zfw,
+          maxLandingGrossWeightLbs: ld.ffMlw ?? defaults.mlw,
+          zeroFuelWeightLbs: ld.ffZfw ?? defaults.zfw,
           maxFuelCapacityLbs: STD_AIRCRAFT[acType].maxFuel,
           departurePricePerGal: ld.departurePricePerGal,
           waiveFeesGallons: waiver.minGallons,
@@ -374,7 +489,7 @@ export async function POST(req: NextRequest) {
         legs: multiLegs,
       };
 
-      const plan = optimizeMultiLeg(routeInput, 200); // coarser step for fleet speed
+      const plan = optimizeMultiLeg(routeInput, 200);
 
       // Baseline cost: buy what you need at each stop, always meeting fee
       // waiver minimums (standard ops). No tankering — no extra fuel carried.
@@ -385,20 +500,17 @@ export async function POST(req: NextRequest) {
         const neededLbs = Math.max(0, needed - runningFuel);
         let orderGal = neededLbs / ppg;
 
-        // Always buy at least the fee waiver minimum (standard ops)
         const waiver = ld.waiver;
         if (waiver.minGallons > 0 && orderGal < waiver.minGallons) {
           orderGal = waiver.minGallons;
         }
 
-        // Cap at max fuel tank capacity
         const maxFuel = STD_AIRCRAFT[acType].maxFuel;
         const maxOrderLbs = Math.max(0, maxFuel - runningFuel);
         orderGal = Math.min(orderGal, maxOrderLbs / ppg);
 
         naiveCost += orderGal * ld.departurePricePerGal;
 
-        // Extra fuel from buying waiver minimum carries over as landing fuel
         const actualOrderLbs = orderGal * ppg;
         const departFuel = runningFuel + actualOrderLbs;
         runningFuel = Math.max(0, departFuel - ld.fuelToDestLbs - 300);
@@ -441,6 +553,7 @@ export async function POST(req: NextRequest) {
       fuelPriceCount: advertisedPrices.length,
       shutdownDataDate: postFlightRows[0]?.flight_date ?? null,
       avgBurnRates: avgBurnRate,
+      foreflightMatches: ffPerf.size,
     });
   } catch (err) {
     console.error("[fuel-planning/generate] Unhandled error:", err);

@@ -50,7 +50,7 @@ export default async function OpsPage({ params }: { params: Promise<{ tab?: stri
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} suppressedRunwayNotamIds={data.suppressedRunwayNotamIds ?? []} allRunwaysClosedAlerts={data.allRunwaysClosedAlerts ?? []} initialTab={initialTab} />
+      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} initialTab={initialTab} />
     </>
   );
 }
