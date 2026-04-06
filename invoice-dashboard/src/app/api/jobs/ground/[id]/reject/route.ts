@@ -1,0 +1,226 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin, isRateLimited } from "@/lib/api-auth";
+import { createServiceClient } from "@/lib/supabase/service";
+import { postSlackMessage } from "@/lib/slack";
+
+const REJECTION_TYPES = ["hard", "soft", "left_process"] as const;
+type RejectionType = (typeof REJECTION_TYPES)[number];
+
+const TEMPLATE_KEYS: Record<RejectionType, string> = {
+  hard: "ground_rejection_email_hard",
+  soft: "ground_rejection_email_soft",
+  left_process: "ground_rejection_email_left",
+};
+
+const SUBJECT_LINES: Record<RejectionType, string> = {
+  hard: "Baker Aviation — Application Update",
+  soft: "Baker Aviation — Application Update",
+  left_process: "Baker Aviation — Following Up",
+};
+
+async function getGraphToken(): Promise<string> {
+  const tenant = process.env.MS_TENANT_ID;
+  const clientId = process.env.MS_CLIENT_ID;
+  const clientSecret = process.env.MS_CLIENT_SECRET;
+  if (!tenant || !clientId || !clientSecret) throw new Error("MS Graph credentials not configured");
+  const res = await fetch(
+    `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "client_credentials",
+        scope: "https://graph.microsoft.com/.default",
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`MS Graph token failed: ${res.status}`);
+  return (await res.json()).access_token;
+}
+
+function buildHtmlEmail(bodyText: string, logoUrl: string): string {
+  const htmlBody = bodyText.replace(/\n/g, "<br>");
+  return `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;color:#333;">
+  <div style="max-width:600px;margin:0 auto;padding:20px;">
+    <div style="text-align:center;margin-bottom:24px;">
+      <img src="${logoUrl}" alt="Baker Aviation" style="height:50px;" />
+    </div>
+    <div style="font-size:15px;line-height:1.6;">
+      ${htmlBody}
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * POST /api/jobs/ground/[id]/reject
+ * Body: { rejection_type, rejection_reason?, send_email? }
+ */
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (await isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
+  const { id } = await params;
+  const applicationId = Number(id);
+  if (!applicationId || isNaN(applicationId)) {
+    return NextResponse.json({ error: "Invalid application ID" }, { status: 400 });
+  }
+
+  let body: Record<string, unknown> = {};
+  try { body = await req.json(); } catch {}
+
+  const rejectionType = body.rejection_type as string;
+  const type: RejectionType = REJECTION_TYPES.includes(rejectionType as RejectionType)
+    ? (rejectionType as RejectionType)
+    : "hard";
+  const reason = typeof body.rejection_reason === "string" ? body.rejection_reason : null;
+  const emailNotes = typeof body.email_notes === "string" ? body.email_notes : null;
+  const sendEmail = body.send_email !== false;
+
+  const supa = createServiceClient();
+
+  const { data: job } = await supa
+    .from("job_application_parse")
+    .select("candidate_name, email, pipeline_stage, category")
+    .eq("application_id", applicationId)
+    .maybeSingle();
+
+  if (!job) {
+    return NextResponse.json({ error: "Application not found" }, { status: 404 });
+  }
+
+  const { error: updateErr } = await supa
+    .from("job_application_parse")
+    .update({
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason,
+      rejection_type: type,
+      pipeline_stage: "",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("application_id", applicationId);
+
+  if (updateErr) {
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
+  }
+
+  // Send rejection email
+  let emailSent = false;
+  let emailError: string | null = null;
+
+  if (sendEmail && job.email) {
+    try {
+      const templateKey = TEMPLATE_KEYS[type];
+      const { data: setting } = await supa
+        .from("hiring_settings")
+        .select("value")
+        .eq("key", templateKey)
+        .maybeSingle();
+
+      if (!setting?.value) {
+        emailError = `Email template "${templateKey}" not configured. Go to Jobs → Ground Admin.`;
+      } else {
+        const firstName = (job.candidate_name ?? "").split(/\s+/)[0] || "Applicant";
+        let emailText = setting.value.replace(/\{\{name\}\}/g, firstName);
+
+        if (type === "soft" && emailNotes) {
+          if (emailText.includes("{{notes}}")) {
+            emailText = emailText.replace(/\{\{notes\}\}/g, emailNotes);
+          } else {
+            const lines = emailText.split("\n");
+            const insertIdx = Math.max(lines.length - 2, 1);
+            lines.splice(insertIdx, 0, "", emailNotes);
+            emailText = lines.join("\n");
+          }
+        } else {
+          emailText = emailText.replace(/\{\{notes\}\}/g, "");
+        }
+
+        const token = await getGraphToken();
+        const mailbox = process.env.OUTLOOK_HR_MAILBOX || "HR@baker-aviation.com";
+        const origin = "https://baker-ai-gamma.vercel.app";
+        const htmlBody = buildHtmlEmail(emailText, `${origin}/logo3.png`);
+
+        const sendRes = await fetch(
+          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: {
+                subject: SUBJECT_LINES[type],
+                body: { contentType: "HTML", content: htmlBody },
+                toRecipients: [{ emailAddress: { address: job.email, name: job.candidate_name ?? undefined } }],
+              },
+              saveToSentItems: true,
+            }),
+          },
+        );
+
+        if (sendRes.ok) {
+          emailSent = true;
+        } else {
+          emailError = `Email send failed (HTTP ${sendRes.status})`;
+        }
+      }
+    } catch (err) {
+      emailError = String(err);
+    }
+  }
+
+  // Slack notification
+  try {
+    await postSlackMessage({
+      channel: process.env.SLACK_HIRING_CHANNEL_ID || "C0AQ54QT98B",
+      text: `[Ground] ${job.candidate_name ?? "Unknown"} rejected (${type})${reason ? `: ${reason}` : ""}`,
+    });
+  } catch {}
+
+  return NextResponse.json({ ok: true, rejectionType: type, emailSent, emailError });
+}
+
+/** DELETE — un-reject */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (await isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
+  const { id } = await params;
+  const applicationId = Number(id);
+  if (!applicationId || isNaN(applicationId)) {
+    return NextResponse.json({ error: "Invalid application ID" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+  const { error } = await supa
+    .from("job_application_parse")
+    .update({
+      rejected_at: null,
+      rejection_reason: null,
+      rejection_type: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("application_id", applicationId);
+
+  if (error) {
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
+}

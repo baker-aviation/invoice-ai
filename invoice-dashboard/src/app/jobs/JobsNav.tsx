@@ -5,11 +5,13 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   { href: "/jobs", label: "Table" },
-  { href: "/jobs/pipeline", label: "Pipeline" },
+  { href: "/jobs/pipeline", label: "Pilot Pipeline" },
+  { href: "/jobs/ground-pipeline", label: "Ground Pipeline" },
   { href: "/jobs/forecast", label: "Forecast" },
   { href: "/jobs/lors", label: "LORs" },
   { href: "/jobs/rejected", label: "Rejected" },
-  { href: "/jobs/admin", label: "Admin" },
+  { href: "/jobs/admin", label: "Pilot Admin" },
+  { href: "/jobs/ground-admin", label: "Ground Admin" },
 ] as const;
 
 export default function JobsNav() {
