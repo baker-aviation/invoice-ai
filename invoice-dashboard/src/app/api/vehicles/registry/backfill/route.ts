@@ -18,7 +18,8 @@ function inferType(name: string, make: string, model: string): string {
   const all = `${u} ${mk} ${m}`;
 
   if (u.includes("CLEANING")) return "cleaning";
-  if (/F[-\s]?\d{3}/.test(m) || m.includes("SUPER DUTY") || m.includes("BRONCO") || all.includes("TRUCK")) return "truck";
+  if (m.includes("BRONCO") || u.includes("BRONCO")) return "suv";
+  if (/F[-\s]?\d{3}/.test(m) || m.includes("SUPER DUTY") || all.includes("TRUCK")) return "truck";
   if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
   if (m.includes("CAMRY") || mk.includes("BMW") || u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
   return "unknown";
@@ -28,6 +29,7 @@ function inferRole(type: string): string {
   switch (type) {
     case "van": return "aog_response";
     case "truck": return "parts_transport";
+    case "suv": return "aog_response";
     case "crew_car": return "crew_shuttle";
     case "cleaning": return "utility";
     default: return "unassigned";

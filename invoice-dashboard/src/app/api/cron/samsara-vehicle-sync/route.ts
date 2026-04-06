@@ -30,7 +30,8 @@ function inferVehicleType(v: SamsaraVehicle): string {
 
   if (name.includes("CLEANING")) return "cleaning";
   // Trucks: F-150/250/350/450/550, Super Duty, Bronco, etc. — check model FIRST to override name
-  if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY") || model.includes("BRONCO") || all.includes("TRUCK")) return "truck";
+  if (model.includes("BRONCO") || name.includes("BRONCO")) return "suv";
+  if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY") || all.includes("TRUCK")) return "truck";
   if (name.includes("VAN") || name.includes("AOG") || name.includes("TRAN")) return "van";
   if (model.includes("CAMRY") || make.includes("BMW") || name.includes("CAMRY") || name.includes("BMW") || name.includes("CAR")) return "crew_car";
   return "unknown";
@@ -40,6 +41,7 @@ function inferVehicleRole(type: string): string {
   switch (type) {
     case "van": return "aog_response";
     case "truck": return "parts_transport";
+    case "suv": return "aog_response";
     case "crew_car": return "crew_shuttle";
     case "cleaning": return "utility";
     default: return "unassigned";

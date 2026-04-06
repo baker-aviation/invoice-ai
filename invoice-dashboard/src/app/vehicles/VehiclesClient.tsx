@@ -198,6 +198,7 @@ function VehicleFleetRow({
               const t = inferTypeFromName(v.name, registry, v.id);
               const badge = t === "van" ? { label: "Van", cls: "bg-blue-100 text-blue-700" }
                 : t === "truck" ? { label: "Truck", cls: "bg-purple-100 text-purple-700" }
+                : t === "suv" ? { label: "SUV", cls: "bg-orange-100 text-orange-700" }
                 : t === "crew_car" ? { label: "Crew Car", cls: "bg-emerald-100 text-emerald-700" }
                 : null;
               return badge ? (
@@ -655,12 +656,13 @@ function MaintenanceSchedule({
 // ─── Main client component ────────────────────────────────────────────────────
 
 type ActiveTab = "fleet" | "maintenance";
-type VehicleFilter = "all" | "van" | "truck" | "crew_car" | "other";
+type VehicleFilter = "all" | "van" | "truck" | "suv" | "crew_car" | "other";
 
 const VEHICLE_FILTERS: { key: VehicleFilter; label: string; icon: string }[] = [
   { key: "all", label: "All", icon: "" },
   { key: "van", label: "AOG Vans", icon: "🚐" },
   { key: "truck", label: "Trucks", icon: "🚛" },
+  { key: "suv", label: "SUVs", icon: "🚙" },
   { key: "crew_car", label: "Crew Cars", icon: "🚗" },
   { key: "other", label: "Other", icon: "📦" },
 ];
@@ -680,6 +682,7 @@ function inferTypeFromName(name: string, registry?: Map<string, RegistryEntry>, 
       const t = reg.vehicle_type;
       if (t === "van") return "van";
       if (t === "truck") return "truck";
+      if (t === "suv") return "suv";
       if (t === "crew_car") return "crew_car";
       return "other";
     }
@@ -687,14 +690,16 @@ function inferTypeFromName(name: string, registry?: Map<string, RegistryEntry>, 
     if (reg) {
       const model = (reg.model || "").toUpperCase();
       const make = (reg.make || "").toUpperCase();
-      if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY") || model.includes("BRONCO")) return "truck";
+      if (model.includes("BRONCO")) return "suv";
+      if (/F[-\s]?\d{3}/.test(model) || model.includes("SUPER DUTY")) return "truck";
       if (model.includes("CAMRY") || make.includes("BMW")) return "crew_car";
     }
   }
   // Final fallback: name-based
   const u = (name || "").toUpperCase();
   if (u.includes("CLEANING")) return "other";
-  if (u.includes("BRONCO") || u.includes("TRUCK") || /F[-\s]?\d{3}/.test(u) || u.includes("SUPER DUTY")) return "truck";
+  if (u.includes("BRONCO")) return "suv";
+  if (u.includes("TRUCK") || /F[-\s]?\d{3}/.test(u) || u.includes("SUPER DUTY")) return "truck";
   if (u.includes("VAN") || u.includes("AOG") || u.includes("TRAN")) return "van";
   if (u.includes("CAMRY") || u.includes("BMW") || u.includes("CAR")) return "crew_car";
   return "other";
@@ -771,7 +776,7 @@ export default function VehiclesClient() {
   }, [allVehicles, vehicleFilter, registry]);
 
   const filterCounts = useMemo(() => {
-    const counts: Record<VehicleFilter, number> = { all: allVehicles.length, van: 0, truck: 0, crew_car: 0, other: 0 };
+    const counts: Record<VehicleFilter, number> = { all: allVehicles.length, van: 0, truck: 0, suv: 0, crew_car: 0, other: 0 };
     for (const v of allVehicles) {
       const t = inferTypeFromName(v.name, registry, v.id);
       counts[t]++;
