@@ -113,7 +113,8 @@ export async function POST(req: NextRequest) {
           vendorLines.push(`${from}: ${vendor} @ ${price}`);
         }
 
-        const headerText = savings > 0
+        const isMultiLeg = (plan.legs ?? []).length > 1;
+        const headerText = savings > 0 && isMultiLeg
           ? `*${plan.tail}* — Fuel Briefing  (~$${savings.toLocaleString()} tankering savings)`
           : `*${plan.tail}* — Fuel Briefing`;
 

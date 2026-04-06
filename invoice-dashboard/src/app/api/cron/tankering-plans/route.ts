@@ -162,11 +162,11 @@ export async function GET(req: NextRequest) {
 
   // 5. Post clean summary to Slack
   const withSavings = plans
-    .filter((p) => p.tankerSavings > 0 && p.plan && !p.error)
+    .filter((p) => p.tankerSavings > 0 && p.plan && !p.error && p.legs.length > 1)
     .sort((a, b) => b.tankerSavings - a.tankerSavings);
 
   const noSavings = plans
-    .filter((p) => p.plan && !p.error && p.tankerSavings <= 0);
+    .filter((p) => p.plan && !p.error && (p.tankerSavings <= 0 || p.legs.length <= 1));
 
   const strip = (c: string) => c.length === 4 && c.startsWith("K") ? c.slice(1) : c;
   const fmtDollars = (n: number) => "$" + Math.round(n).toLocaleString("en-US");

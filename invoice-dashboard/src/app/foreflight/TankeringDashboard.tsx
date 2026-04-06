@@ -54,6 +54,7 @@ interface GenerateResponse {
   date: string;
   plans: TailPlan[];
   fleetTotals: { totalFuelCost: number; totalFees: number; totalTripCost: number; naiveCost: number; tankerSavings: number; planCount: number };
+  nationalAvgPrice?: number;
   fuelPriceCount: number;
   shutdownDataDate: string | null;
   message?: string;
@@ -263,14 +264,14 @@ export default function TankeringDashboard() {
           {/* ── Per-Tail Plans — savings first (expanded), no savings (collapsed) ── */}
           {(() => {
             const withSavings = result.plans
-              .filter((tp) => tp.tankerSavings > 0 && !tp.error)
+              .filter((tp) => tp.tankerSavings > 0 && !tp.error && tp.legs.length > 1)
               .sort((a, b) => b.tankerSavings - a.tankerSavings);
             const noSavings = result.plans
-              .filter((tp) => tp.tankerSavings <= 0 || tp.error);
+              .filter((tp) => tp.tankerSavings <= 0 || tp.error || tp.legs.length <= 1);
             return (
               <>
                 {withSavings.map((tp) => (
-                  <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen />
+                  <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen nationalAvgPrice={result.nationalAvgPrice} />
                 ))}
                 {noSavings.length > 0 && (
                   <div className="mt-2">
@@ -278,7 +279,7 @@ export default function TankeringDashboard() {
                       Vendor plan only — no tankering savings ({noSavings.length} aircraft)
                     </p>
                     {noSavings.map((tp) => (
-                      <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen={false} />
+                      <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen={false} nationalAvgPrice={result.nationalAvgPrice} />
                     ))}
                   </div>
                 )}
@@ -293,7 +294,7 @@ export default function TankeringDashboard() {
 
 // ─── Tail Plan Card ────────────────────────────────────────────────────
 
-function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; date: string; defaultOpen?: boolean }) {
+function TailPlanCard({ plan: tp, date, defaultOpen = true, nationalAvgPrice = 0 }: { plan: TailPlan; date: string; defaultOpen?: boolean; nationalAvgPrice?: number }) {
   const ppg = 6.7; // standard for display conversion
   const hasError = !!tp.error;
   const plan = tp.plan;
@@ -303,6 +304,9 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
   const [open, setOpen] = useState(defaultOpen);
   const [showVendorPlan, setShowVendorPlan] = useState(false);
   const hasVendorData = tp.legs.some((l) => (l.allVendors?.length ?? 0) > 0 || l.departureFboVendor);
+  const isSingleLeg = tp.legs.length === 1;
+  const singleLegPrice = isSingleLeg ? tp.legs[0]?.departurePricePerGal ?? 0 : 0;
+  const isBelowAvg = isSingleLeg && nationalAvgPrice > 0 && singleLegPrice > 0 && singleLegPrice < nationalAvgPrice;
 
   const handleSendToSlack = async () => {
     if (!plan) return;
@@ -349,9 +353,14 @@ function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; 
           </span>
         </div>
         <div className="flex items-center gap-4">
-          {tp.tankerSavings > 0 && (
+          {tp.tankerSavings > 0 && !isSingleLeg && (
             <Badge className="bg-green-100 text-green-700 border-green-200">
               Save {fmtDollars(tp.tankerSavings)}
+            </Badge>
+          )}
+          {isBelowAvg && (
+            <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px]">
+              Below avg — likely tanker opportunity when follow-on leg is known
             </Badge>
           )}
           {plan && (

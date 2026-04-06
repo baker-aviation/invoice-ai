@@ -136,6 +136,7 @@ interface TailPlan {
   plan: MultiLegPlan | null;
   naiveCost: number;
   tankerSavings: number;
+  nationalAvgPrice?: number;
   error?: string;
 }
 
@@ -253,6 +254,12 @@ export async function POST(req: NextRequest) {
       console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
     }
     const bestRates = buildBestRateByAirport(advertisedPrices);
+
+    // Compute national average fuel price from best rates at each airport
+    const allBestPrices = [...bestRates.values()].map((r) => r.price).filter((p) => p > 0);
+    const nationalAvgPrice = allBestPrices.length > 0
+      ? allBestPrices.reduce((a, b) => a + b, 0) / allBestPrices.length
+      : 0;
 
     // 3b. Get sales rep fuel choices from trip notes (if available for this date's trips)
     const tripIds = [...new Set(
@@ -530,7 +537,7 @@ export async function POST(req: NextRequest) {
       plans.push({
         tail, aircraftType: acType,
         shutdownFuel: shutdown.fuel, shutdownAirport: shutdown.airport,
-        legs: legData, plan, naiveCost, tankerSavings,
+        legs: legData, plan, naiveCost, tankerSavings, nationalAvgPrice,
         error: plan ? undefined : "Optimizer could not find a valid plan (check weight constraints)",
       });
     }
@@ -558,6 +565,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true, date: targetDate, plans, fleetTotals,
+      nationalAvgPrice,
       fuelPriceCount: advertisedPrices.length,
       shutdownDataDate: postFlightRows[0]?.flight_date ?? null,
       avgBurnRates: avgBurnRate,

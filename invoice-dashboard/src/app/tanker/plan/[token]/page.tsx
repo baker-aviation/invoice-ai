@@ -57,6 +57,7 @@ type PlanData = {
   plan: MultiLegPlan | null;
   naiveCost: number;
   tankerSavings: number;
+  nationalAvgPrice?: number;
 };
 
 function fmtNum(n: number): string {
@@ -277,9 +278,15 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
               </span>
             </div>
             <div className="flex items-center gap-3">
-              {savings > 0 && (
+              {savings > 0 && plan.legs.length > 1 && (
                 <span className="text-sm font-semibold text-green-600">
                   Save {fmtDollars(savings)}
+                </span>
+              )}
+              {plan.legs.length === 1 && plan.legs[0]?.departurePricePerGal > 0 &&
+                (plan.nationalAvgPrice ?? 0) > 0 && plan.legs[0].departurePricePerGal < (plan.nationalAvgPrice ?? 0) && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200">
+                  ${plan.legs[0].departurePricePerGal.toFixed(2)} vs ${(plan.nationalAvgPrice ?? 0).toFixed(2)} avg — likely tanker opportunity when follow-on leg is known
                 </span>
               )}
               {optimized && (
