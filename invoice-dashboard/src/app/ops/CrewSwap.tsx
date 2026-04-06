@@ -3052,6 +3052,38 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     }
   }
 
+  const [seedingFlights, setSeedingFlights] = useState(false);
+  async function seedFlights() {
+    setSeedingFlights(true);
+    try {
+      const res = await fetch("/api/crew/seed-flights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10), mode: "fill" }),
+      });
+      const data = await safeJson(res, "Flight seeding failed");
+      if (res.ok) {
+        // Refresh gap alerts after seeding
+        const wedStr = selectedDate.toISOString().slice(0, 10);
+        fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
+          .then((r) => r.json())
+          .then((d) => {
+            const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
+              icao: a.icao, iata: a.iata, suggested: a.suggested_alias_iata, distance: a.distance_miles, flights: a.appears_in_flights,
+            }));
+            setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
+          })
+          .catch(() => {});
+      } else {
+        setOptimizeError(data.error ?? "Flight seeding failed");
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Flight seeding failed");
+    } finally {
+      setSeedingFlights(false);
+    }
+  }
+
   // Auto-detect rotation from JetInsight flights
   async function detectRotation() {
     setDetectingRotation(true);
@@ -3474,7 +3506,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   return (
     <div className="space-y-4">
       {/* Header + Week Selector + Stepper */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-6">
           <div>
             <h2 className="text-lg font-bold text-gray-900">Crew Swap Planning</h2>
@@ -3492,7 +3524,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             { label: "Save", done: !!savedPlanMeta },
           ]} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => shiftWeek(-1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50" title="Previous Wednesday">
             &laquo; Wk
           </button>
@@ -4035,8 +4067,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             </div>
           )}
           {gapAlerts.missingPairs > 0 && (
-            <div className="text-xs text-amber-700">
-              <span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedDate.toISOString().slice(0, 10)}. Run &quot;Seed Flights&quot; to fill.
+            <div className="flex items-center gap-3 text-xs text-amber-700">
+              <span><span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedDate.toISOString().slice(0, 10)}.</span>
+              <button
+                onClick={seedFlights}
+                disabled={seedingFlights}
+                className={`px-3 py-1 rounded-md font-medium whitespace-nowrap ${
+                  seedingFlights ? "bg-gray-200 text-gray-400" : "bg-amber-600 text-white hover:bg-amber-700"
+                }`}
+              >
+                {seedingFlights ? "Seeding..." : "Seed Flights Now"}
+              </button>
             </div>
           )}
         </div>
@@ -4683,6 +4724,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <span className="text-[10px] text-gray-400">Lock crew to tail, pair crew, or lock to fleet type</span>
           </div>
           <div className="p-4 text-xs space-y-3">
+            {swapConstraints.length === 0 && (
+              <p className="text-gray-400 italic text-[11px]">No constraints set. Add one below to lock crew to a tail, pair two crew together, or restrict to a fleet type.</p>
+            )}
             {swapConstraints.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {swapConstraints.map((c, i) => (
@@ -4711,7 +4755,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 <input id="constraint-reason" type="text" placeholder="Reason (optional)"
                   className="flex-1 text-xs border rounded px-2 py-1.5 bg-white placeholder-gray-400" />
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                 <div>
                   <label className="text-[10px] text-gray-500">Crew A / Crew</label>
                   <select id="constraint-crew-a" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
@@ -4805,7 +4849,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {/* Swap Optimizer */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
         {/* Sticky toolbar */}
-        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b shadow-sm px-4 py-3 flex items-center justify-between">
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b shadow-sm px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
               Swap Optimizer
@@ -4883,10 +4927,21 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               onClick={computeRoutes}
               disabled={computingRoutes || optimizing}
               className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-gray-50 text-gray-700 hover:bg-gray-100 border-gray-200"
               }`}
+              title="Compute drive times for all crew-to-swap routes"
             >
-              {computingRoutes ? "Seeding Flights..." : "Seed Flights"}
+              {computingRoutes ? "Computing..." : "Compute Routes"}
+            </button>
+            <button
+              onClick={seedFlights}
+              disabled={seedingFlights || optimizing}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+              }`}
+              title="Seed commercial flight cache from Google Flights via HasData"
+            >
+              {seedingFlights ? "Seeding Flights..." : "Seed Flights"}
             </button>
             <button
               onClick={() => runOptimizer()}
