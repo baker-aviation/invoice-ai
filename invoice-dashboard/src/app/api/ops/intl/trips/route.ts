@@ -615,63 +615,9 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Clean up orphaned trips: existing trips whose flights no longer
-      // appear in any detected trip. Only delete if the flights are ACTUALLY
-      // gone from the flights table (not just reassigned to a different tail).
-      // This prevents premature deletion during JI tail swaps.
-      const allDetectedFlightIds = new Set<string>();
-      for (const dt of detected) {
-        for (const fid of dt.flight_ids) allDetectedFlightIds.add(fid);
-      }
-
-      // Pre-filter: unmatched trips whose flight_ids aren't in any detected trip
-      const unmatchedCandidates = (allExisting ?? [])
-        .filter((e) => !matchedExistingIds.has(e.id))
-        .filter((e) => {
-          if (!e.flight_ids?.length) return false;
-          return e.flight_ids.every((fid: string) => !allDetectedFlightIds.has(fid));
-        });
-
-      // Verify flights are ACTUALLY deleted from the DB (not just outside the detection window)
-      let orphanCandidates: typeof unmatchedCandidates = [];
-      if (unmatchedCandidates.length > 0) {
-        const candidateFids = [...new Set(unmatchedCandidates.flatMap((e) => e.flight_ids ?? []))];
-        const { data: stillExist } = await supa
-          .from("flights")
-          .select("id")
-          .in("id", candidateFids);
-        const existingFids = new Set((stillExist ?? []).map((f) => f.id));
-
-        orphanCandidates = unmatchedCandidates.filter((e) =>
-          (e.flight_ids ?? []).every((fid: string) => !existingFids.has(fid))
-        );
-      }
-
-      if (orphanCandidates.length > 0) {
-        // Check which orphans have been started (any clearance beyond not_started)
-        const orphanIds = orphanCandidates.map((e) => e.id);
-
-        const startedTripIds = new Set(
-          orphanIds.filter((id) => {
-            const cl = allClearancesMap.get(id) ?? [];
-            return cl.some((c) => c.status !== "not_started");
-          })
-        );
-
-        // Auto-delete unstarted orphans (no work to lose)
-        const safeToDelete = orphanIds.filter((id) => !startedTripIds.has(id));
-        if (safeToDelete.length > 0) {
-          await supa.from("intl_trip_clearances").delete().in("trip_id", safeToDelete);
-          await supa.from("intl_trips").delete().in("id", safeToDelete);
-          console.log(`[intl/trips] Deleted ${safeToDelete.length} orphaned unstarted trip(s)`);
-        }
-
-        // Log started orphans — don't delete, someone was working on them
-        const startedOrphans = orphanIds.filter((id) => startedTripIds.has(id));
-        if (startedOrphans.length > 0) {
-          console.log(`[intl/trips] ${startedOrphans.length} orphaned STARTED trip(s) kept:`, startedOrphans);
-        }
-      }
+      // NOTE: Orphan cleanup DISABLED — was causing create→delete loops.
+      // Trips are cheap, false deletions are expensive. Will revisit with
+      // a safer approach (e.g., flag-and-review instead of auto-delete).
     }
   }
 
