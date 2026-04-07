@@ -55,7 +55,7 @@ function getWeekMonday(dateStr: string): string {
 // ─── Data source labels & colors ─────────────────────────────────────────────
 
 type SourceFilter = "all" | "invoice" | "jetinsight";
-type ViewMode = "compare" | "all" | "advertised" | "stats";
+type ViewMode = "compare" | "all" | "advertised" | "stats" | "avfuel_wow";
 
 const SOURCE_BADGE: Record<string, { label: string; classes: string }> = {
   invoice:    { label: "Invoice",    classes: "bg-blue-100 text-blue-800" },
@@ -1325,6 +1325,40 @@ export default function FuelPricesTable({
     });
   }, [activeAdvertisedPrices]);
 
+  // ─── Avfuel Week-over-Week grid ─────────────────────────────────────────
+  const avfuelWoW = useMemo(() => {
+    const avfuelRows = activeAdvertisedPrices.filter(
+      (a) => a.fbo_vendor === "Avfuel" && !a.tail_numbers && a.price >= 2 && a.price <= 15
+    );
+    if (avfuelRows.length === 0) return { weeks: [] as string[], rows: [] as { airport: string; fbo: string; prices: Map<string, number> }[] };
+
+    // Collect all unique weeks, sorted newest first
+    const weekSet = new Set<string>();
+    for (const r of avfuelRows) weekSet.add(r.week_start);
+    const weeks = [...weekSet].sort((a, b) => b.localeCompare(a));
+
+    // Group by airport + FBO
+    const grouped = new Map<string, { airport: string; fbo: string; prices: Map<string, number> }>();
+    for (const r of avfuelRows) {
+      const fbo = extractFboName(r.product) ?? r.fbo_vendor;
+      const airport = normAirport(r.airport_code);
+      const key = `${airport}|${normFboKey(fbo)}`;
+      if (!grouped.has(key)) grouped.set(key, { airport, fbo, prices: new Map() });
+      const entry = grouped.get(key)!;
+      // Keep cheapest price per week for this FBO
+      const existing = entry.prices.get(r.week_start);
+      if (existing == null || r.price < existing) entry.prices.set(r.week_start, r.price);
+    }
+
+    // Sort rows by airport then FBO
+    const rows = [...grouped.values()].sort((a, b) => {
+      const ac = a.airport.localeCompare(b.airport);
+      return ac !== 0 ? ac : a.fbo.localeCompare(b.fbo);
+    });
+
+    return { weeks, rows };
+  }, [activeAdvertisedPrices]);
+
   // Load extended advertised prices (30 days) for WOW/month comparisons
   async function loadExtendedPrices() {
     if (extendedAdv || loadingExtended) return;
@@ -1411,12 +1445,13 @@ export default function FuelPricesTable({
               ...(hasBothSources ? [{ key: "compare" as const, label: "Compare by Airport" }] : []),
               ...(hasAdvertised ? [{ key: "advertised" as const, label: "Advertised vs Actual" }] : []),
               ...(hasAdvertised ? [{ key: "stats" as const, label: "Stats" }] : []),
+              ...(hasAdvertised ? [{ key: "avfuel_wow" as const, label: "Avfuel WoW" }] : []),
             ]
           ).map(({ key, label }) => (
             <button
               key={key}
               type="button"
-              onClick={() => { setViewMode(key); setPage(0); if (key === "stats" && !extendedAdv) loadExtendedPrices(); }}
+              onClick={() => { setViewMode(key); setPage(0); if ((key === "stats" || key === "avfuel_wow") && !extendedAdv) loadExtendedPrices(); }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 viewMode === key
                   ? "bg-white text-gray-900 shadow-sm"
@@ -1490,7 +1525,7 @@ export default function FuelPricesTable({
       </div>
 
       {/* Filters (hidden on stats tab) */}
-      {viewMode !== "stats" && <div className="flex flex-wrap items-center gap-3">
+      {viewMode !== "stats" && viewMode !== "avfuel_wow" && <div className="flex flex-wrap items-center gap-3">
         <select
           value={airportFilter}
           onChange={(e) => { setAirportFilter(e.target.value); setPage(0); }}
@@ -2350,8 +2385,64 @@ export default function FuelPricesTable({
         </>
       )}
 
+      {/* Avfuel Week-over-Week */}
+      {viewMode === "avfuel_wow" && (
+        <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
+          {avfuelWoW.rows.length === 0 ? (
+            <div className="px-6 py-12 text-center text-gray-400 text-sm">No Avfuel advertised price data available</div>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3 sticky left-0 bg-gray-50 z-10">Airport</th>
+                  <th className="px-4 py-3 sticky left-[80px] bg-gray-50 z-10">FBO</th>
+                  {avfuelWoW.weeks.map((w) => (
+                    <th key={w} className="px-4 py-3 text-right whitespace-nowrap">
+                      {new Date(w + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {avfuelWoW.rows.map((row) => (
+                  <tr key={`${row.airport}|${row.fbo}`} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 whitespace-nowrap font-medium text-gray-900 sticky left-0 bg-white z-10">{row.airport}</td>
+                    <td className="px-4 py-2 whitespace-nowrap text-gray-600 text-xs sticky left-[80px] bg-white z-10 max-w-[200px] truncate" title={row.fbo}>{row.fbo}</td>
+                    {avfuelWoW.weeks.map((w, i) => {
+                      const price = row.prices.get(w);
+                      const prevWeek = avfuelWoW.weeks[i + 1];
+                      const prevPrice = prevWeek ? row.prices.get(prevWeek) : undefined;
+                      const change = price != null && prevPrice != null ? price - prevPrice : null;
+                      return (
+                        <td key={w} className="px-4 py-2 whitespace-nowrap text-right font-mono">
+                          {price != null ? (
+                            <div>
+                              <span className="text-gray-900">{fmt$(price)}</span>
+                              {change != null && change !== 0 && (
+                                <div className={`text-[10px] font-medium ${change > 0 ? "text-red-600" : "text-green-600"}`}>
+                                  {change > 0 ? "+" : ""}{change.toFixed(4)}
+                                </div>
+                              )}
+                              {change === 0 && (
+                                <div className="text-[10px] text-gray-300">flat</div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-300">{"\u2014"}</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {/* Pagination */}
-      {activeTotalPages > 1 && viewMode !== "stats" && (
+      {activeTotalPages > 1 && viewMode !== "stats" && viewMode !== "avfuel_wow" && (
         <div className="flex items-center justify-between text-sm">
           <button
             disabled={page === 0}
