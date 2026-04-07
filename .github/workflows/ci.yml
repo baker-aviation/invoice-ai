@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: invoice-dashboard
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: invoice-dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+  auth-audit:
+    runs-on: ubuntu-latest
+    # Non-blocking until the 4 unprotected routes are fixed.
+    # Remove continue-on-error once all routes have auth.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: API auth coverage check
+        working-directory: invoice-dashboard
+        run: bash scripts/audit-auth.sh
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for hardcoded secrets
+        working-directory: invoice-dashboard
+        run: |
+          FAIL=0
+          # Common secret patterns (API keys, tokens, passwords)
+          PATTERNS=(
+            'AKIA[0-9A-Z]{16}'                     # AWS access key
+            'sk-[a-zA-Z0-9]{20,}'                   # OpenAI / Stripe secret key
+            'sk-ant-[a-zA-Z0-9-]{20,}'              # Anthropic API key
+            'ghp_[a-zA-Z0-9]{36}'                   # GitHub personal access token
+            'xoxb-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24}'  # Slack bot token
+            'eyJhbGciOi[a-zA-Z0-9_-]{50,}'          # JWT token
+            '"password"\s*:\s*"[^"]{8,}"'            # Hardcoded password in JSON
+          )
+
+          for pattern in "${PATTERNS[@]}"; do
+            MATCHES=$(grep -rnE "$pattern" src/ --include="*.ts" --include="*.tsx" --include="*.json" || true)
+            if [ -n "$MATCHES" ]; then
+              echo "::error::Potential secret found matching pattern: $pattern"
+              echo "$MATCHES"
+              FAIL=1
+            fi
+          done
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "Hardcoded secrets detected. Move them to environment variables."
+            exit 1
+          else
+            echo "No hardcoded secrets found."
+          fi

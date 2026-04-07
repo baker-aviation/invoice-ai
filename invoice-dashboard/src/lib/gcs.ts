@@ -7,7 +7,7 @@ let _storage: Storage | null = null;
  * Initialise a GCS client from the GCP_SERVICE_ACCOUNT_KEY env var
  * (base64-encoded JSON key) or from Application Default Credentials.
  */
-function getStorage(): Storage | null {
+export function getStorage(): Storage | null {
   if (_storage) return _storage;
 
   const b64 = process.env.GCP_SERVICE_ACCOUNT_KEY;

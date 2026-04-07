@@ -1,4 +1,4 @@
-export const dynamic = "force-dynamic";
+export const revalidate = 60;
 
 import { Topbar } from "@/components/Topbar";
 import { fetchJobs } from "@/lib/jobApi";
@@ -8,7 +8,7 @@ import UploadButton from "./UploadButton";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function JobsPage() {
-  const data = await fetchJobs({ limit: 1000 });
+  const data = await fetchJobs({ limit: 1000, excludeGround: true });
   const jobs = data.jobs ?? [];
 
   return (

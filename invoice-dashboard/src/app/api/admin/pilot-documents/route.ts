@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAdmin, isRateLimited } from "@/lib/api-auth";
+import { getStorage } from "@/lib/gcs";
 
 /**
  * GET /api/admin/pilot-documents — list all documents (optional ?category= filter)
@@ -73,14 +74,9 @@ export async function POST(req: NextRequest) {
 
   try {
     // Generate a signed upload URL so the client uploads directly to GCS
-    const { Storage } = await import("@google-cloud/storage");
-    let storage: InstanceType<typeof Storage>;
-    const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
-    if (b64Key) {
-      const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
-      storage = new Storage({ credentials: creds, projectId: creds.project_id });
-    } else {
-      storage = new Storage();
+    const storage = getStorage();
+    if (!storage) {
+      return NextResponse.json({ error: "GCS credentials unavailable" }, { status: 500 });
     }
 
     const bucketName = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";

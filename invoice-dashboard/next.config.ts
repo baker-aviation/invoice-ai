@@ -27,7 +27,24 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: "..",
   },
-  serverExternalPackages: ["pdfjs-dist"],
+  output: "standalone",
+  experimental: {
+    optimizePackageImports: [
+      "recharts",
+      "lucide-react",
+      "@turf/turf",
+      "leaflet",
+    ],
+  },
+  serverExternalPackages: [
+    "pdfjs-dist",
+    "cheerio",
+    "@anthropic-ai/sdk",
+    "openai",
+    "@google-cloud/storage",
+    "pdf-parse",
+  ],
+  typescript: { ignoreBuildErrors: true },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },

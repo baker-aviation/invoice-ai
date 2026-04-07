@@ -1,4 +1,4 @@
-export const dynamic = "force-dynamic";
+export const revalidate = 60;
 
 import { Topbar } from "@/components/Topbar";
 import { fetchJobs } from "@/lib/jobApi";

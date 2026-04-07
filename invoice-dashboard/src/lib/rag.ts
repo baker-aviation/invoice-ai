@@ -91,11 +91,9 @@ export async function ingestDocumentChunks(
     .eq("id", documentId);
 
   try {
-    // Clean up any existing chunks
-    await supa.from("document_chunks").delete().eq("document_id", documentId);
-
     const cleanText = text.replace(/\s+/g, " ").trim();
     if (!cleanText || cleanText.length < 50) {
+      await supa.from("document_chunks").delete().eq("document_id", documentId);
       await supa
         .from("pilot_documents")
         .update({ embedding_status: "no_text", chunk_count: 0 })
@@ -103,8 +101,50 @@ export async function ingestDocumentChunks(
       return { chunkCount: 0 };
     }
 
+    // Load existing chunks to reuse cached embeddings for unchanged content
+    const { data: existingChunks } = await supa
+      .from("document_chunks")
+      .select("content, embedding")
+      .eq("document_id", documentId);
+
+    const embeddingCache = new Map<string, string>();
+    for (const c of existingChunks ?? []) {
+      if (c.content && c.embedding) {
+        embeddingCache.set(c.content as string, c.embedding as string);
+      }
+    }
+
+    // Clean up existing chunks
+    await supa.from("document_chunks").delete().eq("document_id", documentId);
+
     const chunks = chunkText(cleanText);
-    const embeddings = await embedBatch(chunks);
+
+    // Split into cached vs uncached chunks
+    const uncachedIndices: number[] = [];
+    const uncachedTexts: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      if (!embeddingCache.has(chunks[i])) {
+        uncachedIndices.push(i);
+        uncachedTexts.push(chunks[i]);
+      }
+    }
+
+    // Only call OpenAI for chunks we don't already have embeddings for
+    const newEmbeddings = uncachedTexts.length > 0
+      ? await embedBatch(uncachedTexts)
+      : [];
+
+    // Merge cached + new embeddings
+    const embeddings: number[][] = [];
+    let newIdx = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      const cached = embeddingCache.get(chunks[i]);
+      if (cached) {
+        embeddings.push(JSON.parse(cached));
+      } else {
+        embeddings.push(newEmbeddings[newIdx++]);
+      }
+    }
 
     // Insert chunks in batches of 50
     const batchSize = 50;
