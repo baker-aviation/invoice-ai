@@ -13,6 +13,38 @@ const GROUND_COLUMNS =
 // Fetch ground pipeline candidates
 // ---------------------------------------------------------------------------
 
+/**
+ * Fetch ALL ground candidates for the table view (no pipeline_stage filter).
+ */
+export async function fetchGroundTableJobs(): Promise<{ ok: boolean; count: number; jobs: JobRow[] }> {
+  const supa = createServiceClient();
+
+  const { data, error } = await supa
+    .from("job_application_parse")
+    .select(GROUND_COLUMNS)
+    .in("category", [...GROUND_CATEGORIES])
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(2000);
+
+  if (error) {
+    console.error("[fetchGroundTableJobs] Error:", error.message);
+    const { data: fallback, error: fallbackErr } = await supa
+      .from("job_application_parse")
+      .select("id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, notes, model, rejected_at, rejection_reason, deleted_at, hr_reviewed, offer_status, offer_sent_at")
+      .in("category", [...GROUND_CATEGORIES])
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(2000);
+
+    if (fallbackErr) throw new Error(`fetchGroundTableJobs failed: ${fallbackErr.message}`);
+    return { ok: true, count: (fallback ?? []).length, jobs: (fallback ?? []) as unknown as JobRow[] };
+  }
+
+  const jobs = (data ?? []) as unknown as JobRow[];
+  return { ok: true, count: jobs.length, jobs };
+}
+
 export async function fetchGroundPipelineJobs(): Promise<{ ok: boolean; count: number; jobs: JobRow[] }> {
   const supa = createServiceClient();
 

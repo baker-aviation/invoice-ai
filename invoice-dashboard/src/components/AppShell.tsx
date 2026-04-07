@@ -8,20 +8,20 @@ import { createClient } from "@/lib/supabase/client";
 import { hasAccessToPath } from "@/lib/permissions";
 
 const NAV = [
-  { href: "/", label: "Home", exact: true, adminOnly: false },
-  { href: "/ops", label: "Ops", exact: false, adminOnly: false },
-  { href: "/invoices", label: "Invoices", exact: false, adminOnly: false },
-  { href: "/fuel-prices", label: "Fuel / Fees", exact: false, adminOnly: false },
-  { href: "/jobs", label: "Jobs", exact: false, adminOnly: false },
-  { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false },
-  { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false },
-  // { href: "/fees", label: "Fees", exact: false, adminOnly: false },
-  { href: "/foreflight", label: "Fuel Planning", exact: false, adminOnly: false },
-  { href: "/pilots", label: "Pilots", exact: false, adminOnly: false },
-  { href: "/aircraft", label: "Aircraft", exact: false, adminOnly: false },
-  { href: "/jetinsight", label: "JetInsight", exact: false, adminOnly: true },
-  { href: "/health", label: "Health", exact: false, adminOnly: true },
-  { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true },
+  { href: "/", label: "Home", exact: true, adminOnly: false, superAdminOnly: false },
+  { href: "/ops", label: "Ops", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/invoices", label: "Invoices", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/fuel-prices", label: "Fuel / Fees", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/jobs", label: "Jobs", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false, superAdminOnly: false },
+  // { href: "/fees", label: "Fees", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/foreflight", label: "Fuel Planning", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/pilots", label: "Pilots", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/aircraft", label: "Aircraft", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/jetinsight", label: "JetInsight", exact: false, adminOnly: true, superAdminOnly: false },
+  { href: "/health", label: "Health", exact: false, adminOnly: false, superAdminOnly: true },
+  { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true, superAdminOnly: false },
 ];
 
 const ROLE_VIEWS = [
@@ -81,6 +81,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [permissions, setPermissions] = useState<string[] | null>(null);
 
   useEffect(() => {
@@ -88,6 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     supabase.auth.getUser().then(({ data: { user } }) => {
       const role = user?.app_metadata?.role ?? user?.user_metadata?.role;
       setIsAdmin(role === "admin");
+      setIsSuperAdmin(user?.app_metadata?.super_admin === true);
       if (role === "dashboard") {
         setPermissions((user?.app_metadata?.permissions as string[] | undefined) ?? null);
       }
@@ -110,7 +112,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
 
           <nav className="flex items-center gap-0.5 text-sm">
-            {NAV.filter(({ href, adminOnly }) => adminOnly ? isAdmin : (isAdmin || hasAccessToPath(permissions, href))).map(({ href, label, exact }) => {
+            {NAV.filter(({ href, adminOnly, superAdminOnly }) => superAdminOnly ? isSuperAdmin : adminOnly ? isAdmin : (isAdmin || hasAccessToPath(permissions, href))).map(({ href, label, exact }) => {
               const isActive = exact ? pathname === href : pathname.startsWith(href);
               return (
                 <Link

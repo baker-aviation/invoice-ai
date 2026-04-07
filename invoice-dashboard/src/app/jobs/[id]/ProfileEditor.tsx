@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import RejectModal from "./RejectModal";
+import { isGroundCategory } from "@/lib/groundPipeline";
 
 const CATEGORY_OPTIONS = [
   { value: "pilot_pic", label: "Pilot — PIC" },
@@ -28,6 +29,7 @@ type StructuredNotes = {
 };
 
 type ProfileData = {
+  id: number;
   applicationId: number;
   candidate_name: string | null;
   email: string | null;
@@ -77,6 +79,11 @@ export default function ProfileEditor({ data, currentStage }: { data: ProfileDat
   // Delete state
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Reassign state
+  const [showReassign, setShowReassign] = useState(false);
+  const [reassignTarget, setReassignTarget] = useState(isGroundCategory(category) ? "pilot_sic" : "maintenance");
+  const [reassigning, setReassigning] = useState(false);
 
   function resetForm() {
     setName(data.candidate_name ?? "");
@@ -204,6 +211,29 @@ export default function ProfileEditor({ data, currentStage }: { data: ProfileDat
     }
   }
 
+  async function handleReassign() {
+    setReassigning(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/jobs/reassign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: data.id, newCategory: reassignTarget }),
+      });
+      if (res.ok) {
+        setShowReassign(false);
+        router.refresh();
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? `Reassign failed (${res.status})`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Reassign failed");
+    } finally {
+      setReassigning(false);
+    }
+  }
+
   const isPilot = category === "pilot_pic" || category === "pilot_sic";
   const isRejected = !!data.rejected_at;
 
@@ -238,6 +268,68 @@ export default function ProfileEditor({ data, currentStage }: { data: ProfileDat
         >
           Delete Profile
         </button>
+        <button
+          onClick={() => setShowReassign(true)}
+          className={`text-xs px-3 py-1.5 rounded border font-medium ${
+            isGroundCategory(category)
+              ? "border-blue-200 text-blue-600 hover:bg-blue-50"
+              : "border-teal-200 text-teal-600 hover:bg-teal-50"
+          }`}
+        >
+          {isGroundCategory(category) ? "Move to Pilot" : "Move to Ground"}
+        </button>
+
+        {/* Reassign modal */}
+        {showReassign && (
+          <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowReassign(false)}>
+            <div className="bg-white rounded-xl p-5 shadow-lg max-w-sm w-full mx-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-sm font-semibold">
+                Move {data.candidate_name?.split(/\s+/)[0]} to {isGroundCategory(category) ? "Pilot" : "Ground"} Jobs?
+              </div>
+              <select
+                value={reassignTarget}
+                onChange={(e) => setReassignTarget(e.target.value)}
+                className="w-full text-sm rounded-lg border border-gray-200 px-3 py-2"
+              >
+                {isGroundCategory(category) ? (
+                  <>
+                    <option value="pilot_pic">PIC</option>
+                    <option value="pilot_sic">SIC</option>
+                    <option value="skillbridge">SkillBridge</option>
+                    <option value="dispatcher">Dispatcher</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="maintenance">A&P Mechanic / Mx</option>
+                    <option value="sales">Sales</option>
+                    <option value="management">Fleet Manager / Mgmt</option>
+                    <option value="line_service">Line Service / Ramp</option>
+                    <option value="admin">Admin / Office</option>
+                    <option value="other">Other</option>
+                  </>
+                )}
+              </select>
+              <p className="text-[11px] text-gray-400">Pipeline stage will be reset</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowReassign(false)}
+                  className="flex-1 text-xs py-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReassign}
+                  disabled={reassigning}
+                  className={`flex-1 text-xs py-2 rounded-lg text-white font-medium disabled:opacity-50 ${
+                    isGroundCategory(category) ? "bg-blue-600 hover:bg-blue-700" : "bg-teal-600 hover:bg-teal-700"
+                  }`}
+                >
+                  {reassigning ? "Moving..." : "Move"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Rejection modal */}
         {showRejectModal && (

@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
 import type { HiringStage, JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
+import { GROUND_CATEGORIES } from "@/lib/groundPipeline";
 
 // ---------------------------------------------------------------------------
 // Jobs list — direct Supabase query to job_application_parse
@@ -27,6 +28,7 @@ async function queryJobs(
     has_citation_x?: "true" | "false";
     has_challenger_300_type_rating?: "true" | "false";
     pipeline_only?: boolean;
+    excludeGround?: boolean;
   },
 ) {
   let query = supa
@@ -42,6 +44,13 @@ async function queryJobs(
   if (params.has_citation_x) query = query.eq("has_citation_x", params.has_citation_x === "true");
   if (params.has_challenger_300_type_rating) {
     query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
+  }
+
+  // Exclude ground categories (for pilot-only table)
+  if (params.excludeGround) {
+    for (const gc of GROUND_CATEGORIES) {
+      query = query.neq("category", gc);
+    }
   }
 
   // Only return candidates with a valid pipeline stage (for pipeline board)
@@ -69,6 +78,7 @@ export async function fetchJobs(
     has_citation_x?: "true" | "false";
     has_challenger_300_type_rating?: "true" | "false";
     pipeline_only?: boolean;
+    excludeGround?: boolean;
   } = {},
 ): Promise<JobsListResponse> {
   const supa = createServiceClient();

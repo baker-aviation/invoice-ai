@@ -2,35 +2,29 @@ export const dynamic = "force-dynamic";
 
 import { Topbar } from "@/components/Topbar";
 import JobsNav from "../JobsNav";
-import RejectedTable from "./RejectedTable";
+import RejectedTable from "../rejected/RejectedTable";
 import { createServiceClient } from "@/lib/supabase/service";
 import { GROUND_CATEGORIES } from "@/lib/groundPipeline";
 
-async function fetchRejected() {
+async function fetchGroundRejected() {
   const supa = createServiceClient();
 
-  let query = supa
+  const { data, error } = await supa
     .from("job_application_parse")
     .select(
       "id, application_id, candidate_name, email, phone, location, category, rejected_at, rejection_reason, rejection_type, pipeline_stage, created_at"
     )
     .not("rejected_at", "is", null)
+    .in("category", [...GROUND_CATEGORIES])
     .is("deleted_at", null)
     .order("rejected_at", { ascending: false });
-
-  // Exclude ground categories — they have their own rejected page
-  for (const gc of GROUND_CATEGORIES) {
-    query = query.neq("category", gc);
-  }
-
-  const { data, error } = await query;
 
   if (error) throw new Error(error.message);
   return (data ?? []) as any[];
 }
 
-export default async function RejectedPage() {
-  const jobs = await fetchRejected();
+export default async function GroundRejectedPage() {
+  const jobs = await fetchGroundRejected();
 
   return (
     <>
