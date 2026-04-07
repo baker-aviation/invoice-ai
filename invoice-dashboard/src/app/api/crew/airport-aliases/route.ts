@@ -42,12 +42,11 @@ export async function POST(req: NextRequest) {
   const supa = createServiceClient();
   const preferred = body.preferred ?? true;
 
+  // Try delete + insert instead of upsert (no unique constraint on fbo_icao)
+  await supa.from("airport_aliases").delete().eq("fbo_icao", fbo);
   const { data, error } = await supa
     .from("airport_aliases")
-    .upsert(
-      { fbo_icao: fbo, commercial_icao: commercial, preferred },
-      { onConflict: "fbo_icao" },
-    )
+    .insert({ fbo_icao: fbo, commercial_icao: commercial, preferred })
     .select()
     .single();
 

@@ -599,13 +599,13 @@ export async function detectNewAirports(options?: {
       continue;
     }
 
-    // This airport has no alias — find nearest commercial (150mi radius)
+    // This airport has no alias — find nearest commercial (500mi radius — always show closest)
     let suggested: string | null = null;
     let suggestedIata: string | null = null;
     let distance: number | null = null;
 
     if (hasCoords(icao)) {
-      const nearby = findNearbyCommercialAirports(icao, 150);
+      const nearby = findNearbyCommercialAirports(icao, 500);
       if (nearby.length > 0) {
         suggested = nearby[0].icao;
         suggestedIata = suggested.length === 4 && suggested.startsWith("K") ? suggested.slice(1) : suggested;

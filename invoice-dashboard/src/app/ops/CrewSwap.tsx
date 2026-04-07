@@ -59,9 +59,9 @@ type OncomingPool = {
 
 /** Pre-optimizer constraints set by coordinator */
 type SwapConstraint =
-  | { type: "force_tail"; crew_name: string; tail: string; reason?: string }
-  | { type: "force_pair"; crew_a: string; crew_b: string; reason?: string }
-  | { type: "force_fleet"; crew_name: string; aircraft_type: string; reason?: string };
+  | { type: "force_tail"; crew_name: string; tail: string; day?: string; reason?: string }
+  | { type: "force_pair"; crew_a: string; crew_b: string; day?: string; reason?: string }
+  | { type: "force_fleet"; crew_name: string; aircraft_type: string; day?: string; reason?: string };
 
 type RosterUploadResult = {
   ok: boolean;
@@ -1851,43 +1851,6 @@ function CrewInfoPanel({ data }: { data: CrewInfoData }) {
         ))}
       </CollapsibleSection>
 
-      {/* Crewing Checklist */}
-      {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
-        <CollapsibleSection
-          title="Crewing Checklist"
-          open={showChecklist}
-          toggle={() => setShowChecklist(!showChecklist)}
-          color="text-emerald-700"
-        >
-          <div className="space-y-2">
-            {data.crewing_checklist.assignees.map((a, ai) => (
-              <div key={ai}>
-                <div className="text-[10px] font-bold text-gray-700 mb-1">{a.name}</div>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                  {Object.entries(a.tasks).map(([task, val]) => {
-                    if (!task) return null;
-                    const done = val === true;
-                    const na = val === "n/a";
-                    return (
-                      <div key={task} className="flex items-center gap-1 text-[10px]">
-                        <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[8px] font-bold ${
-                          done ? "bg-emerald-500 text-white" : na ? "bg-gray-200 text-gray-400" : "bg-gray-100 text-gray-300 border border-gray-200"
-                        }`}>
-                          {done ? "\u2713" : na ? "\u2014" : ""}
-                        </span>
-                        <span className={`truncate ${done ? "text-emerald-700" : na ? "text-gray-400 line-through" : "text-gray-500"}`} title={task}>
-                          {task}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </CollapsibleSection>
-      )}
-
       {/* Calendar — Oncoming Crew */}
       {data.target_week_crew && (
         <CollapsibleSection
@@ -2042,7 +2005,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     return `K${u}`;
   };
   const handleAddAlias = async (fboIcao: string, commercialIata: string, commercialIcao?: string | null) => {
-    const commIcao = commercialIcao ?? iataToIcao(commercialIata);
+    // Convert IATA to ICAO: 3-letter → prepend "K", 4-letter → use as-is
+    const commIcao = commercialIcao ?? (commercialIata.length === 3 ? `K${commercialIata.toUpperCase()}` : commercialIata.toUpperCase());
     setAddingAlias(fboIcao);
     try {
       const res = await fetch("/api/crew/airport-aliases", {
@@ -2052,9 +2016,15 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       });
       if (res.ok) {
         setAddedAliases(prev => new Set(prev).add(fboIcao));
+        addToast("success", `Alias added: ${fboIcao} → ${commIcao}`);
         setTimeout(refreshGapAlerts, 500);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        addToast("error", `Failed to save alias: ${err.error ?? res.statusText}`);
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      addToast("error", `Failed to save alias: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
     setAddingAlias(null);
   };
   // Excluded tails (MX, owner-flown, etc.)
@@ -2100,9 +2070,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Legacy aliases for backwards compat
   const tuesdayPlan = dayPlans["tuesday"] ?? null;
   const wednesdayPlan = dayPlans["wednesday"] ?? null;
-  // Daily crew pairs: "Person A with Person B on Tuesday, Person A with Person C on Wednesday"
-  type DailyPair = { crew_a: string; crew_b: string; day: SwapDay; reason: string };
-  const [dailyPairs, setDailyPairs] = useState<DailyPair[]>([]);
+  // Daily pairs are now managed as force_pair constraints with day field in swapConstraints
   // Tabs
   const [activeTab, setActiveTab] = useState<"setup" | "review" | "plan" | "impacts">("setup");
   // Toasts
@@ -3590,26 +3558,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           );
         }
 
-        // Add daily pairs for this day as required_pairings (legacy) + constraints (day-aware)
+        // Build required_pairings from allPairings + day-specific force_pair constraints
         const dayPairings = [
           ...allPairings,
-          ...dailyPairs.filter(p => p.day === dayLabel).map(p => ({
-            pic: p.crew_a,
-            sic: p.crew_b,
-            reason: `Daily pair (${dayLabel})`,
-          })),
-        ];
-
-        // Build day-aware constraints: include all swap constraints + daily pairs as force_pair with day field
-        const dayConstraints = [
-          ...swapConstraints,
-          ...dailyPairs.map(p => ({
-            type: "force_pair" as const,
-            crew_a: p.crew_a,
-            crew_b: p.crew_b,
-            day: p.day,
-            reason: p.reason || `Daily pair`,
-          })),
+          ...swapConstraints
+            .filter((c): c is SwapConstraint & { type: "force_pair" } => c.type === "force_pair" && (!c.day || c.day === dayLabel))
+            .map(c => ({ pic: c.crew_a, sic: c.crew_b, reason: c.reason ?? `Pair (${dayLabel})` })),
         ];
 
         const res = await fetch("/api/crew/optimize", {
@@ -3623,7 +3577,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             lock_tails: lockTailsArr,
             locked_rows: lockedRows,
             required_pairings: dayPairings.length > 0 ? dayPairings : undefined,
-            constraints: dayConstraints.length > 0 ? dayConstraints : undefined,
+            constraints: swapConstraints.length > 0 ? swapConstraints : undefined,
           }),
         });
         const text = await res.text();
@@ -4892,347 +4846,58 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         </div>
 
-        {/* Section 6: Required Pairings */}
-        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
-          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">6. Required Pairings</h3>
-            <span className="text-[10px] text-gray-400">CA + trainee on same tail (.299, training rides)</span>
+        {/* Section 6: Unified Constraints & Pairings */}
+        <PairConstraintEditor
+          constraints={swapConstraints}
+          onConstraintsChange={setSwapConstraints}
+          selectedSwapDays={selectedSwapDays}
+          crew={crew}
+          tails={swapAssignments ? Object.keys(swapAssignments).sort() : [...new Set(flights.filter(f => f.tail_number).map(f => f.tail_number!))].sort()}
+          onScanSlack={async () => {
+            setSlackScanLoading(true);
+            setSlackScanError(null);
+            try {
+              const res = await fetch("/api/crew/parse-directives", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
+              });
+              const data = await res.json();
+              if (!res.ok) { setSlackScanError(data.error ?? "Scan failed"); return; }
+              const newSugs = (data.directives ?? []).filter((d: SwapConstraint & { _reason?: string }) =>
+                !swapConstraints.some((c) => {
+                  if (c.type !== d.type) return false;
+                  if (c.type === "force_tail" && d.type === "force_tail") return c.crew_name === d.crew_name && c.tail === d.tail;
+                  if (c.type === "force_pair" && d.type === "force_pair") return (c.crew_a === d.crew_a && c.crew_b === d.crew_b) || (c.crew_a === d.crew_b && c.crew_b === d.crew_a);
+                  if (c.type === "force_fleet" && d.type === "force_fleet") return c.crew_name === d.crew_name && c.aircraft_type === d.aircraft_type;
+                  return false;
+                })
+              );
+              setSlackSuggestions(newSugs);
+            } catch (e) { setSlackScanError(e instanceof Error ? e.message : "Scan failed"); }
+            finally { setSlackScanLoading(false); }
+          }}
+          slackScanLoading={slackScanLoading}
+          slackSuggestions={slackSuggestions}
+          onAcceptSuggestion={(i) => {
+            const s = slackSuggestions[i];
+            if (s) {
+              const constraint = { ...s } as SwapConstraint;
+              delete (constraint as Record<string, unknown>)._reason;
+              setSwapConstraints((prev) => [...prev, constraint]);
+              setSlackSuggestions((prev) => prev.filter((_, j) => j !== i));
+            }
+          }}
+          onDismissSuggestion={(i) => setSlackSuggestions((prev) => prev.filter((_, j) => j !== i))}
+        />
+        {slackScanError && (
+          <div className="text-[11px] text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 -mt-2">
+            Scan error: {slackScanError}
           </div>
-          <div className="p-4 text-xs space-y-3">
-            {/* Type-to-search filter */}
-            <input
-              type="text"
-              placeholder="Filter crew names..."
-              value={pairingCrewFilter}
-              onChange={(e) => setPairingCrewFilter(e.target.value)}
-              className="w-full text-xs border rounded px-2 py-1.5 bg-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-300"
-            />
+        )}
 
-            {/* Existing pairings */}
-            {requiredPairings.length > 0 && (
-              <div className="space-y-1">
-                {requiredPairings.map((p, i) => (
-                  <div key={i} className="flex items-center gap-2 py-1 px-2 rounded bg-purple-50 border border-purple-200">
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-purple-200 text-purple-800 font-bold">PAIRED</span>
-                    <span className="font-medium text-purple-900">{p.pic}</span>
-                    <span className="text-purple-400">+</span>
-                    <span className="font-medium text-purple-900">{p.sic}</span>
-                    <span className="text-gray-400">— {p.reason}</span>
-                    <button onClick={() => setRequiredPairings((prev) => prev.filter((_, j) => j !== i))}
-                      className="ml-auto text-red-400 hover:text-red-600">&times;</button>
-                  </div>
-                ))}
-              </div>
-            )}
 
-            {/* Add new pairing */}
-            <div className="border rounded p-3 bg-gray-50">
-              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Add Pairing</div>
-              <div className="space-y-2">
-                {/* Row 1: PIC + Reason */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] text-gray-500">Checkairman (PIC)</label>
-                    <select id="pairing-pic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                      <option value="">Select CA...</option>
-                      {(crewInfoData?.checkairmen ?? [])
-                        .filter((ca) => !pairingCrewFilter || ca.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
-                        .map((ca) => {
-                        const typeLabel = ca.citation_x && ca.challenger ? "CX+CL" : ca.citation_x ? "CX" : ca.challenger ? "CL" : "";
-                        return <option key={ca.name} value={ca.name}>{ca.name} [{typeLabel}] (Rot {ca.rotation})</option>;
-                      })}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500">Reason</label>
-                    <select id="pairing-reason" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                      <option value=".299 check ride">.299 Check Ride</option>
-                      <option value="INDOC training">INDOC Training</option>
-                      <option value="Emergency drill">Emergency Drill</option>
-                      <option value="Line check">Line Check</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Row 2: SIC selection — checkbox list for multi-select */}
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block">
-                    Trainee(s) (SIC) — check one or more
-                    {batchPairingSics.size > 0 && (
-                      <span className="ml-1 text-purple-600 font-medium">({batchPairingSics.size} selected)</span>
-                    )}
-                  </label>
-                  <div className="border rounded bg-white max-h-36 overflow-y-auto">
-                    {/* .299 Recurrency crew first */}
-                    {(crewInfoData?.recurrency_299 ?? []).filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase())).length > 0 && (
-                      <>
-                        <div className="text-[9px] font-bold text-orange-600 uppercase px-2 pt-1.5 pb-0.5 bg-orange-50 sticky top-0">.299 Recurrency</div>
-                        {crewInfoData!.recurrency_299
-                          .filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
-                          .map((r) => (
-                          <label key={`299-${r.name}`} className="flex items-center gap-2 px-2 py-1 hover:bg-purple-50 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={batchPairingSics.has(r.name)}
-                              onChange={(e) => {
-                                setBatchPairingSics((prev) => {
-                                  const next = new Set(prev);
-                                  if (e.target.checked) next.add(r.name); else next.delete(r.name);
-                                  return next;
-                                });
-                              }}
-                              className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                            />
-                            <span className="text-xs">{r.name}</span>
-                            <span className="text-[9px] text-orange-500">(.299 {r.month})</span>
-                          </label>
-                        ))}
-                      </>
-                    )}
-                    {/* All SIC crew */}
-                    <div className="text-[9px] font-bold text-gray-500 uppercase px-2 pt-1.5 pb-0.5 bg-gray-50 sticky top-0">All SIC Crew</div>
-                    {crew.filter((c) => c.active && c.role === "SIC" && (!pairingCrewFilter || c.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))).map((c) => (
-                      <label key={c.id} className="flex items-center gap-2 px-2 py-1 hover:bg-purple-50 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={batchPairingSics.has(c.name)}
-                          onChange={(e) => {
-                            setBatchPairingSics((prev) => {
-                              const next = new Set(prev);
-                              if (e.target.checked) next.add(c.name); else next.delete(c.name);
-                              return next;
-                            });
-                          }}
-                          className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                        />
-                        <span className="text-xs">{c.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Action buttons */}
-                <div className="flex gap-2 justify-end">
-                  {batchPairingSics.size > 0 && (
-                    <button
-                      onClick={() => setBatchPairingSics(new Set())}
-                      className="px-2 py-1.5 text-xs rounded text-gray-500 hover:text-gray-700 hover:bg-gray-200"
-                    >
-                      Clear
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      const pic = (document.getElementById("pairing-pic") as HTMLSelectElement)?.value;
-                      const reason = (document.getElementById("pairing-reason") as HTMLSelectElement)?.value;
-                      if (!pic || batchPairingSics.size === 0) return;
-                      const newPairings = Array.from(batchPairingSics).map((sic) => ({ pic, sic, reason }));
-                      setRequiredPairings((prev) => [...prev, ...newPairings]);
-                      setBatchPairingSics(new Set());
-                      (document.getElementById("pairing-pic") as HTMLSelectElement).value = "";
-                    }}
-                    disabled={batchPairingSics.size === 0}
-                    className={`px-3 py-1.5 text-xs font-medium rounded ${
-                      batchPairingSics.size > 0
-                        ? "bg-purple-100 text-purple-700 hover:bg-purple-200"
-                        : "bg-gray-100 text-gray-400 cursor-not-allowed"
-                    }`}
-                  >
-                    {batchPairingSics.size > 1 ? `Pair All Selected (${batchPairingSics.size})` : "Add Pairing"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Section 7: Coordinator Constraints */}
-        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
-          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">7. Constraints</h3>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-gray-400">Lock crew to tail, pair crew, or lock to fleet type</span>
-              <button
-                onClick={async () => {
-                  setSlackScanLoading(true);
-                  setSlackScanError(null);
-                  try {
-                    const res = await fetch("/api/crew/parse-directives", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
-                    });
-                    const data = await res.json();
-                    if (!res.ok) {
-                      setSlackScanError(data.error ?? "Scan failed");
-                      return;
-                    }
-                    // Filter out suggestions that already match existing constraints
-                    const newSuggestions = (data.directives ?? []).filter((d: SwapConstraint & { _reason?: string }) => {
-                      return !swapConstraints.some((c) => {
-                        if (c.type !== d.type) return false;
-                        if (c.type === "force_tail" && d.type === "force_tail") return c.crew_name === d.crew_name && c.tail === d.tail;
-                        if (c.type === "force_pair" && d.type === "force_pair") return (c.crew_a === d.crew_a && c.crew_b === d.crew_b) || (c.crew_a === d.crew_b && c.crew_b === d.crew_a);
-                        if (c.type === "force_fleet" && d.type === "force_fleet") return c.crew_name === d.crew_name && c.aircraft_type === d.aircraft_type;
-                        return false;
-                      });
-                    });
-                    setSlackSuggestions(newSuggestions);
-                  } catch (e) {
-                    setSlackScanError(e instanceof Error ? e.message : "Scan failed");
-                  } finally {
-                    setSlackScanLoading(false);
-                  }
-                }}
-                disabled={slackScanLoading}
-                className={`px-2.5 py-1 text-[10px] font-medium rounded border ${
-                  slackScanLoading
-                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-wait"
-                    : "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
-                }`}
-              >
-                {slackScanLoading ? "Scanning..." : "Scan Slack"}
-              </button>
-            </div>
-          </div>
-          <div className="p-4 text-xs space-y-3">
-            {/* Slack directive suggestions */}
-            {slackScanError && (
-              <div className="text-[11px] text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
-                Scan error: {slackScanError}
-              </div>
-            )}
-            {slackSuggestions.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider">Suggested from Slack</p>
-                <div className="flex flex-wrap gap-2">
-                  {slackSuggestions.map((s, i) => (
-                    <div key={`suggestion-${i}`} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium border border-dashed ${
-                      s.type === "force_tail" ? "bg-blue-50/60 border-blue-300 text-blue-700"
-                      : s.type === "force_pair" ? "bg-purple-50/60 border-purple-300 text-purple-700"
-                      : "bg-amber-50/60 border-amber-300 text-amber-700"
-                    }`}>
-                      {s.type === "force_tail" && (<><span className="font-bold">TAIL</span> {s.crew_name} &rarr; {s.tail}</>)}
-                      {s.type === "force_pair" && (<><span className="font-bold">PAIR</span> {s.crew_a} + {s.crew_b}</>)}
-                      {s.type === "force_fleet" && (<><span className="font-bold">FLEET</span> {s.crew_name} &rarr; {s.aircraft_type}</>)}
-                      {s.reason && <span className="text-gray-500 italic" title={s.reason}>(&ldquo;{s.reason.length > 40 ? s.reason.slice(0, 40) + "..." : s.reason}&rdquo;)</span>}
-                      <button
-                        onClick={() => {
-                          const constraint: SwapConstraint = { ...s };
-                          delete (constraint as Record<string, unknown>)._reason;
-                          setSwapConstraints((prev) => [...prev, constraint]);
-                          setSlackSuggestions((prev) => prev.filter((_, j) => j !== i));
-                        }}
-                        className="ml-0.5 text-green-600 hover:text-green-800 font-bold"
-                        title="Add constraint"
-                      >&#x2713;</button>
-                      <button
-                        onClick={() => setSlackSuggestions((prev) => prev.filter((_, j) => j !== i))}
-                        className="text-red-400 hover:text-red-600"
-                        title="Dismiss"
-                      >&times;</button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {swapConstraints.length === 0 && slackSuggestions.length === 0 && (
-              <p className="text-gray-400 italic text-[11px]">No constraints set. Add one below to lock crew to a tail, pair two crew together, or restrict to a fleet type.</p>
-            )}
-            {swapConstraints.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {swapConstraints.map((c, i) => (
-                  <div key={i} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium border ${
-                    c.type === "force_tail" ? "bg-blue-50 border-blue-200 text-blue-800"
-                    : c.type === "force_pair" ? "bg-purple-50 border-purple-200 text-purple-800"
-                    : "bg-amber-50 border-amber-200 text-amber-800"
-                  }`}>
-                    {c.type === "force_tail" && (<><span className="font-bold">TAIL</span> {c.crew_name} &rarr; {c.tail}</>)}
-                    {c.type === "force_pair" && (<><span className="font-bold">PAIR</span> {c.crew_a} + {c.crew_b}</>)}
-                    {c.type === "force_fleet" && (<><span className="font-bold">FLEET</span> {c.crew_name} &rarr; {c.aircraft_type}</>)}
-                    {c.reason && <span className="text-gray-500">({c.reason})</span>}
-                    <button onClick={() => setSwapConstraints((prev) => prev.filter((_, j) => j !== i))}
-                      className="ml-1 text-red-400 hover:text-red-600 text-xs">&times;</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="border rounded p-3 bg-gray-50 space-y-2">
-              <div className="flex items-center gap-2">
-                <select id="constraint-type" className="text-xs border rounded px-2 py-1.5 bg-white" defaultValue="force_tail">
-                  <option value="force_tail">Lock to Tail</option>
-                  <option value="force_pair">Pair Crew</option>
-                  <option value="force_fleet">Lock to Fleet</option>
-                </select>
-                <input id="constraint-reason" type="text" placeholder="Reason (optional)"
-                  className="flex-1 text-xs border rounded px-2 py-1.5 bg-white placeholder-gray-400" />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] text-gray-500">Crew A / Crew</label>
-                  <select id="constraint-crew-a" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                    <option value="">Select crew...</option>
-                    {crew.filter((cr) => cr.active).sort((a, b) => a.name.localeCompare(b.name)).map((cr) => (
-                      <option key={cr.id} value={cr.name}>{cr.name} ({cr.role})</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500">Crew B / Tail / Fleet</label>
-                  <select id="constraint-crew-b" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                    <option value="">Select...</option>
-                    {swapAssignments && Object.keys(swapAssignments).sort().map((t) => (
-                      <option key={`tail-${t}`} value={t}>{t}</option>
-                    ))}
-                    <option value="__fleet_citation_x">Fleet: Citation X</option>
-                    <option value="__fleet_challenger">Fleet: Challenger</option>
-                    {crew.filter((cr) => cr.active).sort((a, b) => a.name.localeCompare(b.name)).map((cr) => (
-                      <option key={`crew-${cr.id}`} value={`__crew_${cr.name}`}>{cr.name} ({cr.role})</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-end">
-                  <button
-                    onClick={() => {
-                      const typeEl = document.getElementById("constraint-type") as HTMLSelectElement;
-                      const crewAEl = document.getElementById("constraint-crew-a") as HTMLSelectElement;
-                      const crewBEl = document.getElementById("constraint-crew-b") as HTMLSelectElement;
-                      const reasonEl = document.getElementById("constraint-reason") as HTMLInputElement;
-                      const cType = typeEl?.value as "force_tail" | "force_pair" | "force_fleet";
-                      const crewA = crewAEl?.value;
-                      const crewBRaw = crewBEl?.value;
-                      const reason = reasonEl?.value?.trim() || undefined;
-                      if (!crewA || !crewBRaw) return;
-                      let newConstraint: SwapConstraint | null = null;
-                      if (cType === "force_tail") {
-                        if (crewBRaw.startsWith("__")) return;
-                        newConstraint = { type: "force_tail", crew_name: crewA, tail: crewBRaw, reason };
-                      } else if (cType === "force_pair") {
-                        if (!crewBRaw.startsWith("__crew_")) return;
-                        newConstraint = { type: "force_pair", crew_a: crewA, crew_b: crewBRaw.replace("__crew_", ""), reason };
-                      } else if (cType === "force_fleet") {
-                        if (!crewBRaw.startsWith("__fleet_")) return;
-                        newConstraint = { type: "force_fleet", crew_name: crewA, aircraft_type: crewBRaw.replace("__fleet_", ""), reason };
-                      }
-                      if (newConstraint) {
-                        setSwapConstraints((prev) => [...prev, newConstraint]);
-                        crewAEl.value = "";
-                        crewBEl.value = "";
-                        reasonEl.value = "";
-                      }
-                    }}
-                    className="px-3 py-1.5 text-xs font-medium rounded bg-blue-100 text-blue-700 hover:bg-blue-200 w-full"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Section 8: Swap Day Assignment (per-tail Tue/Wed) */}
+        {/* Section 7: Swap Day Assignment (per-tail) */}
         <div className="rounded-lg border p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">8. Swap Day Assignment</h3>
@@ -5276,13 +4941,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         </div>
 
-        {/* Section 9: Daily Crew Pairs (uses PairConstraintEditor component) */}
-        <PairConstraintEditor
-          pairs={dailyPairs}
-          onPairsChange={setDailyPairs}
-          selectedSwapDays={selectedSwapDays}
-          crew={crew}
-        />
+        {/* Section 8 was daily pairs — now consolidated into Section 6 above */}
 
         {/* Ready to optimize */}
         <div className={`rounded-lg border-2 p-4 text-center ${

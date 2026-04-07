@@ -5,6 +5,7 @@ import { isInternationalIcao } from "@/lib/intlUtils";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { detectOverflightsFromIcao } from "@/lib/overflightDetector";
 import { backfillSalesperson } from "@/lib/salespersonBackfill";
+import { healOrphanedFlightIds } from "@/lib/intlTripHeal";
 
 // Allow up to 300s for cron-triggered trip detection
 export const maxDuration = 300;
@@ -324,14 +325,20 @@ export async function GET(req: NextRequest) {
 
         const candidates = existingByTail.get(dt.tail_number) ?? [];
 
-        // 0. Try JI trip ID match first — the most stable identifier
+        // 0. Try JI trip ID match first — scoped to ±7 days to avoid
+        // false matches when JetInsight reuses trip IDs across bookings
         let match: NonNullable<typeof allExisting>[0] | undefined;
         let tailChanged = false;
         if (dt.jetinsight_trip_id) {
           const jiMatch = existingByJiId.get(dt.jetinsight_trip_id);
           if (jiMatch && !matchedExistingIds.has(jiMatch.id)) {
-            match = jiMatch;
-            tailChanged = jiMatch.tail_number !== dt.tail_number;
+            const dtDate = new Date(dt.trip_date + "T00:00:00Z").getTime();
+            const jiDate = new Date(jiMatch.trip_date + "T00:00:00Z").getTime();
+            const daysDiff = Math.abs(dtDate - jiDate) / 86400000;
+            if (daysDiff <= 7) {
+              match = jiMatch;
+              tailChanged = jiMatch.tail_number !== dt.tail_number;
+            }
           }
         }
 
@@ -609,21 +616,25 @@ export async function GET(req: NextRequest) {
       }
 
       // Clean up orphaned trips: existing trips whose flights no longer
-      // appear in any detected trip FOR THE SAME TAIL (schedule was cancelled/changed)
-      // Build per-tail flight ID sets for accurate orphan detection
-      const detectedFlightIdsByTail = new Map<string, Set<string>>();
+      // appear in any detected trip. Only delete if the flights are ACTUALLY
+      // gone from the flights table (not just reassigned to a different tail).
+      // This prevents premature deletion during JI tail swaps.
+      const allDetectedFlightIds = new Set<string>();
       for (const dt of detected) {
-        if (!detectedFlightIdsByTail.has(dt.tail_number)) detectedFlightIdsByTail.set(dt.tail_number, new Set());
-        for (const fid of dt.flight_ids) detectedFlightIdsByTail.get(dt.tail_number)!.add(fid);
+        for (const fid of dt.flight_ids) allDetectedFlightIds.add(fid);
       }
 
       const orphanCandidates = (allExisting ?? [])
         .filter((e) => !matchedExistingIds.has(e.id))
         .filter((e) => {
-          // Only orphan if ALL its flight_ids are absent from detected trips for THIS tail
           if (!e.flight_ids?.length) return false;
-          const tailFlights = detectedFlightIdsByTail.get(e.tail_number) ?? new Set();
-          return e.flight_ids.every((fid: string) => !tailFlights.has(fid));
+          // Only orphan if NONE of the trip's flights exist in any detected trip
+          // AND none of the flights exist in the flights table anymore
+          const noDetectedMatch = e.flight_ids.every((fid: string) => !allDetectedFlightIds.has(fid));
+          if (!noDetectedMatch) return false;
+          // Verify flights are actually deleted, not just reassigned
+          const allFlightsGone = e.flight_ids.every((fid: string) => !flightMap.has(fid));
+          return allFlightsGone;
         });
 
       if (orphanCandidates.length > 0) {
@@ -686,88 +697,26 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Auto-heal orphaned flight_ids ──────────────────────────────────
-    // When JetInsight swaps tails, flights get deleted and recreated with
-    // new IDs. Detect trips whose flight_ids are missing and re-resolve
-    // them using jetinsight_trip_id to find the replacement flights.
-    const foundIds = new Set((flightRows ?? []).map((f) => f.id));
-    const tripsWithOrphans = (trips ?? []).filter((t) =>
-      t.jetinsight_trip_id &&
-      (t.flight_ids ?? []).some((fid: string) => !foundIds.has(fid))
-    );
-
-    if (tripsWithOrphans.length > 0) {
-      // Batch-fetch replacement flights by jetinsight_trip_id
-      const jiTripIdsForHeal = tripsWithOrphans.map((t) => t.jetinsight_trip_id).filter(Boolean) as string[];
-      const { data: replacementFlights } = await supa
-        .from("flights")
-        .select("id, jetinsight_trip_id, jetinsight_url, scheduled_departure, scheduled_arrival, departure_icao, arrival_icao")
-        .in("jetinsight_trip_id", jiTripIdsForHeal)
-        .order("scheduled_departure");
-
-      const replacementsByJiTrip = new Map<string, typeof replacementFlights>();
-      for (const f of replacementFlights ?? []) {
-        if (!f.jetinsight_trip_id) continue;
-        if (!replacementsByJiTrip.has(f.jetinsight_trip_id)) replacementsByJiTrip.set(f.jetinsight_trip_id, []);
-        replacementsByJiTrip.get(f.jetinsight_trip_id)!.push(f);
+    await healOrphanedFlightIds(supa, (trips ?? []) as Parameters<typeof healOrphanedFlightIds>[1]);
+    // Refresh in-memory maps after heal
+    for (const t of trips ?? []) {
+      for (const fid of t.flight_ids ?? []) {
+        if (!flightTimesMap.has(fid)) allFlightIds.add(fid);
       }
-
-      const healUpdates: PromiseLike<unknown>[] = [];
-      for (const t of tripsWithOrphans) {
-        const newFlights = replacementsByJiTrip.get(t.jetinsight_trip_id!) ?? [];
-        if (newFlights.length === 0) continue;
-
-        const newFlightIds = newFlights.map((f) => f.id);
-        const newTail = newFlights[0].departure_icao ? undefined : undefined; // keep existing tail
-        const newRoute = newFlights.map((f) => f.departure_icao).filter(Boolean);
-        const lastArr = newFlights[newFlights.length - 1]?.arrival_icao;
-        if (lastArr) newRoute.push(lastArr);
-
-        // Update in-memory for this response
-        t.flight_ids = newFlightIds;
-        if (newRoute.length >= 2) t.route_icaos = newRoute;
-        if (newFlights[0]) {
-          // Update tail if changed
-          const newTailNum = newFlights[0].departure_icao
-            ? undefined // can't derive tail from ICAO
-            : undefined;
-          // Look up tail from flights table
-          const { data: tailRow } = await supa
-            .from("flights")
-            .select("tail_number")
-            .eq("id", newFlightIds[0])
-            .single();
-          if (tailRow?.tail_number && tailRow.tail_number !== t.tail_number) {
-            t.tail_number = tailRow.tail_number;
-          }
-        }
-
-        // Persist the fix
-        const updates: Record<string, unknown> = {
-          flight_ids: newFlightIds,
-          updated_at: new Date().toISOString(),
-        };
-        if (newRoute.length >= 2) updates.route_icaos = newRoute;
-        if (t.tail_number) updates.tail_number = t.tail_number;
-
-        // Rebuild snapshot
-        const newSnap: Record<string, { dep: string; arr: string | null }> = {};
-        for (const f of newFlights) {
-          newSnap[f.id] = { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null };
-          // Also update in-memory maps
+    }
+    if (allFlightIds.size > (flightRows ?? []).length) {
+      const newFids = [...allFlightIds].filter((fid) => !flightTimesMap.has(fid));
+      if (newFids.length > 0) {
+        const { data: healedFlights } = await supa
+          .from("flights")
+          .select("id, jetinsight_url, scheduled_departure, scheduled_arrival, departure_icao, arrival_icao")
+          .in("id", newFids);
+        for (const f of healedFlights ?? []) {
           if (f.jetinsight_url) jetinsightMap.set(f.id, f.jetinsight_url);
           flightTimesMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
           if (f.departure_icao && f.arrival_icao) flightRouteMap.set(f.id, { dep: f.departure_icao, arr: f.arrival_icao });
         }
-        if (Object.keys(newSnap).length > 0) {
-          updates.schedule_snapshot = newSnap;
-          t.schedule_snapshot = newSnap;
-        }
-
-        healUpdates.push(supa.from("intl_trips").update(updates).eq("id", t.id));
-        console.log(`[intl/trips] Auto-healed trip ${t.id} (${t.jetinsight_trip_id}): ${(t.flight_ids ?? []).length} → ${newFlightIds.length} flight(s)`);
       }
-
-      if (healUpdates.length > 0) await Promise.all(healUpdates);
     }
   }
 

@@ -397,6 +397,14 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KCRW: [38.3731, -81.5932],   // Charleston, WV
   PAFA: [64.8151, -147.8561],  // Fairbanks, AK
   PAJN: [58.3550, -134.5763],  // Juneau, AK
+  // Additional small/private fields
+  KTHA: [35.3801, -86.2464],   // Tullahoma Regional, TN
+  KLNS: [40.1217, -76.2961],   // Lancaster Airport, PA
+  KOQU: [41.5971, -71.4121],   // Quonset State, RI
+  S25:  [47.9574, -103.2533],  // Watford City Airport, ND (FAA LID)
+  KBKL: [41.5175, -81.6833],   // Burke Lakefront, Cleveland OH
+  KVPC: [34.1231, -84.8487],   // Cartersville Airport, GA
+  KLZU: [33.9781, -83.9624],   // Gwinnett County, Lawrenceville GA
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────
@@ -480,7 +488,19 @@ export function getAirportCoords(icao: string): { lat: number; lon: number } | n
  * Check if an airport is in our coordinate database.
  */
 export function hasCoords(icao: string): boolean {
-  return icao.toUpperCase() in AIRPORT_COORDS;
+  return resolveToCoordKey(icao) !== null;
+}
+
+/** Resolve an airport code (ICAO, IATA, or FAA LID) to its AIRPORT_COORDS key */
+function resolveToCoordKey(code: string): string | null {
+  const upper = code.toUpperCase();
+  if (upper in AIRPORT_COORDS) return upper;
+  // Try ICAO with K prefix (IATA→ICAO for US airports)
+  if (upper.length === 3) {
+    const withK = `K${upper}`;
+    if (withK in AIRPORT_COORDS) return withK;
+  }
+  return null;
 }
 
 /**
@@ -545,8 +565,9 @@ export function findNearbyCommercialAirports(
   icao: string,
   radiusMiles: number = 30,
 ): { icao: string; distanceMiles: number }[] {
-  const origin = AIRPORT_COORDS[icao.toUpperCase()];
-  if (!origin) return [];
+  const key = resolveToCoordKey(icao);
+  if (!key) return [];
+  const origin = AIRPORT_COORDS[key];
 
   const results: { icao: string; distanceMiles: number }[] = [];
 

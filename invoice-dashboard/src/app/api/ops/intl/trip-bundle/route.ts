@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAuth } from "@/lib/api-auth";
 import { signGcsUrl } from "@/lib/gcs";
+import { healOrphanedFlightIds } from "@/lib/intlTripHeal";
 
 /**
  * GET /api/ops/intl/trip-bundle?trip_id={intl_trip_id}
@@ -35,6 +36,9 @@ export async function GET(req: NextRequest) {
   if (!trip) {
     return NextResponse.json({ error: "Trip not found" }, { status: 404 });
   }
+
+  // Auto-heal orphaned flight_ids before loading crew/docs
+  await healOrphanedFlightIds(supa, [trip]);
 
   // 1. Get crew per leg from flights table
   const flightIds = trip.flight_ids ?? [];

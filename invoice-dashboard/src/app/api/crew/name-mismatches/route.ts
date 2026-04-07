@@ -33,8 +33,7 @@ export async function GET(req: NextRequest) {
     const [rows, crewRes, aliasRes] = await Promise.all([
       getSheetData(sheetName),
       supa.from("crew_members")
-        .select("id, name, jetinsight_name, slack_user_id, role")
-        .eq("active", true),
+        .select("id, name, jetinsight_name, slack_user_id, role, active"),
       supa.from("crew_name_aliases")
         .select("crew_member_id, source, alias_name, normalized_name"),
     ]);
@@ -109,6 +108,12 @@ export async function GET(req: NextRequest) {
       matched,
       unmatched,
       parse_errors: errors,
+      _debug: {
+        crew_members_count: crewMembers.length,
+        aliases_count: aliases.length,
+        crew_query_error: crewRes.error?.message ?? null,
+        alias_query_error: aliasRes.error?.message ?? null,
+      },
     });
   } catch (e) {
     return NextResponse.json(
