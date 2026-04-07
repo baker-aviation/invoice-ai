@@ -251,7 +251,7 @@ export type SwapPlanResult = {
 /** Pre-optimizer constraints set by coordinator (forced crew→tail, pair, fleet) */
 export type SwapConstraint =
   | { type: "force_tail"; crew_name: string; tail: string; reason?: string }
-  | { type: "force_pair"; crew_a: string; crew_b: string; reason?: string }
+  | { type: "force_pair"; crew_a: string; crew_b: string; day?: string; reason?: string }
   | { type: "force_fleet"; crew_name: string; aircraft_type: string; reason?: string };
 
 export type TwoPassStats = {
@@ -3854,13 +3854,15 @@ export function assignOncomingCrew(params: {
   offgoingDeadlines?: OncomingDeadline[];
   relaxation?: boolean;
   constraints?: SwapConstraint[];
+  /** When set, only force_pair constraints matching this day (or day-agnostic) are applied */
+  currentSwapDay?: string;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
   rejections: FeasibilityRejection[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation, constraints } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation, constraints, currentSwapDay } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
   const allRejections: FeasibilityRejection[] = [];
@@ -3936,8 +3938,13 @@ export function assignOncomingCrew(params: {
         forceFleetFilter.set(c.crew_name, c.aircraft_type);
         console.log(`[Constraint] force_fleet: "${c.crew_name}" locked to ${c.aircraft_type}${c.reason ? ` (${c.reason})` : ""}`);
       } else if (c.type === "force_pair") {
+        // Skip day-specific pairs that don't match the current swap day
+        if (c.day && currentSwapDay && c.day !== currentSwapDay) {
+          console.log(`[Constraint] force_pair: "${c.crew_a}" + "${c.crew_b}" SKIPPED (day=${c.day}, current=${currentSwapDay})`);
+          continue;
+        }
         forcePairs.push({ crew_a: c.crew_a, crew_b: c.crew_b, reason: c.reason });
-        console.log(`[Constraint] force_pair: "${c.crew_a}" + "${c.crew_b}"${c.reason ? ` (${c.reason})` : ""}`);
+        console.log(`[Constraint] force_pair: "${c.crew_a}" + "${c.crew_b}"${c.day ? ` (${c.day})` : ""}${c.reason ? ` (${c.reason})` : ""}`);
       }
     }
   }
@@ -4057,12 +4064,14 @@ export function twoPassAssignAndOptimize(params: {
   excludeTails?: Set<string>;
   offgoingDeadlines?: OncomingDeadline[];
   constraints?: SwapConstraint[];
+  /** When set, only force_pair constraints matching this day (or day-agnostic) are applied */
+  currentSwapDay?: string;
 }): {
   result: SwapPlanResult;
   assignmentResult: ReturnType<typeof assignOncomingCrew>;
   twoPassStats: TwoPassStats;
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, constraints } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, constraints, currentSwapDay } = params;
 
   // ── Pass 1: Use FULL pool (volunteers included) ──────────────────────
   // Previously excluded early/late volunteers from Pass 1 to save bonuses,
@@ -4084,6 +4093,7 @@ export function twoPassAssignAndOptimize(params: {
     excludeTails,
     offgoingDeadlines,
     constraints,
+    currentSwapDay,
   });
 
   const pass1Result = buildSwapPlan({

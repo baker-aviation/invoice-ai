@@ -6,6 +6,14 @@ import * as XLSX from "xlsx";
 import type { Flight } from "@/lib/opsApi";
 import { getAirportTimezone } from "@/lib/airportTimezones";
 import FlightPickerModal, { type FlightPickerSelection } from "./FlightPickerModal";
+import SheetValidationPanel from "./crew-swap/SheetValidationPanel";
+import NameResolutionPanel from "./crew-swap/NameResolutionPanel";
+import NameAliasAdmin from "./crew-swap/NameAliasAdmin";
+import DaySelector, { VolunteerBadge } from "./crew-swap/DaySelector";
+import DayResultsTabs from "./crew-swap/DayResultsTabs";
+import PairConstraintEditor from "./crew-swap/PairConstraintEditor";
+import type { ValidationResult } from "@/lib/swapValidation";
+import { type SwapDay, dayToDate, isCrewAvailableForDay, sortDays, DAY_LABELS } from "@/lib/swapDays";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -2084,12 +2092,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   });
   // Phase 5-6: Strategy
   const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
-  // Day selector: per-tail day assignment (Tuesday vs Wednesday)
-  type SwapDay = "tuesday" | "wednesday";
+  // Day selector: per-tail day assignment and multi-day planning
+  const [selectedSwapDays, setSelectedSwapDays] = useState<SwapDay[]>(["wednesday"]);
   const [tailSwapDays, setTailSwapDays] = useState<Record<string, SwapDay>>({});
   const [activePlanDay, setActivePlanDay] = useState<SwapDay>("wednesday"); // which day's plan is shown
-  const [tuesdayPlan, setTuesdayPlan] = useState<SwapPlanResult | null>(null);
-  const [wednesdayPlan, setWednesdayPlan] = useState<SwapPlanResult | null>(null);
+  const [dayPlans, setDayPlans] = useState<Record<string, SwapPlanResult>>({});
+  // Legacy aliases for backwards compat
+  const tuesdayPlan = dayPlans["tuesday"] ?? null;
+  const wednesdayPlan = dayPlans["wednesday"] ?? null;
   // Daily crew pairs: "Person A with Person B on Tuesday, Person A with Person C on Wednesday"
   type DailyPair = { crew_a: string; crew_b: string; day: SwapDay; reason: string };
   const [dailyPairs, setDailyPairs] = useState<DailyPair[]>([]);
@@ -2110,6 +2120,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Google Sheets week selector
   const [availableWeeks, setAvailableWeeks] = useState<string[]>([]);
   const [selectedWeek, setSelectedWeek] = useState<string>("");
+  // Sheet validation state
+  const [sheetValidation, setSheetValidation] = useState<ValidationResult | null>(null);
+  // Name resolution state
+  const [syncCounter, setSyncCounter] = useState(0);
+  const [showAliasAdmin, setShowAliasAdmin] = useState(false);
   // FREEZE sheet import
   const [freezeTabs, setFreezeTabs] = useState<string[]>([]);
   const [loadingFreeze, setLoadingFreeze] = useState(false);
@@ -3401,6 +3416,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         setRotationSource("excel");
         await loadCrew();
         addToast("success", `Synced from Google Sheet: ${data.roster?.active ?? 0} crew, ${data.checkairmen?.length ?? 0} CAs`);
+        setSyncCounter((c) => c + 1);
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Sync failed");
@@ -3574,13 +3590,25 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           );
         }
 
-        // Add daily pairs for this day
+        // Add daily pairs for this day as required_pairings (legacy) + constraints (day-aware)
         const dayPairings = [
           ...allPairings,
           ...dailyPairs.filter(p => p.day === dayLabel).map(p => ({
             pic: p.crew_a,
             sic: p.crew_b,
             reason: `Daily pair (${dayLabel})`,
+          })),
+        ];
+
+        // Build day-aware constraints: include all swap constraints + daily pairs as force_pair with day field
+        const dayConstraints = [
+          ...swapConstraints,
+          ...dailyPairs.map(p => ({
+            type: "force_pair" as const,
+            crew_a: p.crew_a,
+            crew_b: p.crew_b,
+            day: p.day,
+            reason: p.reason || `Daily pair`,
           })),
         ];
 
@@ -3595,7 +3623,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             lock_tails: lockTailsArr,
             locked_rows: lockedRows,
             required_pairings: dayPairings.length > 0 ? dayPairings : undefined,
-            constraints: swapConstraints.length > 0 ? swapConstraints : undefined,
+            constraints: dayConstraints.length > 0 ? dayConstraints : undefined,
           }),
         });
         const text = await res.text();
@@ -3632,8 +3660,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             addToast("error", err?.error ?? "Optimization failed");
           }
         } else {
-          setTuesdayPlan(tueResult.data as SwapPlanResult);
-          setWednesdayPlan(wedResult.data as SwapPlanResult);
+          setDayPlans(prev => ({
+            ...prev,
+            tuesday: tueResult.data as SwapPlanResult,
+            wednesday: wedResult.data as SwapPlanResult,
+          }));
           // Merge for the main plan view (combined)
           const tueRows = (tueResult.data as SwapPlanResult).rows ?? [];
           const wedRows = (wedResult.data as SwapPlanResult).rows ?? [];
@@ -3791,6 +3822,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             Next Wed
           </button>
         </div>
+        {/* Multi-day selector */}
+        <DaySelector
+          selectedDays={selectedSwapDays}
+          onDaysChange={setSelectedSwapDays}
+        />
       </div>
 
       {/* Plan Status Hero Banner */}
@@ -3955,10 +3991,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             )}
             <button
               onClick={syncFromGoogleSheet}
-              disabled={uploading || syncingCrewInfo}
+              disabled={uploading || syncingCrewInfo || sheetValidation?.valid === false}
               className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                uploading || syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+                uploading || syncingCrewInfo || sheetValidation?.valid === false ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
               }`}
+              title={sheetValidation?.valid === false ? "Fix sheet errors before syncing" : undefined}
             >
               {syncingCrewInfo ? "Syncing..." : "Sync from Sheet"}
             </button>
@@ -4005,7 +4042,28 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               />
             </label>
           </div>
+          {/* Sheet validation panel — validates raw data when a week tab is selected */}
+          {selectedWeek && (
+            <div className="mt-2 space-y-2">
+              <SheetValidationPanel
+                selectedWeek={selectedWeek}
+                onValidationComplete={setSheetValidation}
+              />
+              <NameResolutionPanel
+                selectedWeek={selectedWeek}
+                syncCounter={syncCounter}
+              />
+            </div>
+          )}
+          {/* Name alias admin link */}
+          <button
+            onClick={() => setShowAliasAdmin(true)}
+            className="mt-1 text-[10px] text-gray-400 hover:text-blue-600 underline"
+          >
+            Manage name aliases
+          </button>
         </div>
+        {showAliasAdmin && <NameAliasAdmin onClose={() => setShowAliasAdmin(false)} />}
 
         {uploadResult && (
           <div className="px-4 py-3 bg-green-50 border-b border-green-200 text-sm">
@@ -5218,77 +5276,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         </div>
 
-        {/* Section 9: Daily Crew Pairs */}
-        <div className="rounded-lg border p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">9. Daily Crew Pairs</h3>
-            <span className="text-xs text-gray-400">Pair crew members on specific days</span>
-          </div>
-          <p className="text-xs text-gray-500">
-            Define who flies with whom on each day. E.g., &quot;Hussey with Smith on Tuesday, Hussey with Jones on Wednesday.&quot;
-          </p>
-          {dailyPairs.length > 0 && (
-            <div className="space-y-1">
-              {dailyPairs.map((pair, i) => (
-                <div key={i} className="flex items-center justify-between bg-gray-50 rounded px-3 py-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                      pair.day === "tuesday" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"
-                    }`}>{pair.day === "tuesday" ? "TUE" : "WED"}</span>
-                    <span className="text-xs font-medium">{pair.crew_a}</span>
-                    <span className="text-[10px] text-gray-400">+</span>
-                    <span className="text-xs font-medium">{pair.crew_b}</span>
-                    {pair.reason && <span className="text-[10px] text-gray-400">({pair.reason})</span>}
-                  </div>
-                  <button onClick={() => setDailyPairs(prev => prev.filter((_, j) => j !== i))}
-                    className="text-xs text-red-500 hover:text-red-700">Remove</button>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="grid grid-cols-4 gap-2 items-end">
-            <div>
-              <label className="text-[10px] text-gray-500">Day</label>
-              <select id="daily-pair-day" className="text-xs border rounded px-2 py-1.5 w-full">
-                <option value="tuesday">Tuesday</option>
-                <option value="wednesday">Wednesday</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Crew A</label>
-              <select id="daily-pair-a" className="text-xs border rounded px-2 py-1.5 w-full">
-                <option value="">Select...</option>
-                {crew.filter(c => c.active).sort((a, b) => a.name.localeCompare(b.name)).map(c => (
-                  <option key={c.id} value={c.name}>{c.name} ({c.role})</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Crew B</label>
-              <select id="daily-pair-b" className="text-xs border rounded px-2 py-1.5 w-full">
-                <option value="">Select...</option>
-                {crew.filter(c => c.active).sort((a, b) => a.name.localeCompare(b.name)).map(c => (
-                  <option key={c.id} value={c.name}>{c.name} ({c.role})</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <button onClick={() => {
-                const dayEl = document.getElementById("daily-pair-day") as HTMLSelectElement;
-                const aEl = document.getElementById("daily-pair-a") as HTMLSelectElement;
-                const bEl = document.getElementById("daily-pair-b") as HTMLSelectElement;
-                if (!aEl?.value || !bEl?.value || aEl.value === bEl.value) return;
-                setDailyPairs(prev => [...prev, {
-                  crew_a: aEl.value, crew_b: bEl.value,
-                  day: dayEl.value as SwapDay, reason: "",
-                }]);
-                aEl.value = ""; bEl.value = "";
-              }}
-                className="px-3 py-1.5 text-xs font-medium rounded bg-blue-100 text-blue-700 hover:bg-blue-200 w-full"
-              >Add Pair</button>
-            </div>
-          </div>
-        </div>
+        {/* Section 9: Daily Crew Pairs (uses PairConstraintEditor component) */}
+        <PairConstraintEditor
+          pairs={dailyPairs}
+          onPairsChange={setDailyPairs}
+          selectedSwapDays={selectedSwapDays}
+          crew={crew}
+        />
 
         {/* Ready to optimize */}
         <div className={`rounded-lg border-2 p-4 text-center ${
@@ -5387,13 +5381,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             </div>
             <button
               onClick={runFullOptimize}
-              disabled={optimizing || computingRoutes || seedingFlights || detectingRotation}
+              disabled={optimizing || computingRoutes || seedingFlights || detectingRotation || sheetValidation?.valid === false}
               className={`px-4 py-1.5 text-xs font-semibold border rounded-lg ${
-                optimizing || computingRoutes || seedingFlights || detectingRotation
+                optimizing || computingRoutes || seedingFlights || detectingRotation || sheetValidation?.valid === false
                   ? "bg-gray-100 text-gray-400 border-gray-200"
                   : "bg-blue-600 text-white hover:bg-blue-700 border-blue-600 shadow-sm"
               }`}
-              title="Auto-detect rotation → seed flights → compute routes → optimize"
+              title={sheetValidation?.valid === false ? "Fix sheet errors before optimizing" : "Auto-detect rotation → seed flights → compute routes → optimize"}
             >
               {optimizing ? (optimizeStatus ?? "Optimizing...") : "Optimize"}
             </button>
@@ -5503,9 +5497,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             </button>
             <button
               onClick={() => runOptimizer()}
-              disabled={optimizing || computingRoutes}
+              disabled={optimizing || computingRoutes || sheetValidation?.valid === false}
               className={`px-2.5 py-1 font-medium border rounded ${
-                optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+                optimizing || sheetValidation?.valid === false ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
               }`}
             >
               {optimizing ? "Optimizing..." : "Run Optimizer Only"}
@@ -5689,41 +5683,26 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               </div>
             )}
 
-            {/* Day comparison toggle (when split-day optimization is active) */}
-            {tuesdayPlan && wednesdayPlan && (
-              <div className="px-4 py-2 border-b bg-gradient-to-r from-blue-50 to-green-50">
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-semibold text-gray-600">View:</span>
-                  <div className="inline-flex rounded-lg border overflow-hidden">
-                    <button
-                      onClick={() => { setActivePlanDay("tuesday"); setSwapPlan(tuesdayPlan); }}
-                      className={`px-3 py-1 text-xs font-medium ${activePlanDay === "tuesday" ? "bg-blue-500 text-white" : "bg-white text-gray-600 hover:bg-blue-50"}`}
-                    >
-                      Tuesday ({tuesdayPlan.rows?.length ?? 0} crew, ${tuesdayPlan.total_cost?.toLocaleString()})
-                    </button>
-                    <button
-                      onClick={() => { setActivePlanDay("wednesday"); setSwapPlan(wednesdayPlan); }}
-                      className={`px-3 py-1 text-xs font-medium ${activePlanDay === "wednesday" ? "bg-green-500 text-white" : "bg-white text-gray-600 hover:bg-green-50"}`}
-                    >
-                      Wednesday ({wednesdayPlan.rows?.length ?? 0} crew, ${wednesdayPlan.total_cost?.toLocaleString()})
-                    </button>
-                    <button
-                      onClick={() => {
-                        const merged = {
-                          ...wednesdayPlan,
-                          rows: [...(tuesdayPlan.rows ?? []), ...(wednesdayPlan.rows ?? [])],
-                          total_cost: (tuesdayPlan.total_cost ?? 0) + (wednesdayPlan.total_cost ?? 0),
-                        } as SwapPlanResult;
-                        setSwapPlan(merged);
-                        setActivePlanDay("wednesday");
-                      }}
-                      className="px-3 py-1 text-xs font-medium bg-white text-gray-600 hover:bg-gray-50 border-l"
-                    >
-                      Combined
-                    </button>
-                  </div>
-                </div>
-              </div>
+            {/* Day comparison toggle (when multi-day optimization is active) */}
+            {Object.keys(dayPlans).length >= 2 && (
+              <DayResultsTabs
+                dayPlans={dayPlans as Record<string, { ok: boolean; swap_date: string; rows: { name: string; tail_number: string; role: string; direction: string; travel_type: string; cost_estimate?: number | null; score?: number }[]; total_cost: number; plan_score: number; solved_count?: number; unsolved_count?: number }>}
+                activePlanDay={activePlanDay}
+                onSelectDay={(day) => {
+                  setActivePlanDay(day);
+                  if (dayPlans[day]) setSwapPlan(dayPlans[day]);
+                }}
+                onSelectCombined={() => {
+                  const plans = Object.values(dayPlans);
+                  if (plans.length === 0) return;
+                  const merged = {
+                    ...plans[0],
+                    rows: plans.flatMap((p) => p.rows ?? []),
+                    total_cost: plans.reduce((s, p) => s + (p.total_cost ?? 0), 0),
+                  } as SwapPlanResult;
+                  setSwapPlan(merged);
+                }}
+              />
             )}
 
             {/* Standby crew (unassigned) */}

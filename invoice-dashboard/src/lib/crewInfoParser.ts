@@ -156,180 +156,23 @@ function excelDateToISO(val: unknown): string | null {
   return null;
 }
 
-// ─── Slack name matching ────────────────────────────────────────────────────
+// ─── Slack name matching (delegates to shared nameResolver) ─────────────────
 
-const NICKNAME_MAP: Record<string, string[]> = {
-  zack: ["zachary", "zach"], zachary: ["zack", "zach"],
-  mike: ["michael"], michael: ["mike"],
-  bill: ["william", "will", "billy", "johnny"], william: ["bill", "will", "billy"],
-  will: ["william", "bill"], bob: ["robert", "rob"],
-  robert: ["bob", "rob"], rob: ["robert", "bob"],
-  jim: ["james", "jimmy"], james: ["jim", "jimmy"],
-  joe: ["joseph", "joey"], joseph: ["joe", "joey"],
-  tom: ["thomas", "tommy"], thomas: ["tom", "tommy"],
-  dave: ["david"], david: ["dave"],
-  dan: ["daniel", "danny"], daniel: ["dan", "danny"],
-  matt: ["matthew"], matthew: ["matt"],
-  chris: ["christopher"], christopher: ["chris"],
-  steve: ["steven", "stephen"], steven: ["steve", "stephen"], stephen: ["steve", "steven"],
-  tony: ["anthony"], anthony: ["tony"],
-  ed: ["edward", "eddie"], edward: ["ed", "eddie"], eddie: ["edward", "ed"],
-  rick: ["richard"], richard: ["rick"],
-  pat: ["patrick"], patrick: ["pat"],
-  nick: ["nicholas"], nicholas: ["nick"],
-  wes: ["wesley"], wesley: ["wes"],
-  jon: ["jonathan", "john"], jonathan: ["jon"],
-  john: ["jon", "johnny"], johnny: ["john"],
-  charlie: ["charles"], charles: ["charlie"],
-  al: ["alexander", "alex"], alex: ["alexander"],
-  alexander: ["alex", "al"],
-  greg: ["gregory"], gregory: ["greg"],
-  ben: ["benjamin"], benjamin: ["ben"],
-  josh: ["joshua"], joshua: ["josh"],
-  andy: ["andrew"], andrew: ["andy"],
-  ken: ["kenneth"], kenneth: ["ken"],
-  jeff: ["jeffrey", "jeffray"], jeffrey: ["jeff"], jeffray: ["jeff"],
-  larry: ["lawrence"], lawrence: ["larry"],
-  fred: ["frederick"], frederick: ["fred"],
-  jake: ["jacob"], jacob: ["jake"],
-  jimmy: ["james", "jim"],
-  dick: ["richard"],
-  liz: ["elizabeth"], elizabeth: ["liz"],
-  sam: ["samuel", "samantha"], samuel: ["sam"],
-  ron: ["ronald"], ronald: ["ron"],
-  curt: ["curtis"], curtis: ["curt"],
-};
-
-function normalize(s: string): string {
-  return s.toLowerCase().trim()
-    .replace(/[^a-z\s]/g, "") // strip non-alpha
-    .replace(/\s+/g, " ");
-}
+import { matchNameFuzzy, type NameCandidate } from "./nameResolver";
 
 /**
  * Fuzzy-match a Slack display name to a roster name.
- * Handles: middle names, nicknames, suffixes (Jr, III), initials.
+ * Delegates to the shared matchNameFuzzy from nameResolver.ts.
  */
 export function matchSlackName(slackName: string, rosterNames: string[]): string | null {
-  // Pre-process: strip commas (handles "Macklin, Jr." → "Macklin Jr")
-  const sn = normalize(slackName.replace(/,/g, ""));
-  if (!sn) return null;
-
-  // 1. Exact match
-  const exact = rosterNames.find((r) => normalize(r) === sn);
-  if (exact) return exact;
-
-  const sParts = sn.split(" ").filter(Boolean);
-  if (sParts.length === 0) return null;
-
-  // Handle username-style names (e.g., "whecox" → try splitting as first initial + last)
-  if (sParts.length === 1 && sParts[0].length > 3) {
-    const username = sParts[0];
-    // Try matching against roster last names
-    for (const roster of rosterNames) {
-      const rLast = normalize(roster).split(" ").pop() ?? "";
-      if (rLast.length >= 4 && username.endsWith(rLast)) {
-        return roster;
-      }
-      // Also try username contains last name
-      if (rLast.length >= 4 && username.includes(rLast)) {
-        return roster;
-      }
-    }
-  }
-
-  // Strip common suffixes
-  const suffixes = new Set(["jr", "sr", "ii", "iii", "iv"]);
-  const sClean = sParts.filter((p) => !suffixes.has(p));
-  if (sClean.length === 0) return null;
-  const sFirst = sClean[0];
-  const sLast = sClean[sClean.length - 1];
-
-  let bestMatch: string | null = null;
-  let bestScore = 0;
-
-  for (const roster of rosterNames) {
-    const rn = normalize(roster);
-    const rParts = rn.split(" ").filter((p) => !suffixes.has(p));
-    if (rParts.length === 0) continue;
-
-    const rFirst = rParts[0];
-    const rLast = rParts[rParts.length - 1];
-
-    // ── Last name matching (required) ──
-    let lastNameScore = 0;
-    if (rLast === sLast) {
-      lastNameScore = 10;
-    } else if (rLast.length >= 4 && sLast.length >= 4) {
-      // Fuzzy last name: handle typos (e.g., "Rodriguez" vs "Rodriquez")
-      // Levenshtein distance ≤ 2 for names ≥ 5 chars
-      const dist = levenshtein(rLast, sLast);
-      if (dist === 1) lastNameScore = 8;
-      else if (dist === 2 && rLast.length >= 6) lastNameScore = 5;
-    }
-    // Also check: slack has multi-word last name, roster is shorter
-    // e.g., "Maestre Giron" slack → "Maestre" roster (first part of last matches)
-    if (lastNameScore === 0 && sClean.length >= 3) {
-      // Try treating second-to-last as the last name
-      const sSecondLast = sClean[sClean.length - 2];
-      if (sSecondLast === rLast) lastNameScore = 7;
-    }
-
-    if (lastNameScore === 0) continue;
-
-    let score = lastNameScore;
-
-    // ── First name scoring ──
-    if (rFirst === sFirst) {
-      score += 20;
-    } else if (NICKNAME_MAP[sFirst]?.includes(rFirst) || NICKNAME_MAP[rFirst]?.includes(sFirst)) {
-      score += 15;
-    } else if (sFirst.length >= 3 && rFirst.startsWith(sFirst.slice(0, 3))) {
-      score += 10;
-    } else if (rFirst.length >= 3 && sFirst.startsWith(rFirst.slice(0, 3))) {
-      score += 10;
-    } else if (sFirst.length === 1 && rFirst.startsWith(sFirst)) {
-      score += 5;
-    } else {
-      // Check middle names and ALL parts of the slack name
-      const allSlackParts = sClean;
-      const matched = allSlackParts.some((m) =>
-        m === rFirst || NICKNAME_MAP[m]?.includes(rFirst) || NICKNAME_MAP[rFirst]?.includes(m)
-      );
-      if (matched) {
-        score += 8;
-      } else {
-        continue;
-      }
-    }
-
-    if (sClean.length > 2 || rParts.length > 2) {
-      score += 2;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = roster;
-    }
-  }
-
-  return bestMatch;
-}
-
-/** Simple Levenshtein distance for short strings */
-function levenshtein(a: string, b: string): number {
-  const m = a.length, n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-  );
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-    }
-  }
-  return dp[m][n];
+  if (!slackName) return null;
+  const candidates: NameCandidate[] = rosterNames.map((name, i) => ({
+    id: String(i),
+    name,
+  }));
+  const result = matchNameFuzzy(slackName, candidates);
+  if (!result) return null;
+  return rosterNames[parseInt(result.id)];
 }
 
 // ─── Main parser ────────────────────────────────────────────────────────────

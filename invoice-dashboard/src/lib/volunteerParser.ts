@@ -65,7 +65,9 @@ export function parseVolunteerText(text: string): ParsedVolunteer {
   return { preference: "unknown", notes: trimmed };
 }
 
-// ─── Crew matching ──────────────────────────────────────────────────────────
+// ─── Crew matching (delegates to shared nameResolver) ───────────────────────
+
+import { matchNameFuzzy, type NameCandidate } from "./nameResolver";
 
 type CrewMemberForMatch = {
   id: string;
@@ -73,146 +75,27 @@ type CrewMemberForMatch = {
   slack_user_id?: string | null;
 };
 
-// Common nickname variants
-const NICKNAME_MAP: Record<string, string[]> = {
-  zack: ["zachary", "zach", "zac"],
-  zachary: ["zack", "zach", "zac"],
-  zach: ["zachary", "zack", "zac"],
-  mike: ["michael", "mick"],
-  michael: ["mike", "mick"],
-  bill: ["william", "will", "billy"],
-  william: ["bill", "will", "billy"],
-  will: ["william", "bill", "billy"],
-  bob: ["robert", "rob", "bobby"],
-  robert: ["bob", "rob", "bobby"],
-  rob: ["robert", "bob"],
-  jim: ["james", "jimmy"],
-  james: ["jim", "jimmy"],
-  joe: ["joseph", "joey"],
-  joseph: ["joe", "joey"],
-  tom: ["thomas", "tommy"],
-  thomas: ["tom", "tommy"],
-  dave: ["david"],
-  david: ["dave"],
-  dan: ["daniel", "danny"],
-  daniel: ["dan", "danny"],
-  matt: ["matthew"],
-  matthew: ["matt"],
-  chris: ["christopher"],
-  christopher: ["chris"],
-  steve: ["steven", "stephen"],
-  steven: ["steve", "stephen"],
-  stephen: ["steve", "steven"],
-  tony: ["anthony"],
-  anthony: ["tony"],
-  ed: ["edward", "eddie"],
-  edward: ["ed", "eddie"],
-  rick: ["richard", "ricky", "dick"],
-  richard: ["rick", "ricky", "dick"],
-  pat: ["patrick"],
-  patrick: ["pat"],
-  nick: ["nicholas"],
-  nicholas: ["nick"],
-  wes: ["wesley"],
-  wesley: ["wes"],
-  jon: ["jonathan"],
-  jonathan: ["jon"],
-  charlie: ["charles"],
-  charles: ["charlie"],
-  al: ["alan", "albert", "alexander"],
-  alex: ["alexander"],
-  alexander: ["alex", "al"],
-  greg: ["gregory"],
-  gregory: ["greg"],
-  ben: ["benjamin"],
-  benjamin: ["ben"],
-  sam: ["samuel", "sammy"],
-  samuel: ["sam", "sammy"],
-  jake: ["jacob"],
-  jacob: ["jake"],
-  josh: ["joshua"],
-  joshua: ["josh"],
-  andy: ["andrew"],
-  andrew: ["andy"],
-  ken: ["kenneth"],
-  kenneth: ["ken"],
-  jeff: ["jeffrey"],
-  jeffrey: ["jeff"],
-  larry: ["lawrence"],
-  lawrence: ["larry"],
-};
-
-function normalize(s: string): string {
-  return s.toLowerCase().trim().replace(/[^a-z\s]/g, "");
-}
-
 /**
  * Match a Slack user to a crew member.
- * Strategy:
- * 1. Exact slack_user_id match (most reliable)
- * 2. Fuzzy display name match:
- *    a. Exact normalized name match
- *    b. Last name match + first name is known nickname
- *    c. Last name match + first name starts with same 3 chars
+ * Strategy: exact slack_user_id first, then fuzzy name match via nameResolver.
  */
 export function matchSlackUserToCrew(
   slackUserId: string,
   slackDisplayName: string,
   crewMembers: CrewMemberForMatch[],
 ): string | null {
-  // 1. Exact slack_user_id match
+  // 1. Exact slack_user_id match (most reliable)
   const byId = crewMembers.find(
     (c) => c.slack_user_id && c.slack_user_id === slackUserId,
   );
   if (byId) return byId.id;
 
-  // 2. Name-based matching
-  const displayNorm = normalize(slackDisplayName);
-  if (!displayNorm) return null;
-
-  // 2a. Exact normalized name match
-  const exact = crewMembers.find((c) => normalize(c.name) === displayNorm);
-  if (exact) return exact.id;
-
-  // Split display name into parts
-  const displayParts = displayNorm.split(/\s+/);
-  if (displayParts.length < 2) {
-    // Single name — try matching against any crew member's last name
-    const singleMatch = crewMembers.find((c) => {
-      const parts = normalize(c.name).split(/\s+/);
-      return parts.some((p) => p === displayParts[0]);
-    });
-    return singleMatch?.id ?? null;
-  }
-
-  const displayFirst = displayParts[0];
-  const displayLast = displayParts[displayParts.length - 1];
-
-  for (const crew of crewMembers) {
-    const crewParts = normalize(crew.name).split(/\s+/);
-    if (crewParts.length < 2) continue;
-
-    const crewFirst = crewParts[0];
-    const crewLast = crewParts[crewParts.length - 1];
-
-    // Last name must match
-    if (crewLast !== displayLast) continue;
-
-    // 2b. First name is a known nickname variant
-    const nicknames = NICKNAME_MAP[displayFirst] ?? [];
-    if (crewFirst === displayFirst || nicknames.includes(crewFirst)) {
-      return crew.id;
-    }
-
-    // 2c. First name starts with same 3 chars
-    if (
-      displayFirst.length >= 3 &&
-      crewFirst.length >= 3 &&
-      displayFirst.slice(0, 3) === crewFirst.slice(0, 3)
-    ) {
-      return crew.id;
-    }
-  }
-
-  return null;
+  // 2. Fuzzy name match via shared resolver
+  if (!slackDisplayName) return null;
+  const candidates: NameCandidate[] = crewMembers.map((c) => ({
+    id: c.id,
+    name: c.name,
+  }));
+  const result = matchNameFuzzy(slackDisplayName, candidates);
+  return result?.id ?? null;
 }
