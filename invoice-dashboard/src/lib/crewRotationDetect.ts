@@ -51,183 +51,32 @@ type OncomingPoolEntry = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Fuzzy Name Matching
+// Fuzzy Name Matching (delegates to shared nameResolver)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Common nickname → formal name mappings */
-const NICKNAME_MAP: Record<string, string[]> = {
-  zack: ["zachary", "zach"],
-  zach: ["zachary", "zack"],
-  zachary: ["zack", "zach"],
-  chris: ["christopher", "christian"],
-  christopher: ["chris"],
-  christian: ["chris"],
-  tony: ["anthony"],
-  anthony: ["tony"],
-  jon: ["jonathan", "john"],
-  jonathan: ["jon", "john"],
-  john: ["jon", "jonathan"],
-  matt: ["matthew", "matthias"],
-  matthew: ["matt"],
-  nick: ["nicholas", "nickolaus", "nikolas"],
-  nicholas: ["nick"],
-  nickolaus: ["nick"],
-  tim: ["timothy"],
-  timothy: ["tim"],
-  rick: ["richard", "ricky"],
-  ricky: ["rick", "richard"],
-  richard: ["rick", "ricky"],
-  bob: ["robert"],
-  robert: ["bob", "rob"],
-  rob: ["robert"],
-  bill: ["william"],
-  william: ["will", "bill", "billy"],
-  will: ["william"],
-  ed: ["edward", "eddie", "eddy"],
-  edward: ["ed", "eddie"],
-  eddie: ["ed", "edward"],
-  dan: ["daniel"],
-  daniel: ["dan"],
-  jim: ["james"],
-  james: ["jim"],
-  mike: ["michael"],
-  michael: ["mike"],
-  joe: ["joseph"],
-  joseph: ["joe"],
-  lenny: ["leonard"],
-  leonard: ["lenny", "len"],
-  ben: ["benjamin"],
-  benjamin: ["ben"],
-  dave: ["david"],
-  david: ["dave"],
-  larry: ["lawrence", "laurence"],
-  jeff: ["jeffray", "jeffrey", "geoffrey"],
-  jeffray: ["jeff"],
-  jeffrey: ["jeff"],
-  alex: ["alexander"],
-  alexander: ["alex"],
-  wes: ["wesley"],
-  wesley: ["wes"],
-  henry: ["hank"],
-  fred: ["frederick"],
-  frederick: ["fred"],
-  greg: ["gregory"],
-  gregory: ["greg"],
-  seb: ["sebastian"],
-  sebastian: ["seb"],
-};
-
-function normalize(name: string): string {
-  return name.toLowerCase().trim().replace(/[^a-z\s'-]/g, "");
-}
-
-function getLastName(fullName: string): string {
-  const parts = normalize(fullName).split(/\s+/);
-  return parts[parts.length - 1];
-}
-
-function getFirstName(fullName: string): string {
-  return normalize(fullName).split(/\s+/)[0];
-}
+import { matchNameFuzzy, normalizeName, type NameCandidate } from "./nameResolver";
 
 /**
  * Match a JetInsight full name to a crew_members record.
- *
- * Strategy:
- * 1. Exact match (normalized)
- * 2. Last name match + first name is a known nickname variant
- * 3. Last name match + first name starts with same 3 chars
- * 4. Last name match + one name contains the other's first name as a word
- *    (handles "James Graeme Lang" matching "Graeme Lang")
+ * Checks jetinsight_name field first, then delegates to shared fuzzy matcher.
  */
 function matchName(jetInsightName: string, crewMembers: CrewMember[]): CrewMember | null {
-  const jNorm = normalize(jetInsightName);
+  const jNorm = normalizeName(jetInsightName);
 
   // 0. Check jetinsight_name field (DB-stored mapping — most reliable)
-  const jiMatch = crewMembers.find((c) => c.jetinsight_name && normalize(c.jetinsight_name) === jNorm);
+  const jiMatch = crewMembers.find((c) => c.jetinsight_name && normalizeName(c.jetinsight_name) === jNorm);
   if (jiMatch) return jiMatch;
 
-  // 1. Exact match on display name
-  const exact = crewMembers.find((c) => normalize(c.name) === jNorm);
-  if (exact) return exact;
+  // 1. Delegate to shared fuzzy matcher
+  const candidates: NameCandidate[] = crewMembers.map((c) => ({
+    id: c.id ?? c.name,
+    name: c.name,
+    alt_name: c.jetinsight_name,
+  }));
+  const result = matchNameFuzzy(jetInsightName, candidates);
+  if (!result) return null;
 
-  const jLast = getLastName(jetInsightName);
-  const jFirst = getFirstName(jetInsightName);
-  const jParts = jNorm.split(/\s+/);
-
-  // Filter to last-name matches
-  const lastNameMatches = crewMembers.filter((c) => getLastName(c.name) === jLast);
-  if (lastNameMatches.length === 0) return null;
-  if (lastNameMatches.length === 1) {
-    // Only one person with that last name — very likely the same person
-    // But verify first name isn't wildly different
-    const cFirst = getFirstName(lastNameMatches[0].name);
-    if (cFirst[0] === jFirst[0]) return lastNameMatches[0];
-    // Check if any part of the JetInsight name matches the crew first name
-    if (jParts.some((p) => p === cFirst)) return lastNameMatches[0];
-    // Check nickname
-    const variants = NICKNAME_MAP[cFirst] ?? [];
-    if (variants.includes(jFirst) || jParts.some((p) => variants.includes(p))) return lastNameMatches[0];
-  }
-
-  for (const c of lastNameMatches) {
-    const cFirst = getFirstName(c.name);
-
-    // 2. Nickname match
-    const jVariants = NICKNAME_MAP[jFirst] ?? [];
-    const cVariants = NICKNAME_MAP[cFirst] ?? [];
-    if (jFirst === cFirst || jVariants.includes(cFirst) || cVariants.includes(jFirst)) {
-      return c;
-    }
-
-    // 3. First 3 chars match
-    if (jFirst.length >= 3 && cFirst.length >= 3 && jFirst.slice(0, 3) === cFirst.slice(0, 3)) {
-      return c;
-    }
-
-    // 4. Middle name handling: "James Graeme Lang" should match "Graeme Lang"
-    // Check if crew first name appears anywhere in JetInsight name parts
-    if (jParts.includes(cFirst)) return c;
-
-    // Also check if JetInsight first name appears in crew name parts
-    const cParts = normalize(c.name).split(/\s+/);
-    if (cParts.includes(jFirst)) return c;
-  }
-
-  // 5. Typo tolerance: check if last names are within edit distance 1
-  // Handles "Rodriguez" vs "Rodriquez" typo
-  for (const c of crewMembers) {
-    const cLast = getLastName(c.name);
-    if (editDistance(jLast, cLast) <= 1) {
-      const cFirst = getFirstName(c.name);
-      const jVariants = NICKNAME_MAP[jFirst] ?? [];
-      const cVariants = NICKNAME_MAP[cFirst] ?? [];
-      if (jFirst === cFirst || jFirst[0] === cFirst[0] || jVariants.includes(cFirst) || cVariants.includes(jFirst)) {
-        return c;
-      }
-    }
-  }
-
-  return null;
-}
-
-/** Simple Levenshtein edit distance */
-function editDistance(a: string, b: string): number {
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-  const dp: number[][] = [];
-  for (let i = 0; i <= a.length; i++) {
-    dp[i] = [i];
-    for (let j = 1; j <= b.length; j++) {
-      if (i === 0) { dp[i][j] = j; continue; }
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
-    }
-  }
-  return dp[a.length][b.length];
+  return crewMembers.find((c) => (c.id ?? c.name) === result.id) ?? null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

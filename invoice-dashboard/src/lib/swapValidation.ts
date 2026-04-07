@@ -26,14 +26,14 @@ export type ValidationResult = {
 // Known ICAO prefixes for airport code validation
 const VALID_ICAO_PREFIXES = ["K", "C", "M", "T", "P", "PH", "PA"];
 
-function isValidIcao(code: string): boolean {
+export function isValidIcao(code: string): boolean {
   if (!code || code.length < 3 || code.length > 4) return false;
   // Allow 3-letter IATA codes and 4-letter ICAO codes
   if (code.length === 3) return /^[A-Z]{3}$/.test(code);
   return /^[A-Z]{4}$/.test(code);
 }
 
-function isValid24hTime(time: string): boolean {
+export function isValid24hTime(time: string): boolean {
   // Accepts HHMM, HH:MM, or ISO datetime strings
   if (/^\d{4}$/.test(time)) {
     const h = parseInt(time.slice(0, 2));

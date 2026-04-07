@@ -25,7 +25,7 @@ const OptimizeRequestSchema = z.object({
   })).optional(),
   constraints: z.array(z.discriminatedUnion("type", [
     z.object({ type: z.literal("force_tail"), crew_name: z.string(), tail: z.string(), reason: z.string().optional() }),
-    z.object({ type: z.literal("force_pair"), crew_a: z.string(), crew_b: z.string(), reason: z.string().optional() }),
+    z.object({ type: z.literal("force_pair"), crew_a: z.string(), crew_b: z.string(), day: z.string().optional(), reason: z.string().optional() }),
     z.object({ type: z.literal("force_fleet"), crew_name: z.string(), aircraft_type: z.string(), reason: z.string().optional() }),
   ])).optional(),
 }).strip();
