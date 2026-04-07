@@ -1,14 +1,13 @@
 export const revalidate = 60;
 
 import { Topbar } from "@/components/Topbar";
-import { fetchJobs } from "@/lib/jobApi";
-import JobsTable from "./JobsTable";
-import JobsNav from "./JobsNav";
-import UploadButton from "./UploadButton";
+import { fetchGroundTableJobs } from "@/lib/groundJobApi";
+import GroundTable from "./GroundTable";
+import JobsNav from "../JobsNav";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
-export default async function JobsPage() {
-  const data = await fetchJobs({ limit: 1000, excludeGround: true });
+export default async function GroundTablePage() {
+  const data = await fetchGroundTableJobs();
   const jobs = data.jobs ?? [];
 
   return (
@@ -16,10 +15,9 @@ export default async function JobsPage() {
       <Topbar title="Jobs" />
       <div className="flex items-center justify-between pr-6">
         <JobsNav />
-        <UploadButton />
       </div>
       <AutoRefresh intervalSeconds={120} />
-      <JobsTable initialJobs={jobs} />
+      <GroundTable initialJobs={jobs} />
     </>
   );
 }

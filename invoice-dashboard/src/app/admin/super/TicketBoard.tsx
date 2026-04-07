@@ -18,6 +18,20 @@ type Ticket = {
 };
 
 type StatusFilter = "all" | "open" | "in_progress" | "done" | "wont_fix";
+type KindFilter = "all" | "task" | "checklist";
+
+/** Derive ticket kind from its data — no DB column needed */
+function ticketKind(t: Ticket): "task" | "checklist" {
+  if (t.claude_prompt) return "task";
+  if (t.body && /- \[[ x]\]/i.test(t.body)) return "checklist";
+  return "task"; // default
+}
+
+const KIND_LABELS: Record<KindFilter, { label: string; icon: string }> = {
+  all:       { label: "All",        icon: "" },
+  task:      { label: "Tasks",      icon: ">" },
+  checklist: { label: "Checklists", icon: "\u2611" },
+};
 
 const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }> = {
   open:        { label: "Open",        color: "text-blue-300",   bg: "bg-blue-900/40 border-blue-700" },
@@ -56,6 +70,7 @@ export default function TicketBoard() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<StatusFilter>("all");
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -69,6 +84,7 @@ export default function TicketBoard() {
   const [formGithub, setFormGithub] = useState("");
   const [formLabels, setFormLabels] = useState("");
   const [formStatus, setFormStatus] = useState<Ticket["status"]>("open");
+  const [formKind, setFormKind] = useState<"task" | "checklist">("task");
   const [saving, setSaving] = useState(false);
 
   // ── Fetch tickets ─────────────────────────────────────────────────────────
@@ -103,6 +119,7 @@ export default function TicketBoard() {
     setFormGithub("");
     setFormLabels("");
     setFormStatus("open");
+    setFormKind("task");
     setEditingId(null);
     setShowForm(false);
   };
@@ -115,6 +132,7 @@ export default function TicketBoard() {
     setFormGithub(t.github_issue?.toString() || "");
     setFormLabels(t.labels.join(", "));
     setFormStatus(t.status);
+    setFormKind(ticketKind(t));
     setEditingId(t.id);
     setShowForm(true);
   };
@@ -180,11 +198,25 @@ export default function TicketBoard() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const handleBodyUpdate = async (id: number, body: string) => {
+    // Optimistic update
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, body } : t)));
+    await fetch("/api/admin/tickets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, body }),
+    });
+  };
+
   // ── Filtered + grouped tickets ────────────────────────────────────────────
 
-  const filtered = filter === "all" ? tickets : tickets.filter((t) => t.status === filter);
+  const filtered = tickets
+    .filter((t) => filter === "all" || t.status === filter)
+    .filter((t) => kindFilter === "all" || ticketKind(t) === kindFilter);
   const openTickets = filtered.filter((t) => t.status === "open" || t.status === "in_progress");
   const closedTickets = filtered.filter((t) => t.status === "done" || t.status === "wont_fix");
+  const taskCount = tickets.filter((t) => ticketKind(t) === "task" && (t.status === "open" || t.status === "in_progress")).length;
+  const checklistCount = tickets.filter((t) => ticketKind(t) === "checklist" && (t.status === "open" || t.status === "in_progress")).length;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -194,6 +226,27 @@ export default function TicketBoard() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h2 className="text-lg font-semibold text-zinc-100">Tickets</h2>
+          {/* Kind filter */}
+          <div className="flex gap-0.5 bg-zinc-800 rounded-lg p-0.5">
+            {(["all", "task", "checklist"] as KindFilter[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setKindFilter(k)}
+                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                  kindFilter === k
+                    ? k === "task" ? "bg-purple-600 text-white"
+                    : k === "checklist" ? "bg-teal-600 text-white"
+                    : "bg-zinc-600 text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {KIND_LABELS[k].icon ? `${KIND_LABELS[k].icon} ` : ""}{KIND_LABELS[k].label}
+                {k === "task" && taskCount > 0 && <span className="ml-1 text-[10px] opacity-70">({taskCount})</span>}
+                {k === "checklist" && checklistCount > 0 && <span className="ml-1 text-[10px] opacity-70">({checklistCount})</span>}
+              </button>
+            ))}
+          </div>
+          {/* Status filter */}
           <div className="flex gap-1">
             {(["all", "open", "in_progress", "done"] as StatusFilter[]).map((s) => (
               <button
@@ -210,40 +263,64 @@ export default function TicketBoard() {
             ))}
           </div>
         </div>
-        <button
-          onClick={() => {
-            resetForm();
-            setShowForm(true);
-          }}
-          className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-500"
-        >
-          + New Ticket
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => { resetForm(); setFormKind("checklist"); setShowForm(true); }}
+            className="px-3 py-2 text-sm font-medium bg-teal-600 text-white rounded-lg hover:bg-teal-500"
+          >
+            + Checklist
+          </button>
+          <button
+            onClick={() => { resetForm(); setFormKind("task"); setShowForm(true); }}
+            className="px-3 py-2 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-500"
+          >
+            + Task
+          </button>
+        </div>
       </div>
 
       {/* Create / Edit form */}
       {showForm && (
-        <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-5 space-y-4">
-          <h3 className="text-sm font-medium text-zinc-200">
-            {editingId ? "Edit Ticket" : "New Ticket"}
-          </h3>
+        <div className={`border rounded-lg p-5 space-y-4 ${formKind === "checklist" ? "bg-teal-900/20 border-teal-800" : "bg-purple-900/20 border-purple-800"}`}>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-zinc-200">
+              {editingId ? "Edit" : "New"} {formKind === "checklist" ? "Checklist" : "Task"}
+            </h3>
+            <div className="flex gap-1 bg-zinc-800 rounded-lg p-0.5">
+              <button onClick={() => setFormKind("task")}
+                className={`px-3 py-1 text-xs rounded-md ${formKind === "task" ? "bg-purple-600 text-white" : "text-zinc-400"}`}>
+                Task
+              </button>
+              <button onClick={() => setFormKind("checklist")}
+                className={`px-3 py-1 text-xs rounded-md ${formKind === "checklist" ? "bg-teal-600 text-white" : "text-zinc-400"}`}>
+                Checklist
+              </button>
+            </div>
+          </div>
 
           {/* Title */}
           <input
             value={formTitle}
             onChange={(e) => setFormTitle(e.target.value)}
-            placeholder="Ticket title"
+            placeholder={formKind === "checklist" ? "Checklist title (e.g. QA: #199 departure buffer)" : "Task title"}
             className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500"
           />
 
-          {/* Body */}
-          <textarea
-            value={formBody}
-            onChange={(e) => setFormBody(e.target.value)}
-            placeholder="Description (optional, markdown supported)"
-            rows={3}
-            className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 resize-y"
-          />
+          {/* Body / Checklist */}
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1">
+              {formKind === "checklist" ? "Checklist items (use - [ ] for each item)" : "Description (optional, markdown supported)"}
+            </label>
+            <textarea
+              value={formBody}
+              onChange={(e) => setFormBody(e.target.value)}
+              placeholder={formKind === "checklist"
+                ? "### Section\n\n- [ ] First check item\n- [ ] Second check item\n- [ ] Third check item"
+                : "Description (optional)"}
+              rows={formKind === "checklist" ? 6 : 3}
+              className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 resize-y font-mono"
+            />
+          </div>
 
           {/* Priority + Status + GitHub issue row */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -295,19 +372,21 @@ export default function TicketBoard() {
             />
           </div>
 
-          {/* Claude Prompt */}
-          <div>
-            <label className="block text-xs text-zinc-400 mb-1">
-              Claude Prompt — paste into Claude Code to work on this ticket
-            </label>
-            <textarea
-              value={formPrompt}
-              onChange={(e) => setFormPrompt(e.target.value)}
-              placeholder="e.g. Fix the crew swap optimizer to flag commercial flights that depart less than 90 minutes after the last leg lands. See issue #199. The relevant code is in..."
-              rows={4}
-              className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 resize-y font-mono"
-            />
-          </div>
+          {/* Claude Prompt — only for tasks */}
+          {formKind === "task" && (
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1">
+                Claude Prompt — paste into Claude Code to work on this task
+              </label>
+              <textarea
+                value={formPrompt}
+                onChange={(e) => setFormPrompt(e.target.value)}
+                placeholder="e.g. Fix the crew swap optimizer to flag commercial flights that depart less than 90 minutes after the last leg lands. See issue #199. The relevant code is in..."
+                rows={4}
+                className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 resize-y font-mono"
+              />
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-2">
@@ -350,6 +429,7 @@ export default function TicketBoard() {
               onDelete={() => handleDelete(t.id)}
               onStatusChange={(s) => handleStatusChange(t.id, s)}
               onCopyPrompt={() => t.claude_prompt && copyPrompt(t.id, t.claude_prompt)}
+              onBodyUpdate={(body) => handleBodyUpdate(t.id, body)}
             />
           ))}
         </div>
@@ -373,6 +453,7 @@ export default function TicketBoard() {
                 onDelete={() => handleDelete(t.id)}
                 onStatusChange={(s) => handleStatusChange(t.id, s)}
                 onCopyPrompt={() => t.claude_prompt && copyPrompt(t.id, t.claude_prompt)}
+                onBodyUpdate={(body) => handleBodyUpdate(t.id, body)}
               />
             ))}
           </div>
@@ -401,6 +482,7 @@ function TicketRow({
   onDelete,
   onStatusChange,
   onCopyPrompt,
+  onBodyUpdate,
 }: {
   ticket: Ticket;
   expanded: boolean;
@@ -410,18 +492,25 @@ function TicketRow({
   onDelete: () => void;
   onStatusChange: (s: Ticket["status"]) => void;
   onCopyPrompt: () => void;
+  onBodyUpdate: (body: string) => void;
 }) {
   const pBucket = priorityBucket(t.priority);
   const pInfo = PRIORITY_LABELS[pBucket];
   const sInfo = STATUS_LABELS[t.status];
+  const kind = ticketKind(t);
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${sInfo.bg}`}>
+    <div className={`border rounded-lg overflow-hidden ${sInfo.bg} ${kind === "checklist" ? "border-l-2 border-l-teal-500" : "border-l-2 border-l-purple-500"}`}>
       {/* Header row */}
       <button
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors"
       >
+        {/* Kind icon */}
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${kind === "checklist" ? "bg-teal-900/50 text-teal-400" : "bg-purple-900/50 text-purple-400"}`}>
+          {kind === "checklist" ? "\u2611" : ">_"}
+        </span>
+
         {/* Priority dot */}
         <span className={`text-xs font-mono ${pInfo.color}`}>
           {pBucket === "critical" ? "!!!" : pBucket === "high" ? "!!" : pBucket === "medium" ? "!" : "·"}
@@ -443,6 +532,22 @@ function TicketRow({
             </span>
           ))}
         </div>
+
+        {/* Checklist progress */}
+        {t.body && t.body.includes("- [") && (() => {
+          const total = (t.body.match(/- \[[ x]\]/gi) ?? []).length;
+          const checked = (t.body.match(/- \[x\]/gi) ?? []).length;
+          if (total === 0) return null;
+          const pct = Math.round((checked / total) * 100);
+          return (
+            <div className="hidden sm:flex items-center gap-1.5 text-[10px]">
+              <div className="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full transition-all ${pct === 100 ? "bg-emerald-500" : "bg-blue-500"}`} style={{ width: `${pct}%` }} />
+              </div>
+              <span className={pct === 100 ? "text-emerald-400" : "text-zinc-400"}>{checked}/{total}</span>
+            </div>
+          );
+        })()}
 
         {/* GitHub link */}
         {t.github_issue && (
@@ -471,9 +576,44 @@ function TicketRow({
       {/* Expanded detail */}
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-white/10 pt-3">
-          {/* Body */}
+          {/* Body with interactive checklists */}
           {t.body && (
-            <p className="text-sm text-zinc-300 whitespace-pre-wrap">{t.body}</p>
+            <div className="text-sm text-zinc-300 space-y-1">
+              {t.body.split("\n").map((line, li) => {
+                const unchecked = line.match(/^(\s*)-\s*\[ \]\s*(.+)$/);
+                const checked = line.match(/^(\s*)-\s*\[x\]\s*(.+)$/i);
+                if (unchecked || checked) {
+                  const isChecked = !!checked;
+                  const text = (unchecked?.[2] ?? checked?.[2] ?? "").trim();
+                  return (
+                    <label key={li} className="flex items-start gap-2 cursor-pointer group hover:bg-white/5 rounded px-1 py-0.5 -mx-1">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => {
+                          // Toggle this checkbox in the body text
+                          const lines = t.body!.split("\n");
+                          if (isChecked) {
+                            lines[li] = lines[li].replace(/\[x\]/i, "[ ]");
+                          } else {
+                            lines[li] = lines[li].replace(/\[ \]/, "[x]");
+                          }
+                          // Persist via PATCH
+                          onBodyUpdate(lines.join("\n"));
+                        }}
+                        className="mt-0.5 accent-emerald-500 w-4 h-4 shrink-0"
+                      />
+                      <span className={isChecked ? "line-through text-zinc-500" : "text-zinc-300"}>{text}</span>
+                    </label>
+                  );
+                }
+                // Regular text line
+                if (line.trim() === "") return <div key={li} className="h-2" />;
+                if (line.startsWith("### ")) return <h4 key={li} className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mt-3 mb-1">{line.slice(4)}</h4>;
+                if (line.startsWith("## ")) return <h3 key={li} className="text-sm font-semibold text-zinc-200 mt-3 mb-1">{line.slice(3)}</h3>;
+                return <p key={li} className="whitespace-pre-wrap">{line}</p>;
+              })}
+            </div>
           )}
 
           {/* Claude prompt */}

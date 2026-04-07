@@ -3,7 +3,7 @@
   "crons": [
     {
       "path": "/api/cron/trip-notifications",
-      "schedule": "*/15 * * * *"
+      "schedule": "1,16,31,46 * * * *"
     },
     {
       "path": "/api/fuel-prices/advertised/pull-mailbox",
@@ -27,19 +27,19 @@
     },
     {
       "path": "/api/cron/edct-tracker",
-      "schedule": "*/15 * * * *"
+      "schedule": "4,19,34,49 * * * *"
     },
     {
       "path": "/api/ops/intl/parse-cbp-replies",
-      "schedule": "*/15 * * * *"
+      "schedule": "7,22,37,52 * * * *"
     },
     {
       "path": "/api/ops/intl/run-checks",
-      "schedule": "*/15 * * * *"
+      "schedule": "10,25,40,55 * * * *"
     },
     {
       "path": "/api/ops/intl/trips",
-      "schedule": "*/15 * * * *"
+      "schedule": "13,28,43,58 * * * *"
     },
     {
       "path": "/api/cron/duty-monitor",
@@ -51,7 +51,7 @@
     },
     {
       "path": "/api/cron/jetinsight-schedule",
-      "schedule": "*/10 * * * *"
+      "schedule": "5,15,25,35,45,55 * * * *"
     },
     {
       "path": "/api/cron/jetinsight-docs",

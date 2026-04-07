@@ -21405,7 +21405,7 @@
     "security_fee": null,
     "parking_info": "",
     "hangar_info": "",
-    "handling_fee": null,
+    "handling_fee": 630,
     "infrastructure_fee": null,
     "gpu_fee": null,
     "hangar_fee": null,
@@ -21416,7 +21416,8 @@
     "avgas_price": null,
     "saf_price": null,
     "phone": "+1 787 791 7005",
-    "email": "sjufbo@jetaviation.com"
+    "email": "sjufbo@jetaviation.com",
+    "overnight_fee": 307
   },
   {
     "chain": "Jet Aviation",
@@ -21432,7 +21433,7 @@
     "security_fee": null,
     "parking_info": "",
     "hangar_info": "",
-    "handling_fee": null,
+    "handling_fee": 345,
     "infrastructure_fee": null,
     "gpu_fee": null,
     "hangar_fee": null,
@@ -21443,7 +21444,8 @@
     "avgas_price": null,
     "saf_price": null,
     "phone": "+1 787 791 7005",
-    "email": "sjufbo@jetaviation.com"
+    "email": "sjufbo@jetaviation.com",
+    "overnight_fee": 323
   },
   {
     "chain": "Signature Flight Support",

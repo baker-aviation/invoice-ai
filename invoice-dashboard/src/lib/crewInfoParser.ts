@@ -474,7 +474,8 @@ export function parseCrewInfo(
   if (weeklySheetName) {
     const ws = wb.Sheets[weeklySheetName];
     if (ws) {
-      weeklySwap = parseWeeklySheet(ws, errors);
+      const weeklyRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as unknown[][];
+      weeklySwap = parseWeeklySheetRows(weeklyRows, errors);
     }
   }
 
@@ -807,10 +808,397 @@ export function parseCrewInfo(
   };
 }
 
+// ─── Direct Sheets API parser ──────────────────────────────────────────────
+
+/**
+ * Parse crew info from pre-fetched Sheets API data (no XLSX download needed).
+ * Each sheet is a 2D array of raw values. Only required tabs need to be provided.
+ * This is the preferred ingestion path — faster and more reliable than XLSX export.
+ */
+export function parseCrewInfoFromSheets(params: {
+  rosterRows?: unknown[][];
+  weeklyRows?: unknown[][];
+  weeklySheetName?: string;
+  referenceRows?: unknown[][];  // "Different Airports .299 Bad P" sheet
+  calendarRows?: unknown[][];   // "CREW CALENDAR" sheet
+  slackNames?: string[];
+}): CrewInfoParseResult {
+  const errors: string[] = [];
+
+  // ═══ 1. Parse CREW ROSTER ═══════════════════════════════════════════════
+  const roster: CrewRosterEntry[] = [];
+  const rosterNames: string[] = [];
+
+  if (params.rosterRows && params.rosterRows.length > 0) {
+    const rows = params.rosterRows;
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
+      if (String(rows[i]?.[0] ?? "").toUpperCase() === "NAME") {
+        headerIdx = i;
+        break;
+      }
+    }
+
+    if (headerIdx >= 0) {
+      for (let i = headerIdx + 1; i < rows.length; i++) {
+        const row = rows[i];
+        const name = String(row?.[0] ?? "").trim();
+        if (!name) continue;
+
+        const homeStr = String(row?.[1] ?? "").trim();
+        const home_airports = homeStr
+          .split(/[\/,]/)
+          .map((a: string) => a.trim().toUpperCase().replace(/\s+/g, ""))
+          .filter((a: string) => a.length >= 2 && a.length <= 5)
+          .map((a: string) => a.replace(/\./g, ""));
+
+        const rotationRaw = String(row?.[2] ?? "").trim().toUpperCase();
+        let rotation: CrewRosterEntry["rotation"] = null;
+        if (rotationRaw === "A") rotation = "A";
+        else if (rotationRaw === "B") rotation = "B";
+        else if (rotationRaw.includes("PART") || rotationRaw.includes("NON")) rotation = "part_time";
+
+        const aircraft_type = parseAircraftType(String(row?.[3] ?? ""));
+        const rankRaw = String(row?.[4] ?? "").toLowerCase();
+        const role: "PIC" | "SIC" = rankRaw.includes("captain") ? "PIC" : "SIC";
+
+        const sbVal = row?.[5];
+        const skillbridge_end = excelDateToISO(sbVal);
+        const is_skillbridge = !!skillbridge_end;
+
+        const termVal = row?.[6];
+        const terminated_on = excelDateToISO(termVal);
+        const is_terminated = !!terminated_on;
+
+        roster.push({
+          name, home_airports, rotation, aircraft_type, role,
+          is_skillbridge, skillbridge_end, is_terminated, terminated_on,
+          slack_display_name: null,
+        });
+        rosterNames.push(name);
+      }
+    } else {
+      errors.push("CREW ROSTER: header row not found");
+    }
+  } else {
+    errors.push("CREW ROSTER: no data provided");
+  }
+
+  // ═══ 2. Match Slack names ═══════════════════════════════════════════════
+  if (params.slackNames && params.slackNames.length > 0 && rosterNames.length > 0) {
+    let matched = 0;
+    for (const slackName of params.slackNames) {
+      const trimmed = slackName.trim();
+      if (!trimmed) continue;
+      const rosterMatch = matchSlackName(trimmed, rosterNames);
+      if (rosterMatch) {
+        const entry = roster.find((r) => r.name === rosterMatch);
+        if (entry) { entry.slack_display_name = trimmed; matched++; }
+      }
+    }
+    if (matched < params.slackNames.length * 0.5) {
+      errors.push(`Slack matching: only ${matched}/${params.slackNames.length} matched`);
+    }
+  }
+
+  // ═══ 3. Parse weekly swap sheet ═════════════════════════════════════════
+  let weeklySwap: WeeklySwapEntry[] | null = null;
+  if (params.weeklyRows && params.weeklyRows.length > 0) {
+    weeklySwap = parseWeeklySheetRows(params.weeklyRows, errors);
+  }
+
+  // ═══ 4. Parse reference data sheet ══════════════════════════════════════
+  const different_airports: DifferentAirportEntry[] = [];
+  const bad_pairings: BadPairing[] = [];
+  const checkairmen: CheckairmanEntry[] = [];
+  const training_needed: TrainingEntry[] = [];
+  const recurrency_299: Recurrency299Entry[] = [];
+
+  if (params.referenceRows && params.referenceRows.length > 0) {
+    parseReferenceSheet(params.referenceRows, different_airports, bad_pairings, checkairmen, training_needed, recurrency_299);
+  }
+
+  // ═══ 5. Parse PIC swap table from weekly sheet ══════════════════════════
+  let pic_swap_table: PicSwapEntry[] = [];
+  let crewing_checklist: CrewingChecklist | null = null;
+
+  if (params.weeklyRows && params.weeklyRows.length > 0) {
+    const parsed = parsePicSwapAndChecklist(params.weeklyRows);
+    pic_swap_table = parsed.pic_swap_table;
+    crewing_checklist = parsed.crewing_checklist;
+  }
+
+  // ═══ 6. Parse CREW CALENDAR ═════════════════════════════════════════════
+  const calendar_weeks: CalendarWeek[] = [];
+  if (params.calendarRows && params.calendarRows.length > 0) {
+    parseCalendarRows(params.calendarRows, calendar_weeks, roster);
+  }
+
+  // ═══ 7. Rotation counts ═════════════════════════════════════════════════
+  const activeRoster = roster.filter((r) => !r.is_terminated);
+  const rotation_counts = {
+    a: {
+      pic: activeRoster.filter((r) => r.rotation === "A" && r.role === "PIC").length,
+      sic: activeRoster.filter((r) => r.rotation === "A" && r.role === "SIC").length,
+    },
+    b: {
+      pic: activeRoster.filter((r) => r.rotation === "B" && r.role === "PIC").length,
+      sic: activeRoster.filter((r) => r.rotation === "B" && r.role === "SIC").length,
+    },
+  };
+
+  return {
+    roster,
+    weekly_swap: weeklySwap,
+    weekly_sheet_name: params.weeklySheetName ?? null,
+    different_airports,
+    rotation_counts,
+    bad_pairings,
+    checkairmen,
+    training_needed,
+    recurrency_299,
+    pic_swap_table,
+    crewing_checklist,
+    calendar_weeks,
+    errors,
+  };
+}
+
+// ─── Reference sheet parser (Different Airports / .299 / Bad Pairings) ──────
+
+function parseReferenceSheet(
+  rows: unknown[][],
+  different_airports: DifferentAirportEntry[],
+  bad_pairings: BadPairing[],
+  checkairmen: CheckairmanEntry[],
+  training_needed: TrainingEntry[],
+  recurrency_299: Recurrency299Entry[],
+) {
+  let section: "airports" | "training_299" | "bad_pairings" | "checkairmen" | "training_people" | "unknown" = "airports";
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const col0 = String(row?.[0] ?? "").trim();
+    const col0Lower = col0.toLowerCase();
+
+    if (col0Lower.includes("training needed")) { section = "training_299"; continue; }
+    if (col0Lower.includes("bad pairing")) { section = "bad_pairings"; continue; }
+    if (col0Lower.includes("air checkman") || col0Lower.includes("checkairman")) { section = "checkairmen"; continue; }
+    if (col0Lower.includes("training people")) { section = "training_people"; continue; }
+
+    if (col0Lower === "name" || col0Lower === "pic" || col0Lower === "rotation a" || col0Lower === "different airports") continue;
+    if (!col0) continue;
+
+    if (section === "airports") {
+      different_airports.push({
+        name: col0,
+        date: excelDateToISO(row?.[1]),
+        coming_from: String(row?.[2] ?? "").trim() || null,
+        going_to: String(row?.[3] ?? "").trim() || null,
+        notes: String(row?.[4] ?? "").trim() || null,
+      });
+    }
+
+    if (section === "training_299") {
+      const month = String(row?.[1] ?? "").trim();
+      if (!month) continue;
+      recurrency_299.push({
+        name: col0, month,
+        needs_299: row?.[2] === true || String(row?.[2] ?? "").toLowerCase() === "true",
+        citation_drill: row?.[3] === true || String(row?.[3] ?? "").toLowerCase() === "true",
+        challenger_drill: row?.[4] === true || String(row?.[4] ?? "").toLowerCase() === "true",
+      });
+    }
+
+    if (section === "bad_pairings") {
+      const sic = String(row?.[1] ?? "").trim();
+      const notesRaw = String(row?.[2] ?? "").trim();
+      if (!sic) continue;
+      let severity: BadPairing["severity"] = "minor";
+      const notesLower = notesRaw.toLowerCase();
+      if (notesLower.includes("very severe") || notesLower.includes("severe")) severity = "severe";
+      else if (notesLower.includes("moderate") || notesLower.includes("don't like") || notesLower.includes("dont like")) severity = "moderate";
+      bad_pairings.push({ pic: col0, sic, severity, notes: notesRaw });
+    }
+
+    if (section === "checkairmen") {
+      const citX_A = row?.[1] === true;
+      const cl_A = row?.[2] === true;
+      if (col0 && (citX_A || cl_A || col0.length > 2)) {
+        checkairmen.push({ name: col0, rotation: "A", citation_x: citX_A, challenger: cl_A });
+      }
+      const nameB = String(row?.[3] ?? "").trim();
+      const citX_B = row?.[4] === true;
+      const cl_B = row?.[5] === true;
+      if (nameB && (citX_B || cl_B || nameB.length > 2)) {
+        checkairmen.push({ name: nameB, rotation: "B", citation_x: citX_B, challenger: cl_B });
+      }
+      const nameOther = String(row?.[6] ?? "").trim();
+      if (nameOther) {
+        checkairmen.push({ name: nameOther, rotation: "other", citation_x: true, challenger: true });
+      }
+    }
+
+    if (section === "training_people") {
+      const indoc = row?.[1] === true || String(row?.[1] ?? "").toLowerCase() === "true";
+      const eDrill = row?.[2] === true || String(row?.[2] ?? "").toLowerCase() === "true";
+      if (indoc || eDrill) {
+        training_needed.push({ name: col0, indoc, emergency_drill: eDrill });
+      }
+    }
+  }
+}
+
+// ─── PIC swap table + checklist parser ──────────────────────────────────────
+
+function parsePicSwapAndChecklist(rows: unknown[][]): { pic_swap_table: PicSwapEntry[]; crewing_checklist: CrewingChecklist | null } {
+  const pic_swap_table: PicSwapEntry[] = [];
+  let crewing_checklist: CrewingChecklist | null = null;
+
+  const parseSwapName = (raw: string): string | null => {
+    if (!raw || raw.includes("not swapping")) return null;
+    const cleaned = raw.replace(/^[\u{1F7E0}-\u{1F7FF}\s]+/u, "").replace(/[✔✓\s]+$/u, "").trim();
+    const m = cleaned.match(/^(.+?)\s*\(/);
+    return m ? m[1].trim() : cleaned || null;
+  };
+
+  for (let i = 5; i < rows.length; i++) {
+    const row = rows[i];
+    const oldPic = String(row?.[15] ?? "").trim();
+    const newPic = String(row?.[16] ?? "").trim();
+    const tail = String(row?.[17] ?? "").trim();
+    if (!oldPic && !newPic && !tail) continue;
+    pic_swap_table.push({
+      old_pic: parseSwapName(oldPic),
+      new_pic: parseSwapName(newPic),
+      tail: tail && /^N/.test(tail) ? tail : null,
+    });
+  }
+
+  if (rows.length > 2) {
+    const headerRow = rows[0] as unknown[];
+    const taskNames = Array.from({ length: 8 }, (_, i) => String(headerRow?.[16 + i] ?? "").trim());
+    const assignees: CrewingChecklist["assignees"] = [];
+    for (let r = 1; r <= 2; r++) {
+      const row = rows[r] as unknown[];
+      const name = String(row?.[15] ?? "").trim();
+      if (!name) continue;
+      const tasks: Record<string, boolean | string> = {};
+      for (let t = 0; t < taskNames.length; t++) {
+        const val = row?.[16 + t];
+        if (val === true || val === false) tasks[taskNames[t]] = val;
+        else if (String(val ?? "").trim() === "---") tasks[taskNames[t]] = "n/a";
+        else tasks[taskNames[t]] = String(val ?? "").trim() === "true";
+      }
+      assignees.push({ name, tasks });
+    }
+    if (assignees.length > 0) crewing_checklist = { assignees };
+  }
+
+  return { pic_swap_table, crewing_checklist };
+}
+
+// ─── Calendar parser ────────────────────────────────────────────────────────
+
+function parseCalendarRows(rows: unknown[][], calendar_weeks: CalendarWeek[], roster: CrewRosterEntry[]) {
+  const rosterTypeMap = new Map<string, "citation_x" | "challenger" | "dual">();
+  for (const r of roster) {
+    rosterTypeMap.set(r.name.toLowerCase().trim(), r.aircraft_type);
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const cell = String(rows[i]?.[3] ?? "").trim();
+    const headerMatch = cell.match(/([A-Za-z]+\s+\d+,\s*\d{4}\s*-\s*[A-Za-z]+\s+\d+,\s*\d{4})\s*\(Rotation\s*([AB])\)/i);
+    if (!headerMatch) continue;
+
+    const dateRange = headerMatch[1].trim();
+    const rotation = headerMatch[2].toUpperCase() as "A" | "B";
+
+    const detectTypeBoundaries = (labelRowIdx: number): { cx: [number, number]; cl: [number, number]; du: [number, number] } => {
+      const defaultBounds = { cx: [4, 17] as [number, number], cl: [21, 30] as [number, number], du: [31, 35] as [number, number] };
+      if (labelRowIdx >= rows.length) return defaultBounds;
+      const labelRow = rows[labelRowIdx] as unknown[];
+      let cxStart = -1, clStart = -1, duStart = -1;
+      for (let j = 0; j < Math.min(labelRow?.length ?? 0, 40); j++) {
+        const cellStr = String(labelRow[j] ?? "").toLowerCase().trim();
+        if (cellStr.includes("citation") && cxStart < 0) cxStart = j;
+        else if (cellStr.includes("challenger") && clStart < 0) clStart = j;
+        else if (cellStr.includes("dual") && duStart < 0) duStart = j;
+      }
+      if (cxStart >= 0 && clStart >= 0) {
+        const cxEnd = clStart - 1;
+        const clEnd = duStart >= 0 ? duStart - 1 : Math.min((labelRow?.length ?? 0) - 1, clStart + 14);
+        const duEnd = duStart >= 0 ? Math.min((labelRow?.length ?? 0) - 1, duStart + 6) : -1;
+        return {
+          cx: [cxStart, Math.max(cxStart, cxEnd)],
+          cl: [clStart, Math.max(clStart, clEnd)],
+          du: duStart >= 0 ? [duStart, Math.max(duStart, duEnd)] : [999, 999],
+        };
+      }
+      return defaultBounds;
+    };
+
+    const extractNames = (rowIdx: number, bounds: ReturnType<typeof detectTypeBoundaries>): { citation_x: string[]; challenger: string[]; dual: string[] } => {
+      if (rowIdx >= rows.length) return { citation_x: [], challenger: [], dual: [] };
+      const row = rows[rowIdx] as unknown[];
+      const citation_x: string[] = [];
+      const challenger: string[] = [];
+      const dual: string[] = [];
+      for (let j = 0; j < Math.min(row?.length ?? 0, 40); j++) {
+        const name = String(row[j] ?? "").trim();
+        if (!name || typeof row[j] === "number") continue;
+        if (name.toLowerCase().includes("citation") || name.toLowerCase().includes("challenger") ||
+            name.toLowerCase().includes("dual") || name.toLowerCase().includes("captain") ||
+            name.toLowerCase().includes("first officer") || /^\(\d+\)/.test(name) || /^\d+$/.test(name)) continue;
+        const rosterType = rosterTypeMap.get(name.toLowerCase().trim());
+        if (rosterType) {
+          if (rosterType === "citation_x") citation_x.push(name);
+          else if (rosterType === "challenger") challenger.push(name);
+          else if (rosterType === "dual") dual.push(name);
+          continue;
+        }
+        if (j >= bounds.cx[0] && j <= bounds.cx[1]) citation_x.push(name);
+        else if (j >= bounds.cl[0] && j <= bounds.cl[1]) challenger.push(name);
+        else if (j >= bounds.du[0] && j <= bounds.du[1]) dual.push(name);
+      }
+      return { citation_x, challenger, dual };
+    };
+
+    const picBounds = detectTypeBoundaries(i + 1);
+    const sicBounds = detectTypeBoundaries(i + 5);
+    const picRow1 = extractNames(i + 2, picBounds);
+    const picRow2 = extractNames(i + 3, picBounds);
+    const sicRow1 = extractNames(i + 6, sicBounds);
+    const sicRow2 = extractNames(i + 7, sicBounds);
+
+    const pic = {
+      citation_x: [...picRow1.citation_x, ...picRow2.citation_x],
+      challenger: [...picRow1.challenger, ...picRow2.challenger],
+      dual: [...picRow1.dual, ...picRow2.dual],
+    };
+    const sic = {
+      citation_x: [...sicRow1.citation_x, ...sicRow2.citation_x],
+      challenger: [...sicRow1.challenger, ...sicRow2.challenger],
+      dual: [...sicRow1.dual, ...sicRow2.dual],
+    };
+
+    const picCitCount = typeof rows[i + 3]?.[0] === "number" ? rows[i + 3]![0] as number : pic.citation_x.length;
+    const picClCount = typeof rows[i + 3]?.[1] === "number" ? rows[i + 3]![1] as number : pic.challenger.length;
+    const sicCitCount = typeof rows[i + 7]?.[0] === "number" ? rows[i + 7]![0] as number : sic.citation_x.length;
+    const sicClCount = typeof rows[i + 7]?.[1] === "number" ? rows[i + 7]![1] as number : sic.challenger.length;
+
+    calendar_weeks.push({
+      date_range: dateRange, rotation, pic, sic,
+      pic_count: { citation_x: picCitCount, challenger: picClCount },
+      sic_count: { citation_x: sicCitCount, challenger: sicClCount },
+    });
+  }
+}
+
 // ─── Weekly sheet parser ────────────────────────────────────────────────────
 
-function parseWeeklySheet(ws: XLSX.WorkSheet, errors: string[]): WeeklySwapEntry[] {
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as unknown[][];
+/** Parse a weekly swap sheet from raw 2D array (works with both XLSX and Sheets API data) */
+export function parseWeeklySheetRows(rows: unknown[][], errors: string[]): WeeklySwapEntry[] {
   const entries: WeeklySwapEntry[] = [];
 
   let inOncoming = true;

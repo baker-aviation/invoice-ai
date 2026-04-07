@@ -85,6 +85,28 @@ export async function POST(req: NextRequest) {
 
   const crewMap = new Map((crewData ?? []).map((c) => [c.name as string, c]));
 
+  // Batch-load all pilot_routes for these crew members + swap point in one query
+  const crewIds = crewSlots
+    .map((s) => crewMap.get(s.name)?.id)
+    .filter((id): id is string => !!id);
+
+  const { data: allRoutes } = crewIds.length > 0
+    ? await supa
+        .from("pilot_routes")
+        .select("*")
+        .in("crew_member_id", crewIds)
+        .eq("destination_icao", new_swap_point)
+        .eq("swap_date", swap_date)
+        .order("score", { ascending: false })
+    : { data: [] };
+
+  // Index by (crew_member_id, direction) — first entry wins (highest score)
+  const routeMap = new Map<string, PilotRoute>();
+  for (const r of allRoutes ?? []) {
+    const key = `${r.crew_member_id}::${r.direction}`;
+    if (!routeMap.has(key)) routeMap.set(key, r as unknown as PilotRoute);
+  }
+
   const results: CrewTransport[] = [];
   let totalCost = 0;
 
@@ -95,18 +117,7 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // Look up pilot_routes for this crew + new swap point
-    const { data: routes } = await supa
-      .from("pilot_routes")
-      .select("*")
-      .eq("crew_member_id", crewRow.id)
-      .eq("destination_icao", new_swap_point)
-      .eq("swap_date", swap_date)
-      .eq("direction", slot.direction)
-      .order("score", { ascending: false })
-      .limit(1);
-
-    const bestRoute = (routes ?? [])[0] as unknown as PilotRoute | undefined;
+    const bestRoute = routeMap.get(`${crewRow.id}::${slot.direction}`);
 
     if (bestRoute) {
       results.push({

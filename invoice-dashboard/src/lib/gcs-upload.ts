@@ -1,4 +1,5 @@
 import "server-only";
+import { getStorage } from "@/lib/gcs";
 
 /** Map file extension to MIME type for uploads */
 export function contentTypeForExt(ext: string | undefined): string {
@@ -15,15 +16,11 @@ export function contentTypeForExt(ext: string | undefined): string {
   }
 }
 
-/** Create a GCS Storage client */
-export async function getGcsStorage() {
-  const { Storage } = await import("@google-cloud/storage");
-  const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
-  if (b64Key) {
-    const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
-    return new Storage({ credentials: creds, projectId: creds.project_id });
-  }
-  return new Storage();
+/** @deprecated Use getStorage() from @/lib/gcs directly */
+export function getGcsStorage() {
+  const storage = getStorage();
+  if (!storage) throw new Error("GCS credentials unavailable");
+  return storage;
 }
 
 /** Generate a presigned upload URL for a file */
@@ -31,7 +28,8 @@ export async function presignUpload(
   filename: string,
   gcsPrefix: string,
 ): Promise<{ bucket: string; key: string; url: string; contentType: string }> {
-  const storage = await getGcsStorage();
+  const storage = getStorage();
+  if (!storage) throw new Error("GCS credentials unavailable");
   const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
   const safeName = filename.replace(/\//g, "_");
   const key = `${gcsPrefix}/${Date.now()}-${safeName}`;

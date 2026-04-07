@@ -277,6 +277,109 @@ function MultiSelectDropdown({
 }
 
 // ---------------------------------------------------------------------------
+// Reassign button — move candidate to ground table
+// ---------------------------------------------------------------------------
+
+function ReassignToGroundButton({
+  candidateId,
+  candidateName,
+  onReassigned,
+}: {
+  candidateId: number;
+  candidateName: string;
+  onReassigned: () => void;
+}) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [targetCategory, setTargetCategory] = useState("maintenance");
+  const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setShowConfirm(false);
+    }
+    if (showConfirm) {
+      document.addEventListener("mousedown", handleClick);
+      return () => document.removeEventListener("mousedown", handleClick);
+    }
+  }, [showConfirm]);
+
+  async function handleReassign() {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/jobs/reassign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: candidateId, newCategory: targetCategory }),
+      });
+      if (res.ok) {
+        setShowConfirm(false);
+        onReassigned();
+      }
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setShowConfirm(true); }}
+        className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-300 hover:text-teal-600 hover:bg-teal-50 transition-colors"
+        title="Move to ground table"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 13V3M3 8l5 5 5-5" />
+        </svg>
+      </button>
+      {showConfirm && (
+        <div
+          className="absolute right-0 top-8 z-30 w-64 bg-white rounded-xl border border-gray-200 shadow-xl p-3 space-y-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-sm font-medium text-gray-900">
+            Move {candidateName.split(/\s+/)[0]} to ground table?
+          </div>
+          <select
+            value={targetCategory}
+            onChange={(e) => setTargetCategory(e.target.value)}
+            className="w-full text-xs rounded-lg border border-gray-200 px-2 py-1.5"
+          >
+            <option value="maintenance">A&P Mechanic / Mx</option>
+            <option value="sales">Sales</option>
+            <option value="management">Fleet Manager / Mgmt</option>
+            <option value="line_service">Line Service / Ramp</option>
+            <option value="admin">Admin / Office</option>
+            <option value="other">Other</option>
+          </select>
+          <p className="text-[10px] text-gray-400">Pipeline stage will be reset</p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowConfirm(false)}
+              className="flex-1 text-xs py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleReassign}
+              disabled={loading}
+              className="flex-1 text-xs py-1.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 font-medium disabled:opacity-50"
+            >
+              {loading ? "..." : "Move"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Quick reject button (inline on table row)
 // ---------------------------------------------------------------------------
 
@@ -397,6 +500,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [showRejected, setShowRejected] = useState(false);
   const [showInPipeline, setShowInPipeline] = useState(false);
   const [recentlyRejected, setRecentlyRejected] = useState<Set<number>>(new Set());
+  const [recentlyReassigned, setRecentlyReassigned] = useState<Set<number>>(new Set());
   const [page, setPage] = useState(0);
 
   // Build a set of emails that have been rejected (for "Prev. Rejected" badge)
@@ -444,6 +548,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       // Hide rejected by default unless toggled
       if (!showRejected && j.rejected_at) return false;
       if (recentlyRejected.has(j.application_id)) return false;
+      if (recentlyReassigned.has(j.id)) return false;
 
       // Hide candidates already in the pipeline unless toggled
       const inPipeline = j.pipeline_stage && j.pipeline_stage !== "";
@@ -500,7 +605,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, categories, softGate, tags, tagMode, showRejected, showInPipeline, sources, recentlyRejected]);
+  }, [initialJobs, q, categories, softGate, tags, tagMode, showRejected, showInPipeline, sources, recentlyRejected, recentlyReassigned]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -761,6 +866,11 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
                     <td className="px-2 py-2.5">
                       <div className="flex items-center justify-end gap-1">
+                        <ReassignToGroundButton
+                          candidateId={j.id}
+                          candidateName={j.candidate_name ?? "Unknown"}
+                          onReassigned={() => setRecentlyReassigned((prev) => new Set(prev).add(j.id))}
+                        />
                         {!j.rejected_at && (
                           <QuickRejectButton
                             applicationId={j.application_id}

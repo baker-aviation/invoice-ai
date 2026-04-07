@@ -45,6 +45,11 @@ export const INTERNATIONAL_DUTY_OFF = 50;
 /** Old crew going home: minutes before departure for security/gate */
 export const AIRPORT_SECURITY_BUFFER = 45;
 
+/** Minimum gap between last leg wheels-down and commercial flight departure for offgoing crew.
+ *  Covers deplane + ground transport to commercial airport + security.
+ *  Flights departing within this window should be flagged/rejected. */
+export const MIN_OFFGOING_COMMERCIAL_BUFFER = 90;
+
 /** Old crew going home with rental car to return */
 export const RENTAL_RETURN_BUFFER = 60;
 

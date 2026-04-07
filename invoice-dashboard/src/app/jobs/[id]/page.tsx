@@ -301,6 +301,7 @@ export default async function JobDetailPage({
             {/* Profile editor (edit/reject/delete actions) */}
             <ProfileEditor
               data={{
+                id: job?.id ?? 0,
                 applicationId: Number(applicationId),
                 candidate_name: job?.candidate_name ?? null,
                 email: job?.email ?? null,

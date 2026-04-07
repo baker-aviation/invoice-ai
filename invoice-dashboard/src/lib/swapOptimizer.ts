@@ -28,7 +28,7 @@ import {
   MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER, TERMINAL_TO_FBO_BUFFER,
   FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, RELAXED_FBO_ARRIVAL_BUFFER,
   DUTY_OFF_AFTER_LAST_LEG,
-  INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
+  INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER, MIN_OFFGOING_COMMERCIAL_BUFFER,
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
   RELAXED_RENTAL_MAX_MINUTES,
   BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
@@ -1037,6 +1037,21 @@ function buildCandidates(
           if (needLeaveAircraft.getTime() < releaseTime.getTime() - RELEASE_GRACE_MS) {
             if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()} - 30min grace`);
             continue;
+          }
+
+          // Flag tight departures: commercial flight departs < 90 min after last leg lands.
+          // For after_live/between_legs, releaseTime = last leg arrival. Check gap.
+          const gapFromLandingMin = (flightDep.getTime() - releaseTime.getTime()) / 60_000;
+          if ((task.swapPoint.position === "after_live" || task.swapPoint.position === "between_legs") &&
+              gapFromLandingMin < MIN_OFFGOING_COMMERCIAL_BUFFER) {
+            // Hard reject if gap < 45 min (physically impossible)
+            if (gapFromLandingMin < AIRPORT_SECURITY_BUFFER) {
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — only ${Math.round(gapFromLandingMin)}min after landing (need ${MIN_OFFGOING_COMMERCIAL_BUFFER}min)`);
+              continue;
+            }
+            // Soft penalty + keep with warning for 45-89 min gap
+            cost += 200;
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: TIGHT ${flightNum} — only ${Math.round(gapFromLandingMin)}min after landing (want ${MIN_OFFGOING_COMMERCIAL_BUFFER}min), keeping with penalty`);
           }
 
           // Check midnight deadline — allow 1 AM grace (crew can arrive slightly late)
@@ -3066,7 +3081,18 @@ export function buildSwapPlan(params: {
               ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
               : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
             : generateTransportNote(best, task),
-      warnings: task.warnings,
+      warnings: (() => {
+        const w = [...task.warnings];
+        // Flag offgoing commercial flights departing < 90 min after last leg lands
+        if (task.direction === "offgoing" && best?.type === "commercial" && best.depTime &&
+            (task.swapPoint.position === "after_live" || task.swapPoint.position === "between_legs")) {
+          const gapMin = (best.depTime.getTime() - task.swapPoint.time.getTime()) / 60_000;
+          if (gapMin < MIN_OFFGOING_COMMERCIAL_BUFFER) {
+            w.push(`Tight departure: flight departs ${Math.round(gapMin)}min after last leg lands (minimum ${MIN_OFFGOING_COMMERCIAL_BUFFER}min recommended)`);
+          }
+        }
+        return w;
+      })(),
       drive_estimate: best?.drive ?? null,
       flight_offer: best?.offer ?? null,
       alt_flights: altFlights,

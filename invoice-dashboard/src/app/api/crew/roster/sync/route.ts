@@ -3,6 +3,7 @@ import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import {
   parseCrewInfo,
+  parseCrewInfoFromSheets,
   type CrewRosterEntry,
   type WeeklySwapEntry,
   type BadPairing,
@@ -13,7 +14,7 @@ import {
   type CrewingChecklist,
   type CalendarWeek,
 } from "@/lib/crewInfoParser";
-import { downloadAsXlsx } from "@/lib/googleSheets";
+import { downloadAsXlsx, listSheets, getMultipleSheets, listFreezeSheets, listWeeklySheets, getSheetData } from "@/lib/googleSheets";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -37,41 +38,120 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
-  let buffer: Buffer;
+  let buffer: Buffer = Buffer.alloc(0);
   let swapDate: string | null = null;
   let slackNames: string[] | undefined;
   let dataSource = "file_upload";
+  const supa = createServiceClient();
 
   const contentType = req.headers.get("content-type") ?? "";
 
   if (contentType.includes("application/json")) {
-    // JSON body — Google Sheets mode
     const body = await req.json();
-    if (body.source !== "google_sheets") {
-      return NextResponse.json({ error: "JSON body requires source: 'google_sheets'" }, { status: 400 });
-    }
-    swapDate = body.swap_date ?? null;
-    if (body.slack_names) slackNames = body.slack_names;
-    // Optional: specific weekly tab to parse (e.g., "MAR 25-APR 1 (A)")
-    // If provided, extract the swap date from the tab name
-    if (body.week && typeof body.week === "string") {
-      const monthMap: Record<string, string> = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
-      // Extract end date from "MAR 25-APR 1 (A)" → the swap Wednesday is the start date
-      const m = body.week.match(/([A-Z]{3})\s+(\d+)/i);
-      if (m) {
-        swapDate = `2026-${monthMap[m[1].toUpperCase()] ?? "03"}-${m[2].padStart(2, "0")}`;
-      }
-    }
-    dataSource = "google_sheets";
 
-    try {
-      console.log("[Roster Sync] Downloading CREW INFO from Google Sheets...");
-      buffer = await downloadAsXlsx();
-      console.log(`[Roster Sync] Downloaded ${(buffer.length / 1024).toFixed(0)}KB from Google Sheets`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      console.error("[Roster Sync] Google Sheets download failed:", msg);
-      return NextResponse.json({ error: `Google Sheets sync failed: ${msg}` }, { status: 500 });
+    // ── New: Direct Sheets API mode (preferred — faster, reads only needed tabs) ──
+    if (body.source === "master_sheet" || body.source === "google_sheets") {
+      swapDate = body.swap_date ?? null;
+      if (body.slack_names) slackNames = body.slack_names;
+      if (body.week && typeof body.week === "string") {
+        const monthMap: Record<string, string> = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
+        const m = body.week.match(/([A-Z]{3})\s+(\d+)/i);
+        if (m) {
+          swapDate = `2026-${monthMap[m[1].toUpperCase()] ?? "03"}-${m[2].padStart(2, "0")}`;
+        }
+      }
+
+      // Try direct Sheets API path first (faster — reads only needed tabs)
+      if (body.source === "master_sheet") {
+        dataSource = "master_sheet";
+        try {
+          console.log("[Roster Sync] Reading master sheet via Sheets API (direct mode)...");
+          const startMs = Date.now();
+
+          // Auto-detect the target weekly/FREEZE tab
+          const allSheets = await listSheets();
+          const sheetNames = allSheets.map(s => s.title);
+
+          // Prefer FREEZE tabs, then weekly tabs
+          const freezeTabs = sheetNames.filter(n => /^FREEZE\b/i.test(n));
+          const weeklyTabs = sheetNames.filter(n => /[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)/i.test(n));
+
+          let targetTab: string | null = body.week ?? null;
+
+          if (!targetTab && swapDate) {
+            // Match by swap date
+            const target = new Date(swapDate + "T12:00:00Z");
+            const targetMonth = target.toLocaleString("en-US", { month: "short" }).toUpperCase();
+            const targetDay = target.getDate();
+
+            // Check FREEZE tabs first
+            for (const name of freezeTabs) {
+              const m = name.match(/FREEZE\s+([A-Z]{3})\s+(\d+)/i);
+              if (m && m[1].toUpperCase() === targetMonth && parseInt(m[2]) === targetDay) {
+                targetTab = name;
+                break;
+              }
+            }
+            // Fallback to weekly tabs
+            if (!targetTab) {
+              for (const name of weeklyTabs) {
+                const m = name.match(/([A-Z]{3})\s+(\d+)-([A-Z]{3})\s+(\d+)\s*\(([AB])\)/i);
+                if (!m) continue;
+                if (m[3].toUpperCase() === targetMonth && parseInt(m[4]) === targetDay) {
+                  targetTab = name;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Fallback: most recent FREEZE or weekly tab
+          if (!targetTab) {
+            targetTab = freezeTabs[freezeTabs.length - 1] ?? weeklyTabs[weeklyTabs.length - 1] ?? null;
+          }
+
+          // Read only the tabs we need in parallel
+          const tabsToFetch = ["CREW ROSTER", "Different Airports  .299  Bad P", "CREW CALENDAR"];
+          if (targetTab) tabsToFetch.push(targetTab);
+
+          const sheetData = await getMultipleSheets(tabsToFetch);
+          console.log(`[Roster Sync] Read ${sheetData.size} tabs via Sheets API in ${Date.now() - startMs}ms`);
+
+          const result = parseCrewInfoFromSheets({
+            rosterRows: sheetData.get("CREW ROSTER"),
+            weeklyRows: targetTab ? sheetData.get(targetTab) : undefined,
+            weeklySheetName: targetTab ?? undefined,
+            referenceRows: sheetData.get("Different Airports  .299  Bad P"),
+            calendarRows: sheetData.get("CREW CALENDAR"),
+            slackNames,
+          });
+
+          // Continue with the same upsert logic below (result is compatible)
+          // We use a shim to make the rest of the function work identically
+          return handleSyncResult(result, supa, slackNames, dataSource, swapDate);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Unknown error";
+          console.error("[Roster Sync] Direct Sheets API failed, falling back to XLSX download:", msg);
+          // Fall through to XLSX download path
+          dataSource = "google_sheets";
+        }
+      }
+
+      // Legacy path: download full XLSX
+      if (!buffer) {
+        dataSource = "google_sheets";
+        try {
+          console.log("[Roster Sync] Downloading CREW INFO from Google Sheets (XLSX fallback)...");
+          buffer = await downloadAsXlsx();
+          console.log(`[Roster Sync] Downloaded ${(buffer.length / 1024).toFixed(0)}KB from Google Sheets`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Unknown error";
+          console.error("[Roster Sync] Google Sheets download failed:", msg);
+          return NextResponse.json({ error: `Google Sheets sync failed: ${msg}` }, { status: 500 });
+        }
+      }
+    } else {
+      return NextResponse.json({ error: "JSON body requires source: 'google_sheets' or 'master_sheet'" }, { status: 400 });
     }
   } else {
     // Multipart form — file upload mode
@@ -93,7 +173,17 @@ export async function POST(req: NextRequest) {
   }
   const result = parseCrewInfo(buffer, slackNames, swapDate ?? undefined);
 
-  const supa = createServiceClient();
+  return handleSyncResult(result, supa, slackNames, dataSource, swapDate);
+}
+
+/** Shared post-parse logic: upsert crew_members, build swap assignments, return response */
+async function handleSyncResult(
+  result: import("@/lib/crewInfoParser").CrewInfoParseResult,
+  supa: ReturnType<typeof createServiceClient>,
+  slackNames: string[] | undefined,
+  dataSource: string,
+  swapDate: string | null,
+): Promise<NextResponse> {
   const syncErrors: string[] = [...result.errors];
 
   // ═══ 1. Upsert crew_members from CREW ROSTER ═════════════════════════════
