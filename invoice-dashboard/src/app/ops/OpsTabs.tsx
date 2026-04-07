@@ -120,13 +120,15 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
         setSyncMsg(data.error ?? "Sync failed");
         return;
       }
-      const upserted = data.upserted ?? 0;
-      const skipped = data.skipped ?? 0;
-      setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
-      // Fire international trip detection + ops checks after sync (non-blocking)
-      fetch("/api/ops/intl/trips?auto_detect=true").catch(() => {});
+      const created = data.flightsCreated ?? 0;
+      const updated = data.flightsUpdated ?? 0;
+      const cancelled = data.flightsCancelled ?? 0;
+      setSyncMsg(`${created} new, ${updated} updated, ${cancelled} cancelled`);
+      // Fire international trip detection + ops checks after sync
+      // These are client-side fetches — they carry the user's auth cookie
+      await fetch("/api/ops/intl/trips?auto_detect=true");
       fetch("/api/ops/intl/run-checks", { method: "POST" }).catch(() => {});
-      setTimeout(() => window.location.reload(), 1500);
+      setTimeout(() => window.location.reload(), 2000);
     } catch (err) {
       setSyncMsg(err instanceof Error ? err.message : "Network error");
     } finally {
