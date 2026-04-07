@@ -534,15 +534,13 @@ function buildAdvVsActual(
 
     // Use cheapest vendor quote as the "headline" price
     const best = quotes[0] ?? null;
-    // Find previous week across all vendors for WoW
-    const allPrevPrices = quotes.filter((q) => q.prevPrice != null);
-    const bestPrev = allPrevPrices.length > 0 ? allPrevPrices.sort((a, b) => a.prevPrice! - b.prevPrice!)[0] : null;
-
+    // WoW: compare cheapest vendor's current price against its OWN previous price
+    // (not against whatever was cheapest last week — that cross-vendor comparison was misleading)
     let wowChange: number | null = null;
     let wowChangePct: number | null = null;
-    if (best && bestPrev?.prevPrice != null) {
-      wowChange = Math.round((best.currentPrice - bestPrev.prevPrice) * 10000) / 10000;
-      if (bestPrev.prevPrice > 0) wowChangePct = Math.round(((best.currentPrice - bestPrev.prevPrice) / bestPrev.prevPrice) * 1000) / 10;
+    if (best && best.prevPrice != null) {
+      wowChange = Math.round((best.currentPrice - best.prevPrice) * 10000) / 10000;
+      if (best.prevPrice > 0) wowChangePct = Math.round(((best.currentPrice - best.prevPrice) / best.prevPrice) * 1000) / 10;
     }
 
     // Actual avg for this airport
@@ -590,8 +588,8 @@ function buildAdvVsActual(
       tailNumbers: best?.tailNumbers ?? latest.tail_numbers,
       currentWeek: quotes.reduce((newest, q) => q.currentWeek > newest ? q.currentWeek : newest, best?.currentWeek ?? latest.week_start),
       currentPrice: best?.currentPrice ?? latest.price,
-      prevWeek: bestPrev?.prevWeek ?? null,
-      prevPrice: bestPrev?.prevPrice ?? null,
+      prevWeek: best?.prevWeek ?? null,
+      prevPrice: best?.prevPrice ?? null,
       wowChange,
       wowChangePct,
       actualAvgPrice: actualAvg,
