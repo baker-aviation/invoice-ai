@@ -826,15 +826,10 @@ function parseReferenceSheet(
     const col0 = String(row?.[0] ?? "").trim();
     const col0Lower = col0.toLowerCase();
 
-    // Log first 30 rows for debugging
-    if (i < 30) {
-      console.log(`[RefSheet] Row ${i}: section=${section} col0="${col0}" allCols="${allCols.slice(0, 120)}"`);
-    }
-
-    if (col0Lower.includes("training needed") || allCols.includes("training needed")) { section = "training_299"; console.log(`[RefSheet] → section=training_299 at row ${i}`); continue; }
-    if (col0Lower.includes("bad pairing") || allCols.includes("bad pair")) { section = "bad_pairings"; console.log(`[RefSheet] → section=bad_pairings at row ${i}`); continue; }
-    if (col0Lower.includes("air checkman") || col0Lower.includes("checkairman") || allCols.includes("checkairman") || allCols.includes("check airman")) { section = "checkairmen"; console.log(`[RefSheet] → section=checkairmen at row ${i}`); continue; }
-    if (col0Lower.includes("training people") || allCols.includes("training people")) { section = "training_people"; console.log(`[RefSheet] → section=training_people at row ${i}`); continue; }
+    if (col0Lower.includes("training needed") || allCols.includes("training needed")) { section = "training_299"; continue; }
+    if (col0Lower.includes("bad pairing") || allCols.includes("bad pair")) { section = "bad_pairings"; continue; }
+    if (col0Lower.includes("air checkman") || col0Lower.includes("checkairman") || allCols.includes("checkairman") || allCols.includes("check airman")) { section = "checkairmen"; continue; }
+    if (col0Lower.includes("training people") || allCols.includes("training people")) { section = "training_people"; continue; }
 
     if (col0Lower === "name" || col0Lower === "pic" || col0Lower === "rotation a" || col0Lower === "different airports") continue;
     if (!col0) continue;
