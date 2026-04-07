@@ -113,7 +113,8 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/ops/sync-schedule", { method: "POST" });
+      // Use JetInsight JSON scraper (has PIC/SIC, trip IDs, pax count)
+      const res = await fetch("/api/cron/jetinsight-schedule", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setSyncMsg(data.error ?? "Sync failed");
