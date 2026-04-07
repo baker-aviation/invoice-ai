@@ -15,6 +15,12 @@ const INTL_TREATED_ICAOS = new Set<string>();
 export function isInternationalIcao(icao: string | null): boolean {
   if (!icao) return false;
   if (INTL_TREATED_ICAOS.has(icao)) return true;
+
+  // US FAA LIDs (non-ICAO identifiers): 1B1, 7B2, N87, etc.
+  // Real ICAO codes are always 4 uppercase letters. If it's not 4 chars,
+  // or starts with a digit, it's a US domestic FAA identifier.
+  if (icao.length !== 4 || /^\d/.test(icao)) return false;
+
   for (const prefix of US_ICAO_PREFIXES) {
     if (icao.startsWith(prefix)) return false;
   }
