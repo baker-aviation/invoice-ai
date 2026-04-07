@@ -109,6 +109,12 @@ export async function GET(req: NextRequest) {
       matched,
       unmatched,
       parse_errors: errors,
+      _debug: {
+        crew_members_count: crewMembers.length,
+        aliases_count: aliases.length,
+        crew_query_error: crewRes.error?.message ?? null,
+        alias_query_error: aliasRes.error?.message ?? null,
+      },
     });
   } catch (e) {
     return NextResponse.json(

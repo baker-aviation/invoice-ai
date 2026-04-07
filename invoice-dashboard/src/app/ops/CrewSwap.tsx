@@ -1851,43 +1851,6 @@ function CrewInfoPanel({ data }: { data: CrewInfoData }) {
         ))}
       </CollapsibleSection>
 
-      {/* Crewing Checklist */}
-      {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
-        <CollapsibleSection
-          title="Crewing Checklist"
-          open={showChecklist}
-          toggle={() => setShowChecklist(!showChecklist)}
-          color="text-emerald-700"
-        >
-          <div className="space-y-2">
-            {data.crewing_checklist.assignees.map((a, ai) => (
-              <div key={ai}>
-                <div className="text-[10px] font-bold text-gray-700 mb-1">{a.name}</div>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                  {Object.entries(a.tasks).map(([task, val]) => {
-                    if (!task) return null;
-                    const done = val === true;
-                    const na = val === "n/a";
-                    return (
-                      <div key={task} className="flex items-center gap-1 text-[10px]">
-                        <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[8px] font-bold ${
-                          done ? "bg-emerald-500 text-white" : na ? "bg-gray-200 text-gray-400" : "bg-gray-100 text-gray-300 border border-gray-200"
-                        }`}>
-                          {done ? "\u2713" : na ? "\u2014" : ""}
-                        </span>
-                        <span className={`truncate ${done ? "text-emerald-700" : na ? "text-gray-400 line-through" : "text-gray-500"}`} title={task}>
-                          {task}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </CollapsibleSection>
-      )}
-
       {/* Calendar — Oncoming Crew */}
       {data.target_week_crew && (
         <CollapsibleSection
@@ -2042,7 +2005,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     return `K${u}`;
   };
   const handleAddAlias = async (fboIcao: string, commercialIata: string, commercialIcao?: string | null) => {
-    const commIcao = commercialIcao ?? iataToIcao(commercialIata);
+    // Convert IATA to ICAO: 3-letter → prepend "K", 4-letter → use as-is
+    const commIcao = commercialIcao ?? (commercialIata.length === 3 ? `K${commercialIata.toUpperCase()}` : commercialIata.toUpperCase());
     setAddingAlias(fboIcao);
     try {
       const res = await fetch("/api/crew/airport-aliases", {
@@ -2052,9 +2016,15 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       });
       if (res.ok) {
         setAddedAliases(prev => new Set(prev).add(fboIcao));
+        addToast("success", `Alias added: ${fboIcao} → ${commIcao}`);
         setTimeout(refreshGapAlerts, 500);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        addToast("error", `Failed to save alias: ${err.error ?? res.statusText}`);
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      addToast("error", `Failed to save alias: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
     setAddingAlias(null);
   };
   // Excluded tails (MX, owner-flown, etc.)
