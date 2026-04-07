@@ -3678,11 +3678,10 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     setOptimizing(true);
     setOptimizeError(null);
     try {
-      // Step 1: Auto-detect rotation (if not already detected)
-      if (!rotationSource) {
-        setOptimizeStatus("Detecting rotation...");
-        await detectRotation();
-      }
+      // Step 1: Auto-detect rotation
+      // Always run to ensure oncoming pool is populated (sheet sync may not have oncoming data yet)
+      setOptimizeStatus("Detecting rotation...");
+      await detectRotation();
 
       // Step 2: Seed flights (fill mode — skips pairs already cached)
       setOptimizeStatus("Checking flight cache...");
