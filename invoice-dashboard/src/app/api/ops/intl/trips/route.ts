@@ -663,6 +663,91 @@ export async function GET(req: NextRequest) {
       flightTimesMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
       if (f.departure_icao && f.arrival_icao) flightRouteMap.set(f.id, { dep: f.departure_icao, arr: f.arrival_icao });
     }
+
+    // ── Auto-heal orphaned flight_ids ──────────────────────────────────
+    // When JetInsight swaps tails, flights get deleted and recreated with
+    // new IDs. Detect trips whose flight_ids are missing and re-resolve
+    // them using jetinsight_trip_id to find the replacement flights.
+    const foundIds = new Set((flightRows ?? []).map((f) => f.id));
+    const tripsWithOrphans = (trips ?? []).filter((t) =>
+      t.jetinsight_trip_id &&
+      (t.flight_ids ?? []).some((fid: string) => !foundIds.has(fid))
+    );
+
+    if (tripsWithOrphans.length > 0) {
+      // Batch-fetch replacement flights by jetinsight_trip_id
+      const jiTripIdsForHeal = tripsWithOrphans.map((t) => t.jetinsight_trip_id).filter(Boolean) as string[];
+      const { data: replacementFlights } = await supa
+        .from("flights")
+        .select("id, jetinsight_trip_id, jetinsight_url, scheduled_departure, scheduled_arrival, departure_icao, arrival_icao")
+        .in("jetinsight_trip_id", jiTripIdsForHeal)
+        .order("scheduled_departure");
+
+      const replacementsByJiTrip = new Map<string, typeof replacementFlights>();
+      for (const f of replacementFlights ?? []) {
+        if (!f.jetinsight_trip_id) continue;
+        if (!replacementsByJiTrip.has(f.jetinsight_trip_id)) replacementsByJiTrip.set(f.jetinsight_trip_id, []);
+        replacementsByJiTrip.get(f.jetinsight_trip_id)!.push(f);
+      }
+
+      const healUpdates: PromiseLike<unknown>[] = [];
+      for (const t of tripsWithOrphans) {
+        const newFlights = replacementsByJiTrip.get(t.jetinsight_trip_id!) ?? [];
+        if (newFlights.length === 0) continue;
+
+        const newFlightIds = newFlights.map((f) => f.id);
+        const newTail = newFlights[0].departure_icao ? undefined : undefined; // keep existing tail
+        const newRoute = newFlights.map((f) => f.departure_icao).filter(Boolean);
+        const lastArr = newFlights[newFlights.length - 1]?.arrival_icao;
+        if (lastArr) newRoute.push(lastArr);
+
+        // Update in-memory for this response
+        t.flight_ids = newFlightIds;
+        if (newRoute.length >= 2) t.route_icaos = newRoute;
+        if (newFlights[0]) {
+          // Update tail if changed
+          const newTailNum = newFlights[0].departure_icao
+            ? undefined // can't derive tail from ICAO
+            : undefined;
+          // Look up tail from flights table
+          const { data: tailRow } = await supa
+            .from("flights")
+            .select("tail_number")
+            .eq("id", newFlightIds[0])
+            .single();
+          if (tailRow?.tail_number && tailRow.tail_number !== t.tail_number) {
+            t.tail_number = tailRow.tail_number;
+          }
+        }
+
+        // Persist the fix
+        const updates: Record<string, unknown> = {
+          flight_ids: newFlightIds,
+          updated_at: new Date().toISOString(),
+        };
+        if (newRoute.length >= 2) updates.route_icaos = newRoute;
+        if (t.tail_number) updates.tail_number = t.tail_number;
+
+        // Rebuild snapshot
+        const newSnap: Record<string, { dep: string; arr: string | null }> = {};
+        for (const f of newFlights) {
+          newSnap[f.id] = { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null };
+          // Also update in-memory maps
+          if (f.jetinsight_url) jetinsightMap.set(f.id, f.jetinsight_url);
+          flightTimesMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
+          if (f.departure_icao && f.arrival_icao) flightRouteMap.set(f.id, { dep: f.departure_icao, arr: f.arrival_icao });
+        }
+        if (Object.keys(newSnap).length > 0) {
+          updates.schedule_snapshot = newSnap;
+          t.schedule_snapshot = newSnap;
+        }
+
+        healUpdates.push(supa.from("intl_trips").update(updates).eq("id", t.id));
+        console.log(`[intl/trips] Auto-healed trip ${t.id} (${t.jetinsight_trip_id}): ${(t.flight_ids ?? []).length} → ${newFlightIds.length} flight(s)`);
+      }
+
+      if (healUpdates.length > 0) await Promise.all(healUpdates);
+    }
   }
 
   // Sort clearances, attach jetinsight_url, and build schedule_snapshot from flight times
@@ -761,12 +846,16 @@ export async function GET(req: NextRequest) {
     t.is_positioning = !hasRevenueLeg;
 
     // Check if all flights are now domestic (route changed but trip still exists)
-    const allDomestic = (t.flight_ids ?? []).every((fid: string) => {
-      const route = flightRouteMap.get(fid);
-      if (!route) return true; // flight deleted
-      return !isInternationalIcao(route.dep) && !isInternationalIcao(route.arr);
-    });
-    if (allDomestic && (t.flight_ids ?? []).length > 0) t.is_domestic_now = true;
+    // Only flag if we have route data for ALL flights — missing flights means
+    // the data is stale, not that the trip went domestic.
+    const fids = t.flight_ids ?? [];
+    let allDomestic = fids.length > 0;
+    for (const fid of fids) {
+      const rt = flightRouteMap.get(fid);
+      if (!rt) { allDomestic = false; break; } // missing flight = data stale, not domestic
+      if (isInternationalIcao(rt.dep) || isInternationalIcao(rt.arr)) { allDomestic = false; break; }
+    }
+    if (allDomestic) t.is_domestic_now = true;
   }
 
   return NextResponse.json({ trips: trips ?? [] });
