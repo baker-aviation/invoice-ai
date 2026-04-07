@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   const { data: crew, error: crewErr } = await supa
     .from("crew_members")
     .select("id, name, role, jetinsight_name, slack_user_id, slack_display_name")
-    .eq("is_terminated", false)
+    .or("is_terminated.eq.false,is_terminated.is.null")
     .order("name");
 
   if (crewErr) {

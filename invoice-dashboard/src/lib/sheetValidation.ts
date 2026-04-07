@@ -37,14 +37,23 @@ function isCrewCell(value: string): boolean {
 function isExcelDate(value: unknown): boolean {
   if (typeof value === "number") return value > 40000 && value < 60000; // Excel serial date range
   if (typeof value === "string") {
-    // Accept ISO dates, "MM/DD/YYYY", "M/D/YYYY", or sheet-formatted dates
-    return /^\d{4}-\d{2}-\d{2}/.test(value) || /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(value);
+    // Accept ISO dates, "MM/DD/YYYY", "M/D/YYYY", "M/D" (short), or sheet-formatted dates
+    return /^\d{4}-\d{2}-\d{2}/.test(value) || /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(value);
   }
   return false;
 }
 
+/** Common placeholder strings that mean "no data" in the sheet */
+const PLACEHOLDER_VALUES = new Set(["---", "--", "-", "n/a", "tbd", "tba"]);
+
+function isPlaceholder(value: unknown): boolean {
+  if (value == null || value === "") return true;
+  return typeof value === "string" && PLACEHOLDER_VALUES.has(value.trim().toLowerCase());
+}
+
 function isTimeValue(value: unknown): boolean {
   if (value == null || value === "") return false;
+  if (isPlaceholder(value)) return true;
   const s = String(value).replace(/L$/i, "").trim();
   if (!s) return false;
   // Number (Excel decimal time, e.g., 0.75 = 18:00)
@@ -53,7 +62,7 @@ function isTimeValue(value: unknown): boolean {
 }
 
 function isNumericPrice(value: unknown): boolean {
-  if (value == null || value === "") return true; // empty is fine
+  if (isPlaceholder(value)) return true;
   if (typeof value === "number") return true;
   if (typeof value === "string") {
     const cleaned = value.replace(/[$,\s]/g, "");
@@ -225,7 +234,8 @@ export function validateRawSheetData(rows: unknown[][], sheetName: string): Vali
 
     // ── Column D: Swap location ──────────────────────────────────────
     const colD = String(row[3] ?? "").trim().toUpperCase();
-    if (colD && colD.length >= 2 && !isValidIcao(colD)) {
+    const SWAP_LOC_KEYWORDS = new Set(["STAYING", "STAYING ON", "HOME", "TBD", "N/A", "---", "--"]);
+    if (colD && colD.length >= 2 && !isValidIcao(colD) && !SWAP_LOC_KEYWORDS.has(colD)) {
       warnings.push({
         severity: "warning",
         field: "swap_location",
@@ -237,7 +247,7 @@ export function validateRawSheetData(rows: unknown[][], sheetName: string): Vali
 
     // ── Column G: Date ───────────────────────────────────────────────
     const colG = row[6];
-    if (colG != null && String(colG).trim() !== "" && !isExcelDate(colG)) {
+    if (colG != null && String(colG).trim() !== "" && !isPlaceholder(colG) && !isExcelDate(colG)) {
       warnings.push({
         severity: "warning",
         field: "date",
@@ -288,10 +298,10 @@ export function validateRawSheetData(rows: unknown[][], sheetName: string): Vali
   const offgoingNames = crewNames.filter((c) => c.section === "offgoing");
   for (const off of offgoingNames) {
     if (oncomingNames.has(off.name.toLowerCase())) {
-      errors.push({
-        severity: "error",
+      warnings.push({
+        severity: "warning",
         field: "crew_section",
-        message: `"${off.name}" appears in both ONCOMING and OFFGOING sections (row ${off.row})`,
+        message: `"${off.name}" appears in both ONCOMING and OFFGOING sections (row ${off.row}) — may be staying on for a second rotation`,
         row: off.row,
         subject: off.name,
       });
