@@ -522,7 +522,7 @@ export async function GET(req: NextRequest) {
           if (times) initSnap[fid] = times;
         }
 
-        const { data: newTrip, error: tripErr } = await supa
+        let { data: newTrip, error: tripErr } = await supa
           .from("intl_trips")
           .insert({
             tail_number: dt.tail_number,
@@ -534,6 +534,27 @@ export async function GET(req: NextRequest) {
           })
           .select("id")
           .single();
+
+        // JetInsight can reuse trip IDs across tails — retry without JI trip ID on unique constraint violation
+        if (tripErr?.code === "23505" && dt.jetinsight_trip_id) {
+          console.log(`[intl/trips] JI trip ID collision for ${dt.tail_number} (${dt.jetinsight_trip_id}), retrying without JI link`);
+          ({ data: newTrip, error: tripErr } = await supa
+            .from("intl_trips")
+            .insert({
+              tail_number: dt.tail_number,
+              route_icaos: dt.route_icaos,
+              flight_ids: dt.flight_ids,
+              trip_date: dt.trip_date,
+              schedule_snapshot: Object.keys(initSnap).length > 0 ? initSnap : null,
+              jetinsight_trip_id: null,
+            })
+            .select("id")
+            .single());
+        }
+
+        if (tripErr) {
+          console.error(`[intl/trips] Failed to insert trip ${dt.tail_number} ${dt.route_icaos.join("→")}:`, tripErr.message);
+        }
 
         if (!tripErr && newTrip) {
           const clearances = buildDefaultClearances(dt, countriesWithOvfReq).map((c) => ({
