@@ -4,14 +4,24 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import Link from "next/link";
 import type { Flight, OpsAlert, NotamPin, CustomNotamAlert } from "@/lib/opsApi";
 import type { AllRwysClosedAlert } from "@/lib/runwayData";
-import { fmtTimeInTz } from "@/lib/airportTimezones";
+import { fmtTimeInTz, getAirportTimezone } from "@/lib/airportTimezones";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function fmtTime(s: string | null | undefined): string {
+function fmtTime(s: string | null | undefined, icao?: string | null, useLocal?: boolean): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
+  if (useLocal && icao) {
+    const tz = getAirportTimezone(icao);
+    if (tz) {
+      const timePart = d.toLocaleString("en-US", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz,
+      });
+      const tzAbbr = d.toLocaleString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
+      return `${timePart} ${tzAbbr}`;
+    }
+  }
   return (
     d.toLocaleString("en-US", {
       month: "short",
@@ -119,17 +129,27 @@ function parseNotamTimes(body: string | null): { from: string | null; to: string
   return { from: null, to: null };
 }
 
-function fmtNotamDate(iso: string | null, humanFallback: string | null): string | null {
+function fmtNotamDate(iso: string | null, humanFallback: string | null, icao?: string | null, useLocal?: boolean): string | null {
   if (iso) {
     const d = new Date(iso);
     if (!isNaN(d.getTime())) {
+      if (useLocal && icao) {
+        const tz = getAirportTimezone(icao);
+        if (tz) {
+          const timePart = d.toLocaleString("en-US", {
+            month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz,
+          });
+          const tzAbbr = d.toLocaleString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
+          return `${timePart} ${tzAbbr}`;
+        }
+      }
       return d.toLocaleString("en-US", {
         month: "short", day: "numeric",
         hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
       }) + "Z";
     }
   }
-  if (humanFallback) return humanFallback + " UTC";
+  if (humanFallback) return humanFallback + (useLocal ? "" : " UTC");
   return null;
 }
 
@@ -484,7 +504,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null; pinned?: boolean; onTogglePin?: (alertId: string, pin: boolean) => void }) {
+function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin, useLocalTime }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null; pinned?: boolean; onTogglePin?: (alertId: string, pin: boolean) => void; useLocalTime?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -532,9 +552,9 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
         {/* ── NOTAM effective times (inline) ── */}
         {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
           <span className="text-xs text-gray-600 font-mono bg-white/80 rounded px-1.5 py-0.5">
-            {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
+            {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null, alert.airport_icao, useLocalTime)}
             {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
-              <> → {notamTimes?.to === "PERM" ? "PERM" : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}</>
+              <> → {notamTimes?.to === "PERM" ? "PERM" : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null, alert.airport_icao, useLocalTime)}</>
             )}
           </span>
         )}
@@ -587,7 +607,7 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
                 <div>
                   <span className="text-gray-400">Issued: </span>
                   <span className="font-mono font-medium text-gray-700">
-                    {fmtNotamDate(nd?.issued ?? null, nd?.issue_date_utc ?? null)}
+                    {fmtNotamDate(nd?.issued ?? null, nd?.issue_date_utc ?? null, alert.airport_icao, useLocalTime)}
                   </span>
                 </div>
               )}
@@ -595,7 +615,7 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
                 <div>
                   <span className="text-gray-400">Effective: </span>
                   <span className="font-mono font-medium text-amber-700">
-                    {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
+                    {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null, alert.airport_icao, useLocalTime)}
                   </span>
                 </div>
               )}
@@ -605,7 +625,7 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
                   <span className="font-mono font-medium text-amber-700">
                     {notamTimes?.to === "PERM"
                       ? "PERM"
-                      : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}
+                      : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null, alert.airport_icao, useLocalTime)}
                   </span>
                 </div>
               )}
@@ -709,7 +729,7 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned,
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
+  flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey, useLocalTime,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert, flightId?: string) => boolean;
@@ -727,6 +747,7 @@ function FlightCard({
   onTogglePin?: (alertId: string, pin: boolean) => void;
   pinnedKeys?: Set<string>;
   onTogglePinKey?: (key: string, pin: boolean) => void;
+  useLocalTime?: boolean;
 }) {
   const fid = flight.id;
   const visibleAlerts = (flight.alerts ?? []).filter((a) => {
@@ -775,10 +796,10 @@ function FlightCard({
             ) : <span>????</span>}
           </div>
           <div className="text-xs text-gray-600 truncate">
-            <span className="font-medium">{fmtTime(flight.scheduled_departure)}</span>
+            <span className="font-medium">{fmtTime(flight.scheduled_departure, flight.departure_icao, useLocalTime)}</span>
             {flight.scheduled_arrival && (
               <span className="text-gray-400">
-                {" → "}{fmtTime(flight.scheduled_arrival)}{" "}
+                {" → "}{fmtTime(flight.scheduled_arrival, flight.arrival_icao, useLocalTime)}{" "}
                 <span className="text-gray-400">({fmtDuration(flight.scheduled_departure, flight.scheduled_arrival)})</span>
               </span>
             )}
@@ -827,7 +848,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={(id) => onAck(id, fid)} acked={isAcked(a, fid)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={(id) => onAck(id, fid)} acked={isAcked(a, fid)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} useLocalTime={useLocalTime} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} pinned={pinnedKeys?.has(ca.key)} onTogglePin={onTogglePinKey} />
           ))}
@@ -1026,6 +1047,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
   const [showAddCustom, setShowAddCustom] = useState(false);
 
   const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(new Set());
+  const [useLocalTime, setUseLocalTime] = useState(true);
 
   // Load pins and custom alerts
   useEffect(() => {
@@ -1577,7 +1599,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
             </div>
             <div className="p-3 space-y-2">
               {pinnedAlerts.map((a) => (
-                <AlertCard key={a.id} alert={a} onAck={(id) => handleAck(id, "")} pinned onTogglePin={togglePin} />
+                <AlertCard key={a.id} alert={a} onAck={(id) => handleAck(id, "")} pinned onTogglePin={togglePin} useLocalTime={useLocalTime} />
               ))}
               {pinnedClientAlerts.map((ca) => (
                 <ClientAlertCard key={ca.key} alert={ca} onDismiss={handleDismissClient} pinned onTogglePin={togglePinKey} />
@@ -1680,7 +1702,10 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
           {alertsLoading ? (
             <span className="text-blue-500 animate-pulse">Loading alerts…</span>
           ) : (
-            <>Updated {now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })}Z</>
+            <>Updated {useLocalTime
+              ? now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
+              : now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }) + "Z"
+            }</>
           )}
         </div>
       </div>
@@ -1704,6 +1729,32 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
                 {r.label}
               </button>
             ))}
+          </div>
+
+          {/* Zulu / Local toggle */}
+          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setUseLocalTime(true)}
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                useLocalTime
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Local
+            </button>
+            <button
+              type="button"
+              onClick={() => setUseLocalTime(false)}
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                !useLocalTime
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Zulu
+            </button>
           </div>
 
           {/* Filter pills */}
@@ -1936,6 +1987,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
                       onTogglePin={togglePin}
                       pinnedKeys={pinnedKeys}
                       onTogglePinKey={togglePinKey}
+                      useLocalTime={useLocalTime}
                     />
                   ))}
                 </div>
