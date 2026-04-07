@@ -1,4 +1,4 @@
-export const revalidate = 60;
+export const dynamic = 'force-dynamic';
 
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFuelPrices, fetchAdvertisedPrices } from "@/lib/invoiceApi";
