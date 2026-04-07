@@ -624,18 +624,28 @@ export async function GET(req: NextRequest) {
         for (const fid of dt.flight_ids) allDetectedFlightIds.add(fid);
       }
 
-      const orphanCandidates = (allExisting ?? [])
+      // Pre-filter: unmatched trips whose flight_ids aren't in any detected trip
+      const unmatchedCandidates = (allExisting ?? [])
         .filter((e) => !matchedExistingIds.has(e.id))
         .filter((e) => {
           if (!e.flight_ids?.length) return false;
-          // Only orphan if NONE of the trip's flights exist in any detected trip
-          // AND none of the flights exist in the flights table anymore
-          const noDetectedMatch = e.flight_ids.every((fid: string) => !allDetectedFlightIds.has(fid));
-          if (!noDetectedMatch) return false;
-          // Verify flights are actually deleted, not just reassigned
-          const allFlightsGone = e.flight_ids.every((fid: string) => !flightMap.has(fid));
-          return allFlightsGone;
+          return e.flight_ids.every((fid: string) => !allDetectedFlightIds.has(fid));
         });
+
+      // Verify flights are ACTUALLY deleted from the DB (not just outside the detection window)
+      let orphanCandidates: typeof unmatchedCandidates = [];
+      if (unmatchedCandidates.length > 0) {
+        const candidateFids = [...new Set(unmatchedCandidates.flatMap((e) => e.flight_ids ?? []))];
+        const { data: stillExist } = await supa
+          .from("flights")
+          .select("id")
+          .in("id", candidateFids);
+        const existingFids = new Set((stillExist ?? []).map((f) => f.id));
+
+        orphanCandidates = unmatchedCandidates.filter((e) =>
+          (e.flight_ids ?? []).every((fid: string) => !existingFids.has(fid))
+        );
+      }
 
       if (orphanCandidates.length > 0) {
         // Check which orphans have been started (any clearance beyond not_started)
