@@ -185,12 +185,16 @@ const CLEARANCE_LABELS: Record<string, string> = {
   landing_permit: "Landing Permit",
   inbound_clearance: "IB Clearance",
   overflight_permit: "Overflight Permit",
+  canpass: "CANPASS",
+  eapis_filing: "eAPIS",
 };
 const CLEARANCE_LABELS_FULL: Record<string, string> = {
   outbound_clearance: "Outbound Clearance",
   landing_permit: "Landing Permit",
   inbound_clearance: "Inbound Clearance",
   overflight_permit: "Overflight Permit",
+  canpass: "CANPASS Call",
+  eapis_filing: "CARICOM eAPIS Filing",
 };
 
 function clearanceStatusColor(s: string) {
@@ -564,7 +568,9 @@ function SegmentRow({ segment, countries, expanded, onToggle, onRefresh }: {
             const done = c.status === "approved";
             const label = c.clearance_type === "outbound_clearance" ? "OB" :
               c.clearance_type === "inbound_clearance" ? "IN" :
-              c.clearance_type === "overflight_permit" ? "OVF" : "LDG";
+              c.clearance_type === "overflight_permit" ? "OVF" :
+              c.clearance_type === "canpass" ? "CAN" :
+              c.clearance_type === "eapis_filing" ? "eAPI" : "LDG";
             return (
               <span key={c.id}
                 className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${done ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}
@@ -684,6 +690,8 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             const ib = clearances.filter((c) => c.clearance_type === "inbound_clearance");
             const ldg = clearances.filter((c) => c.clearance_type === "landing_permit");
             const ovf = clearances.filter((c) => c.clearance_type === "overflight_permit");
+            const canpass = clearances.filter((c) => c.clearance_type === "canpass");
+            const eapis = clearances.filter((c) => c.clearance_type === "eapis_filing");
             const hasPax = !!(trip.leg_passengers?.length) || !!trip.is_positioning;
             const allDone = (arr: typeof clearances) => arr.length > 0 && arr.every((c) => c.status === "approved");
             const tagClass = (done: boolean) => `text-[10px] px-1.5 py-0.5 rounded font-semibold ${done ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`;
@@ -692,6 +700,8 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             if (ob.length > 0) tags.push({ label: "OB", done: allDone(ob), title: "US Outbound Clearance" });
             if (ldg.length > 0) tags.push({ label: "LDG", done: allDone(ldg), title: `Landing Permit${ldg.length > 1 ? "s" : ""} (${ldg.map((c) => c.airport_icao).join(", ")})` });
             if (ovf.length > 0) tags.push({ label: "OVF", done: allDone(ovf), title: `Overflight Permit${ovf.length > 1 ? "s" : ""} (${ovf.map((c) => c.airport_icao).join(", ")})` });
+            if (canpass.length > 0) tags.push({ label: "CAN", done: allDone(canpass), title: "CANPASS Call (4-24hr before Canada arrival)" });
+            if (eapis.length > 0) tags.push({ label: "eAPI", done: allDone(eapis), title: "CARICOM eAPIS Filing" });
             if (ib.length > 0) tags.push({ label: "IN", done: allDone(ib), title: "US Inbound Clearance" });
             tags.push({ label: "PAX", done: hasPax, title: trip.is_positioning ? "Positioning — no pax expected" : "Passenger Data on JetInsight" });
 
@@ -1012,6 +1022,44 @@ function TripDetail({ trip, countries, onRefresh }: {
         )}
       </div>
 
+      {/* Suggested handlers from country defaults (Ticket 5) */}
+      {(() => {
+        const handlers: Array<{ country: string; name: string; email?: string | null; contact?: string | null; notes?: string | null }> = [];
+        const landingIcaos = trip.route_icaos.filter((icao) => isInternationalIcao(icao));
+        for (const icao of landingIcaos) {
+          for (const c of countries) {
+            if (c.icao_prefixes?.some((p: string) => icao.startsWith(p)) && c.default_handler_name) {
+              if (!handlers.some((h) => h.country === c.name)) {
+                handlers.push({
+                  country: c.name,
+                  name: c.default_handler_name,
+                  email: c.default_handler_email,
+                  contact: c.default_handler_contact,
+                  notes: c.default_handler_notes,
+                });
+              }
+              break;
+            }
+          }
+        }
+        if (handlers.length === 0) return null;
+        return (
+          <div className="space-y-1">
+            {handlers.map((h) => (
+              <div key={h.country} className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{h.country}</span>
+                  <span className="text-xs font-medium text-blue-900">{h.name}</span>
+                  {h.email && <a href={`mailto:${h.email}`} className="text-[10px] text-blue-600 hover:underline">{h.email}</a>}
+                  {h.contact && <span className="text-[10px] text-blue-700">{h.contact}</span>}
+                </div>
+                {h.notes && <p className="text-[10px] text-blue-700 mt-0.5">{h.notes}</p>}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Country requirements for landing countries */}
       {Object.values(countryReqs).length > 0 && (
         <div className="space-y-2">
@@ -1224,8 +1272,260 @@ function TripDetail({ trip, countries, onRefresh }: {
         );
       })()}
 
+      {/* Pinnacle Permit Request Generator (Ticket 9) */}
+      {(() => {
+        const pinnacleCountries = ["CU", "NI"];
+        const hasPinnacleOvf = clearances.some((c) =>
+          c.clearance_type === "overflight_permit" &&
+          pinnacleCountries.some((iso) => c.notes?.includes(`(${iso})`))
+        );
+        if (!hasPinnacleOvf) return null;
+
+        const isCuba = clearances.some((c) => c.notes?.includes("(CU)"));
+        const isNicaragua = clearances.some((c) => c.notes?.includes("(NI)"));
+
+        return (
+          <PinnacleRequestGenerator
+            trip={trip}
+            countries={countries}
+            isCuba={isCuba}
+            isNicaragua={isNicaragua}
+          />
+        );
+      })()}
+
+      {/* Workflow Guide (Ticket 10) */}
+      <WorkflowGuide trip={trip} countries={countries} />
+
       {/* Crew, aircraft docs, trip docs, company docs from JetInsight */}
       <TripBundlePanel tripId={trip.id} />
+    </div>
+  );
+}
+
+// ===========================================================================
+// PINNACLE REQUEST GENERATOR (Ticket 9) — Cuba/Nicaragua overflight permit email
+// ===========================================================================
+
+function PinnacleRequestGenerator({ trip, countries, isCuba, isNicaragua }: {
+  trip: IntlTrip;
+  countries: Country[];
+  isCuba: boolean;
+  isNicaragua: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const snap = trip.schedule_snapshot ?? {};
+
+  // Build itinerary lines with UTC times
+  const itinerary = trip.route_icaos.slice(0, -1).map((dep, i) => {
+    const arr = trip.route_icaos[i + 1];
+    const fid = trip.flight_ids[i];
+    const times = fid ? (snap as Record<string, { dep: string; arr: string | null }>)[fid] : null;
+    const depTime = times ? new Date(times.dep).toISOString().replace("T", " ").slice(0, 16) + "Z" : "TBD";
+    const arrTime = times?.arr ? new Date(times.arr).toISOString().replace("T", " ").slice(0, 16) + "Z" : "TBD";
+    return `  ${dep} → ${arr}  |  Dep: ${depTime}  |  Arr: ${arrTime}`;
+  }).join("\n");
+
+  // Callsign: KOW + last 3 of tail
+  const tail = trip.tail_number || "N/A";
+  const callsign = `KOW${tail.replace(/^N/, "").slice(-3)}`;
+
+  const ovfCountry = [isCuba && "Cuba", isNicaragua && "Nicaragua"].filter(Boolean).join(" and ");
+
+  const emailSubject = `${ovfCountry} Overflight Permit Request — ${tail}`;
+  const emailBody = `Dear Pinnacle Operations,
+
+We are requesting ${ovfCountry.toLowerCase()} overflight clearance for the following:
+
+Aircraft: ${tail}
+Callsign: ${callsign}
+Operator: Baker Aviation
+
+Itinerary (UTC):
+${itinerary}
+
+${isNicaragua ? "Note: Nicaragua requires crew license, medical, and passport copies — attached separately.\n" : ""}Please confirm receipt and expected turnaround time.
+
+Best regards,
+Baker Aviation Operations`;
+
+  const template = `To: ops@pinnacle-ops.com\nSubject: ${emailSubject}\n\n${emailBody}`;
+
+  function copyTemplate() {
+    navigator.clipboard.writeText(template);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function sendEmail() {
+    setSending(true);
+    setSendResult(null);
+    try {
+      const res = await fetch("/api/ops/intl/send-pinnacle-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject: emailSubject, body: emailBody, trip_id: trip.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setSendResult({ ok: true, message: `Sent to ops@pinnacle-ops.com` });
+    } catch (err) {
+      setSendResult({ ok: false, message: err instanceof Error ? err.message : "Send failed" });
+    }
+    setSending(false);
+  }
+
+  return (
+    <div className="bg-purple-50 border border-purple-200 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-purple-100 transition-colors"
+      >
+        <h4 className="text-xs font-semibold text-purple-800">Generate Pinnacle Request — {ovfCountry} Overflight</h4>
+        <svg className={`w-4 h-4 text-purple-400 transition-transform ${collapsed ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {!collapsed && (
+        <div className="px-3 pb-3 space-y-2">
+          <pre className="text-[11px] text-purple-900 bg-white border border-purple-200 rounded p-2 whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto">
+            {template}
+          </pre>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={sendEmail}
+              disabled={sending}
+              className="px-3 py-1.5 text-xs font-medium bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+            >
+              {sending ? "Sending..." : "Send to Pinnacle"}
+            </button>
+            <button
+              onClick={copyTemplate}
+              className="px-3 py-1.5 text-xs font-medium bg-white border border-purple-300 text-purple-700 rounded hover:bg-purple-50"
+            >
+              {copied ? "Copied!" : "Copy to Clipboard"}
+            </button>
+            {sendResult && (
+              <span className={`text-xs ${sendResult.ok ? "text-green-600" : "text-red-600"}`}>
+                {sendResult.message}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// WORKFLOW GUIDE (Ticket 10) — Country-specific step-by-step guide
+// ===========================================================================
+
+function WorkflowGuide({ trip, countries }: { trip: IntlTrip; countries: Country[] }) {
+  const [collapsed, setCollapsed] = useState(true);
+
+  // Determine which countries are in this trip
+  const tripCountries: Array<{ country: Country; icao: string }> = [];
+  for (const icao of trip.route_icaos) {
+    if (!isInternationalIcao(icao)) continue;
+    for (const c of countries) {
+      if (c.icao_prefixes?.some((p: string) => icao.startsWith(p))) {
+        if (!tripCountries.some((tc) => tc.country.id === c.id)) {
+          tripCountries.push({ country: c, icao });
+        }
+        break;
+      }
+    }
+  }
+
+  if (tripCountries.length === 0) return null;
+
+  // General steps that apply to all international trips
+  const generalSteps = [
+    "Run eAPIS (US) for outbound and inbound legs",
+    "Download GenDec from JetInsight Trip Docs",
+    "Send applicable outbound GenDec leg to US Customs at departure airport",
+    "Send both legs (outbound + inbound GenDec) to international FBO/handler",
+  ];
+
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-gray-100 transition-colors"
+      >
+        <h4 className="text-xs font-semibold text-gray-700">Workflow Guide</h4>
+        <svg className={`w-4 h-4 text-gray-400 transition-transform ${collapsed ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {!collapsed && (
+        <div className="px-3 pb-3 space-y-3">
+          {/* General steps */}
+          <div>
+            <h5 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">General Steps</h5>
+            <ol className="space-y-0.5">
+              {generalSteps.map((step, i) => (
+                <li key={i} className="text-xs text-gray-700 flex gap-1.5">
+                  <span className="text-gray-400 font-mono w-4 shrink-0">{i + 1}.</span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          {/* Country-specific steps */}
+          {tripCountries.map(({ country }) => {
+            const steps: string[] = [];
+
+            if (country.default_handler_name) {
+              steps.push(`Contact ${country.default_handler_name}${country.default_handler_email ? ` (${country.default_handler_email})` : ""} for handling`);
+            }
+
+            if (country.eapis_required && country.eapis_provider === "caricom") {
+              steps.push("File CARICOM eAPIS at caricomeapis.org — inbound + outbound separately");
+            }
+
+            if (country.iso_code === "CA") {
+              steps.push("Captain calls CANPASS 4-24hr before arrival");
+            }
+
+            if (country.crew_restrictions?.length) {
+              for (const r of country.crew_restrictions) {
+                steps.push(`Crew check: ${r.description}`);
+              }
+            }
+
+            if (country.landing_permit_required) {
+              steps.push(`Apply for landing permit${country.permit_lead_time_days ? ` (${country.permit_lead_time_days} ${country.permit_lead_time_working_days ? "working " : ""}days advance)` : ""}`);
+            }
+
+            if (country.default_handler_notes) {
+              steps.push(country.default_handler_notes);
+            }
+
+            if (steps.length === 0) return null;
+
+            return (
+              <div key={country.id}>
+                <h5 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">{country.name} ({country.iso_code})</h5>
+                <ol className="space-y-0.5">
+                  {steps.map((step, i) => (
+                    <li key={i} className="text-xs text-gray-700 flex gap-1.5">
+                      <span className="text-gray-400 font-mono w-4 shrink-0">{i + 1}.</span>
+                      {step}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2383,6 +2683,43 @@ function CountryDetail({ country, requirements, loadingReqs, onAddReq, showAddRe
         )}
       </div>
 
+      {/* Default Handler (Ticket 5) */}
+      {country.default_handler_name && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5">
+          <h4 className="text-xs font-semibold text-blue-800 mb-1">Default Handler</h4>
+          <p className="text-sm font-medium text-blue-900">{country.default_handler_name}</p>
+          <div className="flex gap-3 mt-1 flex-wrap">
+            {country.default_handler_email && (
+              <a href={`mailto:${country.default_handler_email}`} className="text-xs text-blue-600 hover:underline">{country.default_handler_email}</a>
+            )}
+            {country.default_handler_contact && (
+              <span className="text-xs text-blue-700">{country.default_handler_contact}</span>
+            )}
+          </div>
+          {country.default_handler_notes && (
+            <p className="text-xs text-blue-700 mt-1">{country.default_handler_notes}</p>
+          )}
+        </div>
+      )}
+
+      {/* Crew Restrictions (Ticket 6) */}
+      {country.crew_restrictions && country.crew_restrictions.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2.5">
+          <h4 className="text-xs font-semibold text-red-800 mb-1">Crew Restrictions</h4>
+          {country.crew_restrictions.map((r, i) => (
+            <p key={i} className="text-xs text-red-700">{r.description}</p>
+          ))}
+        </div>
+      )}
+
+      {/* eAPIS Info (Ticket 7) */}
+      {country.eapis_required && country.eapis_provider === "caricom" && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+          <h4 className="text-xs font-semibold text-amber-800 mb-1">CARICOM eAPIS Required</h4>
+          <p className="text-xs text-amber-700">File inbound + outbound separately at <a href="https://caricomeapis.org" target="_blank" rel="noopener noreferrer" className="underline hover:text-amber-900">caricomeapis.org</a></p>
+        </div>
+      )}
+
       {/* Requirements */}
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -3174,6 +3511,7 @@ function CustomsTracker() {
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Notice</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">OT</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Difficulty</th>
+                <th className="text-left px-3 py-1.5 font-medium text-gray-600">CBP Contact</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Notes</th>
                 <th className="text-center px-3 py-1.5 font-medium text-gray-600">Status</th>
               </tr>
@@ -3274,6 +3612,9 @@ function CustomsRow({ airport: a, onUpdate }: { airport: UsCustomsAirport; onUpd
           </select>
         </td>
         <td className="px-3 py-1.5">
+          <span className="text-[10px] text-gray-400">{a.cbp_email || a.cbp_phone || "—"}</span>
+        </td>
+        <td className="px-3 py-1.5">
           <input value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
             className="text-xs border border-gray-300 rounded px-1 py-0.5 w-full" />
         </td>
@@ -3314,6 +3655,22 @@ function CustomsRow({ airport: a, onUpdate }: { airport: UsCustomsAirport; onUpd
         {a.difficulty ? (
           <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${difficultyColor(a.difficulty)}`}>{a.difficulty}</span>
         ) : "—"}
+      </td>
+      <td className="px-3 py-1.5">
+        {(a.cbp_email || a.cbp_phone) ? (
+          <div className="space-y-0.5">
+            {a.cbp_email && (
+              <a href={`mailto:${a.cbp_email}`} className="block text-[10px] text-blue-600 hover:text-blue-800 truncate max-w-[140px]" title={a.cbp_email}>
+                {a.cbp_email}
+              </a>
+            )}
+            {a.cbp_phone && (
+              <a href={`tel:${a.cbp_phone}`} className="block text-[10px] text-gray-600 hover:text-gray-800">
+                {a.cbp_phone}
+              </a>
+            )}
+          </div>
+        ) : <span className="text-gray-300">—</span>}
       </td>
       <td className="px-3 py-1.5 text-gray-500 max-w-xs truncate" title={[a.restrictions, a.notes].filter(Boolean).join(" | ")}>
         {a.restrictions || a.notes || "—"}

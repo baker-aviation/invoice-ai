@@ -62,6 +62,8 @@ export type FlightsResponse = {
   count: number;
   /** NOTAM_RUNWAY alert IDs suppressed because airport still has 5000+ ft paved open */
   suppressedRunwayNotamIds?: string[];
+  /** NOTAM_RUNWAY IDs where all runways ≥5000 ft are closed during the NOTAM window */
+  allRunwaysClosedNotamIds?: string[];
   /** Flights where ALL runways are closed within ±2hrs of departure/arrival */
   allRunwaysClosedAlerts?: AllRwysClosedAlert[];
 };
@@ -541,9 +543,10 @@ export async function fetchFlights(params: {
 
   // Compute suppressed NOTAM_RUNWAY IDs (airport still has 5000+ ft paved open).
   // Alerts stay attached to flights — frontend uses these IDs to show/hide.
+  // Also compute IDs where ALL runways are closed (for "ALL RWYS CLSD" badge).
   const allAlerts: OpsAlert[] = [];
   for (const alerts of alertsByFlight.values()) allAlerts.push(...alerts);
-  const suppressedRunwayNotamIds = getRunwaySuppressedIds(allAlerts);
+  const { suppressed: suppressedRunwayNotamIds, allClosedIds: allRunwaysClosedNotamIds } = getRunwaySuppressedIds(allAlerts);
 
   const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
     id: row.id as string,
@@ -682,7 +685,7 @@ export async function fetchFlights(params: {
   // Detect flights where ALL runways are closed within ±2hrs of departure/arrival
   const allRunwaysClosedAlerts = detectAllRunwaysClosed(flights);
 
-  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedAlerts };
+  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedNotamIds, allRunwaysClosedAlerts };
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +857,13 @@ export type Country = {
   baker_confirmed: boolean;
   confirmed_at: string | null;
   confirmed_by: string | null;
+  default_handler_name: string | null;
+  default_handler_contact: string | null;
+  default_handler_email: string | null;
+  default_handler_notes: string | null;
+  crew_restrictions: Array<{ type: string; value: unknown; description: string }>;
+  eapis_required: boolean;
+  eapis_provider: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -938,6 +948,10 @@ export type UsCustomsAirport = {
   restrictions: string | null;
   notes: string | null;
   difficulty: "easy" | "moderate" | "hard" | null;
+  cbp_email: string | null;
+  cbp_phone: string | null;
+  clearance_advance_min_hours: number | null;
+  clearance_advance_max_hours: number | null;
   baker_confirmed: boolean;
   confirmed_at: string | null;
   confirmed_by: string | null;
@@ -949,7 +963,7 @@ export type UsCustomsAirport = {
 export type IntlLegAlert = {
   id: string;
   flight_id: string | null;
-  alert_type: "deadline_approaching" | "permit_resubmit" | "customs_conflict" | "tail_change" | "schedule_change" | "delay" | "diversion";
+  alert_type: "deadline_approaching" | "permit_resubmit" | "customs_conflict" | "tail_change" | "schedule_change" | "delay" | "diversion" | "crew_restriction" | "eapis_missing" | "canpass_due" | "clearance_timing";
   severity: "critical" | "warning" | "info";
   message: string;
   related_country_id: string | null;
@@ -993,7 +1007,7 @@ export type IntlTrip = {
 export type IntlTripClearance = {
   id: string;
   trip_id: string;
-  clearance_type: "outbound_clearance" | "landing_permit" | "inbound_clearance" | "overflight_permit";
+  clearance_type: "outbound_clearance" | "landing_permit" | "inbound_clearance" | "overflight_permit" | "canpass" | "eapis_filing";
   airport_icao: string;
   status: "not_started" | "submitted" | "received" | "approved";
   sort_order: number;

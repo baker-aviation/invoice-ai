@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status"); // optional filter
+  const section = searchParams.get("section"); // optional filter
 
   const sb = createServiceClient();
   let query = sb
@@ -22,6 +23,9 @@ export async function GET(req: NextRequest) {
 
   if (status) {
     query = query.eq("status", status);
+  }
+  if (section) {
+    query = query.eq("section", section);
   }
 
   const { data, error } = await query;
@@ -41,7 +45,7 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   const body = await req.json();
-  const { title, body: ticketBody, priority, claude_prompt, github_issue, labels } = body;
+  const { title, body: ticketBody, priority, claude_prompt, github_issue, labels, section } = body;
 
   if (!title?.trim()) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -57,6 +61,7 @@ export async function POST(req: NextRequest) {
       claude_prompt: claude_prompt || null,
       github_issue: github_issue || null,
       labels: labels || [],
+      section: section || "general",
       created_by: auth.userId,
     })
     .select()
@@ -86,7 +91,7 @@ export async function PATCH(req: NextRequest) {
 
   // Only allow updating known fields
   const allowed: Record<string, unknown> = {};
-  for (const key of ["title", "body", "priority", "status", "claude_prompt", "github_issue", "labels"]) {
+  for (const key of ["title", "body", "priority", "status", "claude_prompt", "github_issue", "labels", "section"]) {
     if (key in updates) allowed[key] = updates[key];
   }
   allowed.updated_at = new Date().toISOString();

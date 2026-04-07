@@ -326,15 +326,16 @@ export function getSuppressedRunwayNotamIds(
   airportCode: string,
   notams: NotamInput[],
   minLength_ft = 5000,
-): Set<string> {
-  const suppress = new Set<string>();
+): { suppressed: Set<string>; allClosed: Set<string> } {
+  const suppressed = new Set<string>();
+  const allClosed = new Set<string>();
   const info = getRunways(airportCode);
-  if (!info) return suppress;
+  if (!info) return { suppressed, allClosed };
 
   const pavedLong = info.runways.filter(
     (r) => (r.surface === "A" || r.surface === "C") && r.length_ft >= minLength_ft,
   );
-  if (pavedLong.length === 0) return suppress;
+  if (pavedLong.length === 0) return { suppressed, allClosed };
 
   // Parse all closures
   const closures: ParsedClosure[] = [];
@@ -378,11 +379,14 @@ export function getSuppressedRunwayNotamIds(
 
     // Suppress only if at least one other runway is NOT covered by overlapping closures
     if (!allOthersCovered) {
-      suppress.add(closure.id);
+      suppressed.add(closure.id);
+    } else {
+      // All other runways also closed — mark for "ALL RWYS CLSD" badge
+      allClosed.add(closure.id);
     }
   }
 
-  return suppress;
+  return { suppressed, allClosed };
 }
 
 /**
@@ -397,7 +401,7 @@ export function getRunwaySuppressedIds<
     airport_icao: string | null;
     notam_dates?: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null;
   },
->(alerts: T[], minLength_ft = 5000): string[] {
+>(alerts: T[], minLength_ft = 5000): { suppressed: string[]; allClosedIds: string[] } {
   // Group NOTAM_RUNWAY alerts by airport
   const byAirport = new Map<string, NotamInput[]>();
   for (const a of alerts) {
@@ -415,12 +419,14 @@ export function getRunwaySuppressedIds<
   }
 
   const suppressed = new Set<string>();
+  const allClosed = new Set<string>();
   for (const [icao, notams] of byAirport) {
-    const ids = getSuppressedRunwayNotamIds(icao, notams, minLength_ft);
-    for (const id of ids) suppressed.add(id);
+    const result = getSuppressedRunwayNotamIds(icao, notams, minLength_ft);
+    for (const id of result.suppressed) suppressed.add(id);
+    for (const id of result.allClosed) allClosed.add(id);
   }
 
-  return [...suppressed];
+  return { suppressed: [...suppressed], allClosedIds: [...allClosed] };
 }
 
 /**
@@ -436,8 +442,9 @@ export function filterRunwayClosureNotams<
     notam_dates?: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null;
   },
 >(alerts: T[], minLength_ft = 5000): T[] {
-  const suppressed = new Set(getRunwaySuppressedIds(alerts, minLength_ft));
-  return alerts.filter((a) => !suppressed.has(a.id));
+  const { suppressed } = getRunwaySuppressedIds(alerts, minLength_ft);
+  const suppressedSet = new Set(suppressed);
+  return alerts.filter((a) => !suppressedSet.has(a.id));
 }
 
 // ---------------------------------------------------------------------------
