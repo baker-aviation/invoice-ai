@@ -2878,12 +2878,15 @@ def _is_ignorable_runway(msg_upper: str) -> bool:
 
 def _classify_notam(msg: str) -> str:
     m = msg.upper()
+    # Runway closure checked BEFORE PPR — a "RWY CLSD ... PPR 617-..." is a
+    # runway closure (PPR phone number is supplemental).  Classifying as
+    # NOTAM_RUNWAY lets the frontend runway-suppression filter work correctly.
+    if re.search(r"\bRWY\b|RUNWAY", m):
+        return "NOTAM_RUNWAY"
     if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED|PRIOR APPROVAL REQUIRED", m):
         return "NOTAM_PPR"
     if re.search(r"(TFC|TRAFFIC).{0,30}(RSTD|RESTRICTED)", m):
         return "NOTAM_AD_RESTRICTED"
-    if re.search(r"\bRWY\b|RUNWAY", m):
-        return "NOTAM_RUNWAY"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
         return "NOTAM_TFR"
     if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
