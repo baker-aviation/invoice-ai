@@ -4,12 +4,15 @@ import { useEffect, useState, useCallback } from "react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+type TicketSection = "general" | "crew-swap" | "international" | "current-ops" | "duty" | "notams" | "hiring" | "invoices";
+
 type Ticket = {
   id: number;
   title: string;
   body: string | null;
   priority: number;
   status: "open" | "in_progress" | "done" | "wont_fix";
+  section: TicketSection;
   claude_prompt: string | null;
   github_issue: number | null;
   labels: string[];
@@ -19,6 +22,18 @@ type Ticket = {
 
 type StatusFilter = "all" | "open" | "in_progress" | "done" | "wont_fix";
 type KindFilter = "all" | "task" | "checklist";
+type SectionFilter = "all" | TicketSection;
+
+const SECTION_LABELS: Record<TicketSection, { label: string; color: string }> = {
+  general:       { label: "General",       color: "bg-gray-100 text-gray-600" },
+  "crew-swap":   { label: "Crew Swap",     color: "bg-indigo-100 text-indigo-700" },
+  international: { label: "International", color: "bg-sky-100 text-sky-700" },
+  "current-ops": { label: "Current Ops",   color: "bg-amber-100 text-amber-700" },
+  duty:          { label: "Duty",          color: "bg-orange-100 text-orange-700" },
+  notams:        { label: "NOTAMs",        color: "bg-rose-100 text-rose-700" },
+  hiring:        { label: "Hiring",        color: "bg-emerald-100 text-emerald-700" },
+  invoices:      { label: "Invoices",      color: "bg-violet-100 text-violet-700" },
+};
 
 /** Derive ticket kind from its data — no DB column needed */
 function ticketKind(t: Ticket): "task" | "checklist" {
@@ -71,6 +86,7 @@ export default function TicketBoard() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [sectionFilter, setSectionFilter] = useState<SectionFilter>("all");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -83,6 +99,7 @@ export default function TicketBoard() {
   const [formPrompt, setFormPrompt] = useState("");
   const [formGithub, setFormGithub] = useState("");
   const [formLabels, setFormLabels] = useState("");
+  const [formSection, setFormSection] = useState<TicketSection>("general");
   const [formStatus, setFormStatus] = useState<Ticket["status"]>("open");
   const [formKind, setFormKind] = useState<"task" | "checklist">("task");
   const [saving, setSaving] = useState(false);
@@ -118,6 +135,7 @@ export default function TicketBoard() {
     setFormPrompt("");
     setFormGithub("");
     setFormLabels("");
+    setFormSection("general");
     setFormStatus("open");
     setFormKind("task");
     setEditingId(null);
@@ -131,6 +149,7 @@ export default function TicketBoard() {
     setFormPrompt(t.claude_prompt || "");
     setFormGithub(t.github_issue?.toString() || "");
     setFormLabels(t.labels.join(", "));
+    setFormSection(t.section || "general");
     setFormStatus(t.status);
     setFormKind(ticketKind(t));
     setEditingId(t.id);
@@ -151,6 +170,7 @@ export default function TicketBoard() {
         .split(",")
         .map((l) => l.trim())
         .filter(Boolean),
+      section: formSection,
       status: formStatus,
     };
 
@@ -212,7 +232,8 @@ export default function TicketBoard() {
 
   const filtered = tickets
     .filter((t) => filter === "all" || t.status === filter)
-    .filter((t) => kindFilter === "all" || ticketKind(t) === kindFilter);
+    .filter((t) => kindFilter === "all" || ticketKind(t) === kindFilter)
+    .filter((t) => sectionFilter === "all" || (t.section ?? "general") === sectionFilter);
   const openTickets = filtered.filter((t) => t.status === "open" || t.status === "in_progress");
   const closedTickets = filtered.filter((t) => t.status === "done" || t.status === "wont_fix");
   const taskCount = tickets.filter((t) => ticketKind(t) === "task" && (t.status === "open" || t.status === "in_progress")).length;
@@ -246,6 +267,17 @@ export default function TicketBoard() {
               </button>
             ))}
           </div>
+          {/* Section filter */}
+          <select
+            value={sectionFilter}
+            onChange={(e) => setSectionFilter(e.target.value as SectionFilter)}
+            className="bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
+          >
+            <option value="all">All Sections</option>
+            {(Object.entries(SECTION_LABELS) as [TicketSection, { label: string }][]).map(([key, { label }]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
           {/* Status filter */}
           <div className="flex gap-1">
             {(["all", "open", "in_progress", "done"] as StatusFilter[]).map((s) => (
@@ -322,8 +354,8 @@ export default function TicketBoard() {
             />
           </div>
 
-          {/* Priority + Status + GitHub issue row */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Priority + Status + Section + GitHub issue row */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs text-zinc-400 mb-1">Priority</label>
               <select
@@ -348,6 +380,18 @@ export default function TicketBoard() {
                 <option value="in_progress">In Progress</option>
                 <option value="done">Done</option>
                 <option value="wont_fix">Won&apos;t Fix</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1">Section</label>
+              <select
+                value={formSection}
+                onChange={(e) => setFormSection(e.target.value as TicketSection)}
+                className="w-full bg-zinc-900 border border-zinc-600 rounded-lg px-3 py-2 text-sm text-zinc-100 outline-none"
+              >
+                {(Object.entries(SECTION_LABELS) as [TicketSection, { label: string }][]).map(([key, { label }]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -520,6 +564,13 @@ function TicketRow({
         <span className="flex-1 text-sm font-medium text-zinc-100 truncate">
           {t.title}
         </span>
+
+        {/* Section badge */}
+        {t.section && t.section !== "general" && (
+          <span className={`hidden sm:inline text-[10px] px-2 py-0.5 rounded-full font-medium ${SECTION_LABELS[t.section]?.color ?? "bg-zinc-700 text-zinc-300"}`}>
+            {SECTION_LABELS[t.section]?.label ?? t.section}
+          </span>
+        )}
 
         {/* Labels */}
         <div className="hidden sm:flex gap-1">

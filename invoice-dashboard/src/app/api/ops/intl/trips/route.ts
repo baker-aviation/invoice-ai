@@ -261,6 +261,17 @@ export async function GET(req: NextRequest) {
         .eq("overflight_permit_required", true);
       const countriesWithOvfReq: CountryRow[] = (countriesData ?? []) as CountryRow[];
 
+      // Fetch countries with eAPIS requirements and CANPASS (Canada)
+      const { data: allCountriesForClearance } = await supa
+        .from("countries")
+        .select("iso_code, name, icao_prefixes, eapis_required, eapis_provider");
+      const eapisCountries = (allCountriesForClearance ?? []).filter(
+        (c: { eapis_required: boolean; eapis_provider: string | null }) => c.eapis_required && c.eapis_provider === "caricom"
+      );
+      const canadaCountry = (allCountriesForClearance ?? []).find(
+        (c: { iso_code: string }) => c.iso_code === "CA"
+      );
+
       // Batch-fetch all existing trips (wider date window to catch date shifts + tail changes)
       const lookbackDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const { data: allExisting } = await supa
@@ -529,6 +540,47 @@ export async function GET(req: NextRequest) {
             ...c,
             trip_id: newTrip.id,
           }));
+
+          // Add CANPASS clearance step for Canadian trips (Ticket 8)
+          if (canadaCountry) {
+            const visitsCanada = dt.route_icaos.some((icao: string) =>
+              (canadaCountry.icao_prefixes as string[])?.some((p: string) => icao.startsWith(p))
+            );
+            if (visitsCanada) {
+              const maxOrder = clearances.reduce((m, c) => Math.max(m, c.sort_order), 0);
+              clearances.push({
+                clearance_type: "canpass",
+                airport_icao: dt.route_icaos.find((icao: string) =>
+                  (canadaCountry.icao_prefixes as string[])?.some((p: string) => icao.startsWith(p))
+                ) ?? "CA",
+                status: "not_started",
+                sort_order: maxOrder + 1,
+                notes: "CANPASS — Captain must call 4-24hr before arrival",
+                trip_id: newTrip.id,
+              });
+            }
+          }
+
+          // Add eAPIS clearance step for CARICOM countries (Ticket 7)
+          for (const ec of eapisCountries) {
+            const visitsCountry = dt.route_icaos.some((icao: string) =>
+              (ec.icao_prefixes as string[])?.some((p: string) => icao.startsWith(p))
+            );
+            if (visitsCountry) {
+              const maxOrder = clearances.reduce((m, c) => Math.max(m, c.sort_order), 0);
+              clearances.push({
+                clearance_type: "eapis_filing",
+                airport_icao: dt.route_icaos.find((icao: string) =>
+                  (ec.icao_prefixes as string[])?.some((p: string) => icao.startsWith(p))
+                ) ?? ec.iso_code,
+                status: "not_started",
+                sort_order: maxOrder + 1,
+                notes: `CARICOM eAPIS — file at caricomeapis.org (inbound + outbound separately) for ${ec.name}`,
+                trip_id: newTrip.id,
+              });
+            }
+          }
+
           if (clearances.length > 0) {
             await supa.from("intl_trip_clearances").insert(clearances);
           }

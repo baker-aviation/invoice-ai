@@ -20,7 +20,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   const fields = ["name", "icao_prefixes", "overflight_permit_required", "landing_permit_required",
     "permit_lead_time_days", "permit_lead_time_working_days", "treat_as_international", "notes",
-    "baker_confirmed", "confirmed_at", "confirmed_by"];
+    "baker_confirmed", "confirmed_at", "confirmed_by",
+    "default_handler_name", "default_handler_contact", "default_handler_email", "default_handler_notes",
+    "crew_restrictions", "eapis_required", "eapis_provider"];
   for (const f of fields) {
     if (input[f] !== undefined) updates[f] = input[f];
   }

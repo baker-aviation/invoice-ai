@@ -430,6 +430,300 @@ async function runChecks() {
     }
   }
 
+  // ── 6b. Crew restriction checks (Ticket 6) ────────────────────────
+  // Check if any assigned crew violates country restrictions (e.g., age limits)
+  {
+    // Get countries with crew_restrictions
+    const { data: restrictedCountries } = await supa
+      .from("countries")
+      .select("id, name, iso_code, icao_prefixes, crew_restrictions")
+      .not("crew_restrictions", "eq", "[]");
+
+    if (restrictedCountries && restrictedCountries.length > 0) {
+      // Get intl trips in the next 30 days
+      const { data: upcomingTrips } = await supa
+        .from("intl_trips")
+        .select("id, tail_number, route_icaos, flight_ids, trip_date")
+        .gte("trip_date", new Date().toISOString().slice(0, 10))
+        .lte("trip_date", new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 10));
+
+      if (upcomingTrips && upcomingTrips.length > 0) {
+        // Get flight crew assignments
+        const allFlightIds = [...new Set(upcomingTrips.flatMap((t) => t.flight_ids ?? []))];
+        const { data: flightCrew } = await supa
+          .from("flights")
+          .select("id, pic, sic")
+          .in("id", allFlightIds);
+
+        const crewNames = new Set<string>();
+        for (const f of flightCrew ?? []) {
+          if (f.pic) crewNames.add(f.pic);
+          if (f.sic) crewNames.add(f.sic);
+        }
+
+        // Get crew DOB from pilot_profiles
+        let crewDobMap = new Map<string, string>();
+        if (crewNames.size > 0) {
+          const { data: profiles } = await supa
+            .from("pilot_profiles")
+            .select("full_name, date_of_birth")
+            .in("full_name", [...crewNames])
+            .not("date_of_birth", "is", null);
+          for (const p of profiles ?? []) {
+            crewDobMap.set(p.full_name, p.date_of_birth);
+          }
+        }
+
+        for (const trip of upcomingTrips) {
+          // Find which restricted countries this trip visits
+          for (const country of restrictedCountries) {
+            const restrictions = country.crew_restrictions as Array<{ type: string; value: number; description: string }>;
+            if (!restrictions?.length) continue;
+
+            const visitsCountry = trip.route_icaos.some((icao: string) =>
+              country.icao_prefixes?.some((p: string) => icao.startsWith(p))
+            );
+            if (!visitsCountry) continue;
+
+            // Get crew for this trip's flights
+            const tripCrew = new Set<string>();
+            for (const fid of trip.flight_ids ?? []) {
+              const f = (flightCrew ?? []).find((fc) => fc.id === fid);
+              if (f?.pic) tripCrew.add(f.pic);
+              if (f?.sic) tripCrew.add(f.sic);
+            }
+
+            for (const restriction of restrictions) {
+              if (restriction.type === "max_age") {
+                for (const crewName of tripCrew) {
+                  const dob = crewDobMap.get(crewName);
+                  if (!dob) continue;
+                  const age = Math.floor((now.getTime() - new Date(dob).getTime()) / (365.25 * 86400000));
+                  if (age > restriction.value) {
+                    // Check for existing alert
+                    const alertMsg = `${crewName} (age ${age}) assigned to ${trip.tail_number} ${trip.route_icaos.join("→")} — ${country.name}: ${restriction.description}`;
+                    const { count } = await supa
+                      .from("intl_leg_alerts")
+                      .select("id", { count: "exact", head: true })
+                      .eq("alert_type", "crew_restriction")
+                      .eq("acknowledged", false)
+                      .ilike("message", `%${crewName}%${country.name}%`);
+
+                    if ((count ?? 0) === 0) {
+                      alertsToCreate.push({
+                        flight_id: trip.flight_ids[0] ?? "00000000-0000-0000-0000-000000000000",
+                        alert_type: "crew_restriction",
+                        severity: "critical",
+                        message: alertMsg,
+                        related_country_id: country.id,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ── 6c. CARICOM eAPIS reminders (Ticket 7) ───────────────────────
+  {
+    const { data: eapisCountries } = await supa
+      .from("countries")
+      .select("id, name, iso_code, icao_prefixes")
+      .eq("eapis_required", true)
+      .eq("eapis_provider", "caricom");
+
+    if (eapisCountries && eapisCountries.length > 0) {
+      const { data: upcomingTrips } = await supa
+        .from("intl_trips")
+        .select("id, tail_number, route_icaos, flight_ids, trip_date")
+        .gte("trip_date", new Date().toISOString().slice(0, 10))
+        .lte("trip_date", new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10));
+
+      for (const trip of upcomingTrips ?? []) {
+        const tripDate = new Date(trip.trip_date + "T00:00:00");
+        const hoursOut = (tripDate.getTime() - now.getTime()) / 3600000;
+
+        for (const country of eapisCountries) {
+          const visitsCountry = trip.route_icaos.some((icao: string) =>
+            country.icao_prefixes?.some((p: string) => icao.startsWith(p))
+          );
+          if (!visitsCountry) continue;
+
+          // Check if trip has an eapis_filing clearance step that's completed
+          const { data: eapisClearances } = await supa
+            .from("intl_trip_clearances")
+            .select("id, status, notes")
+            .eq("trip_id", trip.id)
+            .eq("clearance_type", "eapis_filing");
+
+          const eapisDone = eapisClearances?.some((c) => c.status === "approved");
+          if (eapisDone) continue;
+
+          if (hoursOut <= 24) {
+            const { count } = await supa
+              .from("intl_leg_alerts")
+              .select("id", { count: "exact", head: true })
+              .eq("alert_type", "eapis_missing")
+              .eq("acknowledged", false)
+              .ilike("message", `%${trip.tail_number}%${country.name}%eAPIS%`);
+
+            if ((count ?? 0) === 0) {
+              alertsToCreate.push({
+                flight_id: trip.flight_ids[0] ?? "00000000-0000-0000-0000-000000000000",
+                alert_type: "eapis_missing",
+                severity: hoursOut <= 4 ? "critical" : "warning",
+                message: `${trip.tail_number} ${trip.route_icaos.join("→")} departs in ${Math.round(hoursOut)}hr — CARICOM eAPIS not filed for ${country.name}. File at caricomeapis.org (inbound + outbound separately).`,
+                related_country_id: country.id,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ── 6d. CANPASS timing alerts for Canada (Ticket 8) ───────────────
+  {
+    const { data: canada } = await supa
+      .from("countries")
+      .select("id, icao_prefixes")
+      .eq("iso_code", "CA")
+      .single();
+
+    if (canada) {
+      const { data: canadaTrips } = await supa
+        .from("intl_trips")
+        .select("id, tail_number, route_icaos, flight_ids, trip_date, schedule_snapshot")
+        .gte("trip_date", new Date().toISOString().slice(0, 10))
+        .lte("trip_date", new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10));
+
+      for (const trip of canadaTrips ?? []) {
+        const visitsCanada = trip.route_icaos.some((icao: string) =>
+          canada.icao_prefixes?.some((p: string) => icao.startsWith(p))
+        );
+        if (!visitsCanada) continue;
+
+        // Find the Canadian arrival time from snapshot
+        const snap = (trip.schedule_snapshot ?? {}) as Record<string, { dep: string; arr: string | null }>;
+        let canadaArrivalTime: Date | null = null;
+        for (let i = 0; i < trip.route_icaos.length - 1; i++) {
+          const arrIcao = trip.route_icaos[i + 1];
+          if (canada.icao_prefixes?.some((p: string) => arrIcao.startsWith(p))) {
+            const fid = trip.flight_ids[i];
+            const times = fid ? snap[fid] : null;
+            if (times?.arr) canadaArrivalTime = new Date(times.arr);
+            else if (times?.dep) canadaArrivalTime = new Date(new Date(times.dep).getTime() + 3 * 3600000); // estimate 3hr flight
+            break;
+          }
+        }
+
+        if (!canadaArrivalTime) continue;
+        const hoursUntilArrival = (canadaArrivalTime.getTime() - now.getTime()) / 3600000;
+
+        // Check if CANPASS clearance step exists and is done
+        const { data: canpassCl } = await supa
+          .from("intl_trip_clearances")
+          .select("id, status, notes")
+          .eq("trip_id", trip.id)
+          .eq("clearance_type", "canpass");
+
+        const canpassDone = canpassCl?.some((c) => c.status === "approved");
+        if (canpassDone) continue;
+
+        if (hoursUntilArrival <= 24 && hoursUntilArrival > 0) {
+          const { count } = await supa
+            .from("intl_leg_alerts")
+            .select("id", { count: "exact", head: true })
+            .eq("alert_type", "canpass_due")
+            .eq("acknowledged", false)
+            .ilike("message", `%${trip.tail_number}%CANPASS%`);
+
+          if ((count ?? 0) === 0) {
+            alertsToCreate.push({
+              flight_id: trip.flight_ids[0] ?? "00000000-0000-0000-0000-000000000000",
+              alert_type: "canpass_due",
+              severity: hoursUntilArrival <= 4 ? "critical" : "warning",
+              message: `${trip.tail_number} ${trip.route_icaos.join("→")} — CANPASS ${hoursUntilArrival <= 4 ? "URGENT: only " + Math.round(hoursUntilArrival) + "hr until arrival" : "window open (" + Math.round(hoursUntilArrival) + "hr until arrival)"}. Captain must call CANPASS 4-24hr before arrival.`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // ── 6e. Outbound clearance timing intelligence (Ticket 11) ────────
+  {
+    if (customsAirports && customsAirports.length > 0) {
+      // Re-fetch with the new timing fields
+      const { data: timingAirports } = await supa
+        .from("us_customs_airports")
+        .select("icao, clearance_advance_min_hours, clearance_advance_max_hours, airport_name")
+        .or("clearance_advance_min_hours.not.is.null,clearance_advance_max_hours.not.is.null");
+
+      if (timingAirports && timingAirports.length > 0) {
+        const timingMap = new Map(timingAirports.map((a) => [a.icao, a]));
+
+        // Check outbound clearances for trips departing in the next 48hr
+        const { data: outboundTrips } = await supa
+          .from("intl_trips")
+          .select("id, tail_number, route_icaos, flight_ids, trip_date, schedule_snapshot")
+          .gte("trip_date", new Date().toISOString().slice(0, 10))
+          .lte("trip_date", new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10));
+
+        for (const trip of outboundTrips ?? []) {
+          const depIcao = trip.route_icaos[0];
+          const timing = timingMap.get(depIcao);
+          if (!timing) continue;
+
+          // Get departure time
+          const snap = (trip.schedule_snapshot ?? {}) as Record<string, { dep: string; arr: string | null }>;
+          const firstFid = trip.flight_ids[0];
+          const depTime = firstFid && snap[firstFid] ? new Date(snap[firstFid].dep) : null;
+          if (!depTime) continue;
+
+          const hoursOut = (depTime.getTime() - now.getTime()) / 3600000;
+
+          // Check if outbound clearance is started
+          const { data: obCl } = await supa
+            .from("intl_trip_clearances")
+            .select("id, status")
+            .eq("trip_id", trip.id)
+            .eq("clearance_type", "outbound_clearance");
+
+          const obStarted = obCl?.some((c) => c.status !== "not_started");
+
+          // Too early warning
+          if (timing.clearance_advance_max_hours && hoursOut > timing.clearance_advance_max_hours && obStarted) {
+            // Already submitted but too early — just informational
+          }
+
+          // Time to request
+          if (timing.clearance_advance_min_hours && hoursOut <= timing.clearance_advance_min_hours && !obStarted) {
+            const { count } = await supa
+              .from("intl_leg_alerts")
+              .select("id", { count: "exact", head: true })
+              .eq("alert_type", "clearance_timing")
+              .eq("acknowledged", false)
+              .ilike("message", `%${trip.tail_number}%${depIcao}%`);
+
+            if ((count ?? 0) === 0) {
+              alertsToCreate.push({
+                flight_id: firstFid ?? "00000000-0000-0000-0000-000000000000",
+                alert_type: "clearance_timing",
+                severity: "warning",
+                message: `${trip.tail_number} departing ${depIcao} (${timing.airport_name ?? depIcao}) in ${Math.round(hoursOut)}hr — outbound clearance not yet requested. ${depIcao} requires ${timing.clearance_advance_min_hours}+ hr advance notice.`,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── 7. Insert all alerts ────────────────────────────────────────────
   if (alertsToCreate.length > 0) {
     const { error } = await supa.from("intl_leg_alerts").insert(alertsToCreate);
@@ -439,7 +733,7 @@ async function runChecks() {
     }
 
     // ── 8. Slack notification for delay/diversion alerts ──────────────
-    const slackAlerts = alertsToCreate.filter((a) => a.alert_type === "delay" || a.alert_type === "diversion" || a.alert_type === "schedule_change");
+    const slackAlerts = alertsToCreate.filter((a) => ["delay", "diversion", "schedule_change", "crew_restriction", "eapis_missing", "canpass_due"].includes(a.alert_type));
     if (slackAlerts.length > 0) {
       await sendIntlAlertSlack(slackAlerts);
     }
