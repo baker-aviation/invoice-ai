@@ -62,6 +62,8 @@ export type FlightsResponse = {
   count: number;
   /** NOTAM_RUNWAY alert IDs suppressed because airport still has 5000+ ft paved open */
   suppressedRunwayNotamIds?: string[];
+  /** NOTAM_RUNWAY IDs where all runways ≥5000 ft are closed during the NOTAM window */
+  allRunwaysClosedNotamIds?: string[];
   /** Flights where ALL runways are closed within ±2hrs of departure/arrival */
   allRunwaysClosedAlerts?: AllRwysClosedAlert[];
 };
@@ -541,9 +543,10 @@ export async function fetchFlights(params: {
 
   // Compute suppressed NOTAM_RUNWAY IDs (airport still has 5000+ ft paved open).
   // Alerts stay attached to flights — frontend uses these IDs to show/hide.
+  // Also compute IDs where ALL runways are closed (for "ALL RWYS CLSD" badge).
   const allAlerts: OpsAlert[] = [];
   for (const alerts of alertsByFlight.values()) allAlerts.push(...alerts);
-  const suppressedRunwayNotamIds = getRunwaySuppressedIds(allAlerts);
+  const { suppressed: suppressedRunwayNotamIds, allClosedIds: allRunwaysClosedNotamIds } = getRunwaySuppressedIds(allAlerts);
 
   const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
     id: row.id as string,
@@ -682,7 +685,7 @@ export async function fetchFlights(params: {
   // Detect flights where ALL runways are closed within ±2hrs of departure/arrival
   const allRunwaysClosedAlerts = detectAllRunwaysClosed(flights);
 
-  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedAlerts };
+  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedNotamIds, allRunwaysClosedAlerts };
 }
 
 // ---------------------------------------------------------------------------

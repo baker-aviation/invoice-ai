@@ -504,7 +504,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin, useLocalTime }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null; pinned?: boolean; onTogglePin?: (alertId: string, pin: boolean) => void; useLocalTime?: boolean }) {
+function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin, useLocalTime, isAllRwysClosed }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null; pinned?: boolean; onTogglePin?: (alertId: string, pin: boolean) => void; useLocalTime?: boolean; isAllRwysClosed?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -541,6 +541,11 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin, useL
         </span>
         {alert.airport_icao && (
           <span className="font-mono font-semibold text-gray-800 text-xs">{alert.airport_icao}</span>
+        )}
+        {isAllRwysClosed && (
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold bg-red-200 text-red-900 border border-red-300">
+            ALL RWYS CLSD
+          </span>
         )}
         {alert.edct_time && (
           <span className="text-xs">
@@ -729,7 +734,7 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned,
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey, useLocalTime,
+  flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey, useLocalTime, allClosedNotamIds,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert, flightId?: string) => boolean;
@@ -748,6 +753,7 @@ function FlightCard({
   pinnedKeys?: Set<string>;
   onTogglePinKey?: (key: string, pin: boolean) => void;
   useLocalTime?: boolean;
+  allClosedNotamIds?: Set<string>;
 }) {
   const fid = flight.id;
   const visibleAlerts = (flight.alerts ?? []).filter((a) => {
@@ -848,7 +854,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={(id) => onAck(id, fid)} acked={isAcked(a, fid)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} useLocalTime={useLocalTime} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={(id) => onAck(id, fid)} acked={isAcked(a, fid)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} useLocalTime={useLocalTime} isAllRwysClosed={allClosedNotamIds?.has(a.id)} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} pinned={pinnedKeys?.has(ca.key)} onTogglePin={onTogglePinKey} />
           ))}
@@ -1014,6 +1020,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
   // Self-contained 720hr flight + alert fetch (deferred from OpsTabs to only run when this tab is active)
   const [flights, setFlights] = useState<Flight[]>([]);
   const [suppressedRunwayNotamIds, setSuppressedRunwayNotamIds] = useState<string[]>([]);
+  const [allRunwaysClosedNotamIds, setAllRunwaysClosedNotamIds] = useState<string[]>([]);
   const [allRunwaysClosedAlerts, setAllRunwaysClosedAlerts] = useState<AllRwysClosedAlert[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(true);
 
@@ -1023,6 +1030,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
       .then((data) => {
         if (data.flights) setFlights(data.flights);
         if (data.suppressedRunwayNotamIds) setSuppressedRunwayNotamIds(data.suppressedRunwayNotamIds);
+        if (data.allRunwaysClosedNotamIds) setAllRunwaysClosedNotamIds(data.allRunwaysClosedNotamIds);
         if (data.allRunwaysClosedAlerts) setAllRunwaysClosedAlerts(data.allRunwaysClosedAlerts);
       })
       .catch((err) => console.error("[OpsBoard] alert fetch error:", err))
@@ -1042,6 +1050,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [showFiltered, setShowFiltered] = useState(false);
   const suppressedIds = useMemo(() => new Set(suppressedRunwayNotamIds), [suppressedRunwayNotamIds]);
+  const allClosedNotamIds = useMemo(() => new Set(allRunwaysClosedNotamIds), [allRunwaysClosedNotamIds]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [customAlerts, setCustomAlerts] = useState<CustomNotamAlert[]>([]);
   const [showAddCustom, setShowAddCustom] = useState(false);
@@ -1599,7 +1608,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
             </div>
             <div className="p-3 space-y-2">
               {pinnedAlerts.map((a) => (
-                <AlertCard key={a.id} alert={a} onAck={(id) => handleAck(id, "")} pinned onTogglePin={togglePin} useLocalTime={useLocalTime} />
+                <AlertCard key={a.id} alert={a} onAck={(id) => handleAck(id, "")} pinned onTogglePin={togglePin} useLocalTime={useLocalTime} isAllRwysClosed={allClosedNotamIds.has(a.id)} />
               ))}
               {pinnedClientAlerts.map((ca) => (
                 <ClientAlertCard key={ca.key} alert={ca} onDismiss={handleDismissClient} pinned onTogglePin={togglePinKey} />
@@ -1988,6 +1997,7 @@ export default function OpsBoard({ bakerPprAirports, fboHoursMap = {} }: { baker
                       pinnedKeys={pinnedKeys}
                       onTogglePinKey={togglePinKey}
                       useLocalTime={useLocalTime}
+                      allClosedNotamIds={allClosedNotamIds}
                     />
                   ))}
                 </div>
