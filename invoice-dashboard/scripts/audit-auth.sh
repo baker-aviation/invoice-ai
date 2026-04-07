@@ -15,6 +15,10 @@ ALLOWLIST=(
   "api/invite/route.ts"                # Token-based invite acceptance
   "api/aircraft/webhook/route.ts"      # External FlightAware webhook
   "api/fuel-planning/shared-plan/"     # Token-based shared plan viewer
+  "api/fuel-planning/price-history/"   # Used by shareable plan pages (read-only)
+  "api/fbo-fees/lookup/route.ts"       # FBO fee lookup for tankering calc (read-only)
+  "api/fbo-fees/route.ts"              # FBO fee data from invoices (read-only)
+  "api/van/flights/route.ts"           # Van driver page flight refresh (read-only)
   "api/ops/faa-delays/route.ts"        # Proxies public FAA NAS Status XML feed
   "api/ops/flow-controls/route.ts"     # Proxies public FAA flow control data
 )
