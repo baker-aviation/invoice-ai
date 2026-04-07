@@ -8,6 +8,7 @@ import type { PilotRoute } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
 import { getHasdataCacheForOptimizer } from "@/lib/hasdataCache";
 import { loadDriveTimeCache } from "@/lib/driveTime";
+import { validatePreOptimization } from "@/lib/swapValidation";
 
 const OptimizeRequestSchema = z.object({
   swap_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -244,6 +245,30 @@ export async function POST(req: NextRequest) {
   }
 
   const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
+
+  // ── STEP 0: Pre-optimization validation ──────────────────────────────────
+  const validation = validatePreOptimization({
+    swapAssignments,
+    crewRoster,
+    flights,
+    swapDate,
+  });
+
+  if (!validation.valid) {
+    console.log(`[Swap Optimizer] Validation FAILED: ${validation.errors.length} errors, ${validation.warnings.length} warnings`);
+    return NextResponse.json({
+      ok: false,
+      error: "Pre-optimization validation failed",
+      validation: {
+        errors: validation.errors,
+        warnings: validation.warnings,
+      },
+    }, { status: 422 });
+  }
+
+  if (validation.warnings.length > 0) {
+    console.log(`[Swap Optimizer] Validation passed with ${validation.warnings.length} warnings`);
+  }
 
   // ── STEP 0.5: Filter locked tails from assignments AND pool ──────────────
   // When lock_tails is provided, we only optimize unlocked tails.
@@ -493,6 +518,7 @@ export async function POST(req: NextRequest) {
     routes_used: cached.totalFlights,
     flight_cache_used: !false && hasFlightData,
     rotation_source: rotationSource,
+    validation: validation.warnings.length > 0 ? { warnings: validation.warnings } : undefined,
     offgoing_first: offgoingFirstResult ? {
       deadlines: offgoingFirstResult.deadlines.map((d) => ({
         ...d,
