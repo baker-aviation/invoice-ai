@@ -180,6 +180,16 @@ export default function TicketBoard() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const handleBodyUpdate = async (id: number, body: string) => {
+    // Optimistic update
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, body } : t)));
+    await fetch("/api/admin/tickets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, body }),
+    });
+  };
+
   // ── Filtered + grouped tickets ────────────────────────────────────────────
 
   const filtered = filter === "all" ? tickets : tickets.filter((t) => t.status === filter);
@@ -350,6 +360,7 @@ export default function TicketBoard() {
               onDelete={() => handleDelete(t.id)}
               onStatusChange={(s) => handleStatusChange(t.id, s)}
               onCopyPrompt={() => t.claude_prompt && copyPrompt(t.id, t.claude_prompt)}
+              onBodyUpdate={(body) => handleBodyUpdate(t.id, body)}
             />
           ))}
         </div>
@@ -373,6 +384,7 @@ export default function TicketBoard() {
                 onDelete={() => handleDelete(t.id)}
                 onStatusChange={(s) => handleStatusChange(t.id, s)}
                 onCopyPrompt={() => t.claude_prompt && copyPrompt(t.id, t.claude_prompt)}
+                onBodyUpdate={(body) => handleBodyUpdate(t.id, body)}
               />
             ))}
           </div>
@@ -401,6 +413,7 @@ function TicketRow({
   onDelete,
   onStatusChange,
   onCopyPrompt,
+  onBodyUpdate,
 }: {
   ticket: Ticket;
   expanded: boolean;
@@ -410,6 +423,7 @@ function TicketRow({
   onDelete: () => void;
   onStatusChange: (s: Ticket["status"]) => void;
   onCopyPrompt: () => void;
+  onBodyUpdate: (body: string) => void;
 }) {
   const pBucket = priorityBucket(t.priority);
   const pInfo = PRIORITY_LABELS[pBucket];
@@ -444,6 +458,22 @@ function TicketRow({
           ))}
         </div>
 
+        {/* Checklist progress */}
+        {t.body && t.body.includes("- [") && (() => {
+          const total = (t.body.match(/- \[[ x]\]/gi) ?? []).length;
+          const checked = (t.body.match(/- \[x\]/gi) ?? []).length;
+          if (total === 0) return null;
+          const pct = Math.round((checked / total) * 100);
+          return (
+            <div className="hidden sm:flex items-center gap-1.5 text-[10px]">
+              <div className="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full transition-all ${pct === 100 ? "bg-emerald-500" : "bg-blue-500"}`} style={{ width: `${pct}%` }} />
+              </div>
+              <span className={pct === 100 ? "text-emerald-400" : "text-zinc-400"}>{checked}/{total}</span>
+            </div>
+          );
+        })()}
+
         {/* GitHub link */}
         {t.github_issue && (
           <a
@@ -471,9 +501,44 @@ function TicketRow({
       {/* Expanded detail */}
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-white/10 pt-3">
-          {/* Body */}
+          {/* Body with interactive checklists */}
           {t.body && (
-            <p className="text-sm text-zinc-300 whitespace-pre-wrap">{t.body}</p>
+            <div className="text-sm text-zinc-300 space-y-1">
+              {t.body.split("\n").map((line, li) => {
+                const unchecked = line.match(/^(\s*)-\s*\[ \]\s*(.+)$/);
+                const checked = line.match(/^(\s*)-\s*\[x\]\s*(.+)$/i);
+                if (unchecked || checked) {
+                  const isChecked = !!checked;
+                  const text = (unchecked?.[2] ?? checked?.[2] ?? "").trim();
+                  return (
+                    <label key={li} className="flex items-start gap-2 cursor-pointer group hover:bg-white/5 rounded px-1 py-0.5 -mx-1">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => {
+                          // Toggle this checkbox in the body text
+                          const lines = t.body!.split("\n");
+                          if (isChecked) {
+                            lines[li] = lines[li].replace(/\[x\]/i, "[ ]");
+                          } else {
+                            lines[li] = lines[li].replace(/\[ \]/, "[x]");
+                          }
+                          // Persist via PATCH
+                          onBodyUpdate(lines.join("\n"));
+                        }}
+                        className="mt-0.5 accent-emerald-500 w-4 h-4 shrink-0"
+                      />
+                      <span className={isChecked ? "line-through text-zinc-500" : "text-zinc-300"}>{text}</span>
+                    </label>
+                  );
+                }
+                // Regular text line
+                if (line.trim() === "") return <div key={li} className="h-2" />;
+                if (line.startsWith("### ")) return <h4 key={li} className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mt-3 mb-1">{line.slice(4)}</h4>;
+                if (line.startsWith("## ")) return <h3 key={li} className="text-sm font-semibold text-zinc-200 mt-3 mb-1">{line.slice(3)}</h3>;
+                return <p key={li} className="whitespace-pre-wrap">{line}</p>;
+              })}
+            </div>
           )}
 
           {/* Claude prompt */}
