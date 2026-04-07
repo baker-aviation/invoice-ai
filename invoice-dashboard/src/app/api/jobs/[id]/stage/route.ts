@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { ALL_STAGES } from "@/lib/types";
@@ -335,6 +336,10 @@ export async function PATCH(
         console.error("[jobs/stage] Failed to auto-create pilot profile:", err);
       }
     }
+
+    // Bust ISR cache so pipeline board shows the updated stage immediately
+    revalidatePath("/jobs/pipeline");
+    revalidatePath(`/jobs/${id}`);
 
     return NextResponse.json({ ok: true, stage, emailResult, interestCheckSent });
   } catch (err) {
