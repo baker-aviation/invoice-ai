@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
           }
 
           // Read only the tabs we need in parallel
-          const tabsToFetch = ["CREW ROSTER", "Different Airports  .299  Bad P", "CREW CALENDAR"];
+          const tabsToFetch = ["CREW ROSTER", "Different Airports / .299 / Bad Pairs / Training", "CREW CALENDAR"];
           if (targetTab) tabsToFetch.push(targetTab);
 
           const sheetData = await getMultipleSheets(tabsToFetch);
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
             rosterRows: sheetData.get("CREW ROSTER"),
             weeklyRows: targetTab ? sheetData.get(targetTab) : undefined,
             weeklySheetName: targetTab ?? undefined,
-            referenceRows: sheetData.get("Different Airports  .299  Bad P"),
+            referenceRows: sheetData.get("Different Airports / .299 / Bad Pairs / Training"),
             calendarRows: sheetData.get("CREW CALENDAR"),
             slackNames,
           });

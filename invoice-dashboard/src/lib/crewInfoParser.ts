@@ -330,7 +330,7 @@ export function parseCrewInfo(
   const training_needed: TrainingEntry[] = [];
   const recurrency_299: Recurrency299Entry[] = [];
 
-  const diffSheet = wb.Sheets["Different Airports  .299  Bad P"];
+  const diffSheet = wb.Sheets["Different Airports / .299 / Bad Pairs / Training"];
   if (diffSheet) {
     const rows = XLSX.utils.sheet_to_json(diffSheet, { header: 1, defval: "" }) as unknown[][];
 
