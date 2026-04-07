@@ -44,7 +44,7 @@ function isExcelDate(value: unknown): boolean {
 }
 
 /** Common placeholder strings that mean "no data" in the sheet */
-const PLACEHOLDER_VALUES = new Set(["---", "--", "-", "n/a", "tbd", "tba"]);
+const PLACEHOLDER_VALUES = new Set(["---", "--", "-", "n/a", "tbd", "tba", "at landing", "at departure", "upon arrival"]);
 
 function isPlaceholder(value: unknown): boolean {
   if (value == null || value === "") return true;

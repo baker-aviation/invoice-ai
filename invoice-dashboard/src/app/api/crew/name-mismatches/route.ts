@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
       getSheetData(sheetName),
       supa.from("crew_members")
         .select("id, name, jetinsight_name, slack_user_id, role")
-        .or("is_terminated.eq.false,is_terminated.is.null"),
+        .eq("active", true),
       supa.from("crew_name_aliases")
         .select("crew_member_id, source, alias_name, normalized_name"),
     ]);
