@@ -1042,8 +1042,8 @@ function StopCard({
             </span>
           )}
           {(() => {
-            const arrDate = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).toISOString().split("T")[0] : null;
-            const today = new Date().toISOString().split("T")[0];
+            const arrDate = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) : null;
+            const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
             if (arrDate && arrDate < today) {
               return <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700">Landed Yesterday</span>;
             }
