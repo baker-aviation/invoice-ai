@@ -3,12 +3,14 @@
 import { useState } from "react";
 import SuperAdminDashboard from "./SuperAdminDashboard";
 import AircraftTracker from "./AircraftTracker";
+import VideoTranscribe from "./VideoTranscribe";
 
-type Tab = "system" | "aircraft-tracker";
+type Tab = "system" | "aircraft-tracker" | "video-transcribe";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "system", label: "System" },
   { key: "aircraft-tracker", label: "Aircraft Tracker" },
+  { key: "video-transcribe", label: "Video Transcribe" },
 ];
 
 export default function SuperAdminTabs() {
@@ -36,6 +38,7 @@ export default function SuperAdminTabs() {
       {/* Tab content */}
       {activeTab === "system" && <SuperAdminDashboard />}
       {activeTab === "aircraft-tracker" && <AircraftTracker />}
+      {activeTab === "video-transcribe" && <VideoTranscribe />}
     </div>
   );
 }
