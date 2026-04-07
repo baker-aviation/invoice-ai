@@ -33,8 +33,7 @@ export async function GET(req: NextRequest) {
     const [rows, crewRes, aliasRes] = await Promise.all([
       getSheetData(sheetName),
       supa.from("crew_members")
-        .select("id, name, jetinsight_name, slack_user_id, role")
-        .eq("active", true),
+        .select("id, name, jetinsight_name, slack_user_id, role, active"),
       supa.from("crew_name_aliases")
         .select("crew_member_id, source, alias_name, normalized_name"),
     ]);
