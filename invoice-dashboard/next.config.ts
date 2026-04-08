@@ -10,7 +10,7 @@ const securityHeaders = [
     key: "Content-Security-Policy",
     value: [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      "script-src 'self' 'unsafe-inline' blob:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https://storage.googleapis.com https://*.tile.openstreetmap.org https://tilecache.rainviewer.com",
       "font-src 'self'",
@@ -43,10 +43,22 @@ const nextConfig: NextConfig = {
     "openai",
     "@google-cloud/storage",
     "pdf-parse",
+    "ffmpeg-static",
+    "fluent-ffmpeg",
   ],
   typescript: { ignoreBuildErrors: true },
   async headers() {
-    return [{ source: "/(.*)", headers: securityHeaders }];
+    return [
+      { source: "/(.*)", headers: securityHeaders },
+      {
+        // Cross-origin isolation for FFmpeg.wasm (SharedArrayBuffer)
+        source: "/admin/super",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+        ],
+      },
+    ];
   },
   async redirects() {
     return [

@@ -42,10 +42,6 @@
       "schedule": "13,28,43,58 * * * *"
     },
     {
-      "path": "/api/cron/duty-monitor",
-      "schedule": "3,13,23,33,43,53 * * * *"
-    },
-    {
       "path": "/api/cron/hiring-summary",
       "schedule": "0 22 * * *"
     },
