@@ -346,9 +346,13 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
         const frame = frames[i];
         const upload = uploads[i];
 
-        // Convert dataUrl to blob
-        const resp = await fetch(frame.dataUrl);
-        const blob = await resp.blob();
+        // Convert dataUrl to blob (without fetch — avoids CSP connect-src issues)
+        const [header, b64] = frame.dataUrl.split(",");
+        const mime = header.match(/:(.*?);/)?.[1] || "image/jpeg";
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+        const blob = new Blob([bytes], { type: mime });
 
         const uploadRes = await fetch(upload.url, {
           method: "PUT",
@@ -517,7 +521,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Something went wrong";
         console.error("Meeting processing error:", e);
-        setError(msg);
+        setError(`${msg} (step: ${step})`);
         setStep("error");
       }
     },

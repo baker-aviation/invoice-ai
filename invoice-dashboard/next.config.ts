@@ -15,7 +15,7 @@ const securityHeaders = [
       "img-src 'self' data: blob: https://storage.googleapis.com https://*.tile.openstreetmap.org https://tilecache.rainviewer.com",
       "font-src 'self'",
       "media-src 'self' blob: https://storage.googleapis.com",
-      "connect-src 'self' blob: https://*.supabase.co https://api.samsara.com https://storage.googleapis.com https://api.rainviewer.com",
+      "connect-src 'self' blob: data: https://*.supabase.co https://api.samsara.com https://storage.googleapis.com https://api.rainviewer.com",
       "frame-src 'self' https://view.officeapps.live.com https://storage.googleapis.com",
       "worker-src 'self' blob:",
       "frame-ancestors 'none'",
