@@ -81,16 +81,18 @@ async function sendAutoEmail(
   applicationId: number,
   type: "info_session" | "interview",
   origin: string,
+  sentBy?: string,
 ): Promise<{ sent: boolean; error?: string }> {
   try {
     // Fetch candidate
     const { data: candidate } = await supa
       .from("job_application_parse")
-      .select("candidate_name, email, info_session_email_sent_at, interview_email_sent_at")
+      .select("candidate_name, email, rejected_at, info_session_email_sent_at, interview_email_sent_at")
       .eq("application_id", applicationId)
       .maybeSingle();
 
     if (!candidate?.email) return { sent: false, error: "no_email" };
+    if (candidate.rejected_at) return { sent: false, error: "candidate_rejected" };
 
     // Skip if already sent
     if (type === "info_session" && candidate.info_session_email_sent_at) return { sent: false, error: "already_sent" };
@@ -157,13 +159,14 @@ async function sendAutoEmail(
       return { sent: false, error: `send_failed_${sendRes.status}` };
     }
 
-    // Record sent timestamp
+    // Record sent timestamp + who triggered it
     const now = new Date().toISOString();
     const sentField = type === "info_session" ? "info_session_email_sent_at" : "interview_email_sent_at";
     const statusField = type === "info_session" ? "info_session_email_status" : "interview_email_status";
+    const sentByField = type === "info_session" ? "info_session_email_sent_by" : "interview_email_sent_by";
     await supa
       .from("job_application_parse")
-      .update({ [sentField]: now, [statusField]: "sent", updated_at: now })
+      .update({ [sentField]: now, [statusField]: "sent", [sentByField]: sentBy ?? null, updated_at: now })
       .eq("application_id", applicationId);
 
     return { sent: true };
@@ -246,14 +249,16 @@ export async function PATCH(
     const origin = "https://baker-ai-gamma.vercel.app";
     let emailResult: { sent: boolean; error?: string } | null = null;
 
+    const triggeredBy = auth.email || auth.userId;
+
     // Auto-send info session email
     if (stage === "info_session") {
-      emailResult = await sendAutoEmail(supa, Number(id), "info_session", origin);
+      emailResult = await sendAutoEmail(supa, Number(id), "info_session", origin, triggeredBy);
     }
 
     // Auto-send interview scheduling email
     if (stage === "interview_scheduled") {
-      emailResult = await sendAutoEmail(supa, Number(id), "interview", origin);
+      emailResult = await sendAutoEmail(supa, Number(id), "interview", origin, triggeredBy);
     }
 
     // Auto-send "Still Interested?" email when moving from info_session → prd_faa_review
