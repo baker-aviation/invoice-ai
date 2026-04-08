@@ -6,10 +6,23 @@ import { toBlobURL, fetchFile } from "@ffmpeg/util";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type Step = "idle" | "loading" | "transcoding" | "screenshots" | "audio" | "uploading" | "transcribing" | "done" | "error";
+type Step =
+  | "idle"
+  | "loading"
+  | "transcoding"
+  | "uploading-video"
+  | "extracting-server"
+  | "screenshots"
+  | "audio"
+  | "uploading"
+  | "transcribing"
+  | "done"
+  | "error";
+
+type Mode = "full" | "audio-only";
 
 type Screenshot = {
-  time: number; // seconds
+  time: number;
   dataUrl: string;
 };
 
@@ -20,13 +33,12 @@ function encodeWavChunk(
   startSample: number,
   endSample: number,
 ): Blob {
-  const numChannels = 1; // mono
+  const numChannels = 1;
   const sampleRate = audioBuffer.sampleRate;
   const samples = endSample - startSample;
   const buffer = new ArrayBuffer(44 + samples * 2);
   const view = new DataView(buffer);
 
-  // WAV header
   const writeStr = (offset: number, s: string) => {
     for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
   };
@@ -34,17 +46,16 @@ function encodeWavChunk(
   view.setUint32(4, 36 + samples * 2, true);
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
-  view.setUint32(16, 16, true); // chunk size
-  view.setUint16(20, 1, true); // PCM
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * numChannels * 2, true); // byte rate
-  view.setUint16(32, numChannels * 2, true); // block align
-  view.setUint16(34, 16, true); // bits per sample
+  view.setUint32(28, sampleRate * numChannels * 2, true);
+  view.setUint16(32, numChannels * 2, true);
+  view.setUint16(34, 16, true);
   writeStr(36, "data");
   view.setUint32(40, samples * 2, true);
 
-  // Interleave channels → mono, write PCM
   const channelData = audioBuffer.getChannelData(0);
   let offset = 44;
   for (let i = startSample; i < endSample; i++) {
@@ -56,15 +67,13 @@ function encodeWavChunk(
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-// Max chunk size ~20MB (comfortably under Whisper's 25MB limit)
 const MAX_CHUNK_BYTES = 20 * 1024 * 1024;
+const SERVER_SIDE_THRESHOLD = 500 * 1024 * 1024; // 500MB — above this, go server-side
 
 function splitAudioBuffer(audioBuffer: AudioBuffer): Blob[] {
   const totalSamples = audioBuffer.length;
-  const bytesPerSample = 2; // 16-bit PCM
-  const maxSamplesPerChunk = Math.floor(
-    (MAX_CHUNK_BYTES - 44) / bytesPerSample,
-  );
+  const bytesPerSample = 2;
+  const maxSamplesPerChunk = Math.floor((MAX_CHUNK_BYTES - 44) / bytesPerSample);
 
   const chunks: Blob[] = [];
   let start = 0;
@@ -80,6 +89,7 @@ function splitAudioBuffer(audioBuffer: AudioBuffer): Blob[] {
 
 export default function VideoTranscribe() {
   const [step, setStep] = useState<Step>("idle");
+  const [mode, setMode] = useState<Mode>("full");
   const [statusMsg, setStatusMsg] = useState("");
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [transcript, setTranscript] = useState("");
@@ -91,6 +101,16 @@ export default function VideoTranscribe() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
+  const reset = () => {
+    setStep("idle");
+    setStatusMsg("");
+    setScreenshots([]);
+    setTranscript("");
+    setError("");
+    setProgress(0);
+    setSelectedImg(null);
+  };
+
   // ── Check if browser can play the video natively ─────────────────────────
 
   const canPlayNatively = useCallback((file: File): Promise<boolean> => {
@@ -101,21 +121,19 @@ export default function VideoTranscribe() {
       video.muted = true;
 
       const cleanup = () => URL.revokeObjectURL(url);
-
       video.onloadedmetadata = () => { cleanup(); resolve(true); };
       video.onerror = () => { cleanup(); resolve(false); };
-
       video.src = url;
     });
   }, []);
 
-  // ── Transcode HEVC → H.264 via FFmpeg.wasm ──────────────────────────────
+  // ── Transcode HEVC → H.264 via FFmpeg.wasm (client-side, < 500MB) ───────
 
   const transcodeToH264 = useCallback(async (file: File): Promise<File> => {
     if (!ffmpegRef.current) {
       const ffmpeg = new FFmpeg();
-      ffmpeg.on("progress", ({ progress }) => {
-        setProgress(Math.round(progress * 100));
+      ffmpeg.on("progress", ({ progress: p }) => {
+        setProgress(Math.round(p * 100));
       });
 
       setStatusMsg("Loading FFmpeg (first time may take a moment)...");
@@ -132,35 +150,22 @@ export default function VideoTranscribe() {
     const inputName = `input.${ext}`;
     const outputName = "output.mp4";
 
-    setStatusMsg("Transcoding video to H.264 (this may take a minute)...");
+    setStatusMsg("Transcoding video to H.264...");
     await ffmpeg.writeFile(inputName, await fetchFile(file));
     await ffmpeg.exec([
       "-i", inputName,
-      "-c:v", "libx264",
-      "-preset", "fast",
-      "-crf", "23",
-      "-c:a", "aac",
-      "-movflags", "+faststart",
+      "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+      "-c:a", "aac", "-movflags", "+faststart",
       outputName,
     ]);
 
-    const data = await ffmpeg.readFile(outputName) as Uint8Array;
+    const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
     await ffmpeg.deleteFile(inputName);
     await ffmpeg.deleteFile(outputName);
 
     const blob = new Blob([new Uint8Array(data.buffer as ArrayBuffer)], { type: "video/mp4" });
     return new File([blob], file.name.replace(/\.\w+$/, ".mp4"), { type: "video/mp4" });
   }, []);
-
-  const reset = () => {
-    setStep("idle");
-    setStatusMsg("");
-    setScreenshots([]);
-    setTranscript("");
-    setError("");
-    setProgress(0);
-    setSelectedImg(null);
-  };
 
   // ── Screenshot extraction via video+canvas ────────────────────────────────
 
@@ -195,7 +200,6 @@ export default function VideoTranscribe() {
               resolve(frames);
               return;
             }
-
             video.currentTime = currentTime;
           };
 
@@ -205,7 +209,6 @@ export default function VideoTranscribe() {
               time: currentTime,
               dataUrl: canvas.toDataURL("image/jpeg", 0.85),
             });
-
             setProgress(Math.round((frames.length / totalFrames) * 100));
             currentTime += interval;
             captureFrame();
@@ -223,9 +226,9 @@ export default function VideoTranscribe() {
     [],
   );
 
-  // ── Audio extraction via AudioContext ──────────────────────────────────────
+  // ── Audio extraction via AudioContext (client-side) ────────────────────────
 
-  const extractAudio = useCallback(
+  const extractAudioClientSide = useCallback(
     async (file: File): Promise<AudioBuffer> => {
       setStatusMsg("Reading video file...");
       const arrayBuffer = await file.arrayBuffer();
@@ -247,19 +250,15 @@ export default function VideoTranscribe() {
       const keys: string[] = [];
 
       for (let i = 0; i < chunks.length; i++) {
-        setStatusMsg(
-          `Uploading audio chunk ${i + 1}/${chunks.length}...`,
-        );
+        setStatusMsg(`Uploading audio chunk ${i + 1}/${chunks.length}...`);
         setProgress(Math.round(((i + 1) / chunks.length) * 100));
 
-        // Get presigned URL
         const presignRes = await fetch(
           `/api/admin/transcribe?action=presign&filename=chunk_${String(i).padStart(3, "0")}.wav`,
         );
         if (!presignRes.ok) throw new Error("Failed to get upload URL");
         const { url, key, contentType } = await presignRes.json();
 
-        // Upload to GCS
         const uploadRes = await fetch(url, {
           method: "PUT",
           headers: { "Content-Type": contentType },
@@ -275,6 +274,76 @@ export default function VideoTranscribe() {
     [],
   );
 
+  // ── Upload raw video to GCS + server-side audio extraction ────────────────
+
+  const extractAudioServerSide = useCallback(async (file: File): Promise<string[]> => {
+    // Upload raw video to GCS
+    setStep("uploading-video");
+    setStatusMsg(`Uploading video (${(file.size / 1024 / 1024).toFixed(0)}MB)...`);
+    setProgress(0);
+
+    const ext = file.name.split(".").pop() || "mov";
+    const presignRes = await fetch(
+      `/api/admin/transcribe?action=presign&filename=video.${ext}`,
+    );
+    if (!presignRes.ok) throw new Error("Failed to get upload URL for video");
+    const { url, key, contentType } = await presignRes.json();
+
+    // Upload with progress via XMLHttpRequest
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`)));
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.open("PUT", url);
+      xhr.setRequestHeader("Content-Type", contentType);
+      xhr.send(file);
+    });
+
+    // Server-side FFmpeg extraction
+    setStep("extracting-server");
+    setStatusMsg("Server is extracting audio with FFmpeg...");
+    setProgress(0);
+
+    const res = await fetch("/api/admin/extract-audio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gcsKey: key }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Server extraction failed (${res.status})`);
+    }
+
+    const { gcsKeys } = await res.json();
+    return gcsKeys;
+  }, []);
+
+  // ── Transcribe audio chunks via Whisper ───────────────────────────────────
+
+  const transcribeChunks = useCallback(async (gcsKeys: string[]): Promise<string> => {
+    setStep("transcribing");
+    setStatusMsg("Transcribing with Whisper...");
+    setProgress(0);
+
+    const res = await fetch("/api/admin/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gcsKeys }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Transcription failed (${res.status})`);
+    }
+
+    const data = await res.json();
+    return data.transcript;
+  }, []);
+
   // ── Main processing flow ──────────────────────────────────────────────────
 
   const processVideo = useCallback(
@@ -285,62 +354,86 @@ export default function VideoTranscribe() {
         setScreenshots([]);
         setTranscript("");
 
-        // Step 0: Transcode if browser can't play natively (e.g. HEVC .mov)
-        let videoFile = file;
+        const isLarge = file.size > SERVER_SIDE_THRESHOLD;
         const playable = await canPlayNatively(file);
-        if (!playable) {
-          setStep("transcoding");
+        const needsTranscode = !playable;
+
+        // ── FULL MODE ────────────────────────────────────────────────────
+        if (mode === "full") {
+          let videoFile = file;
+
+          if (needsTranscode && isLarge) {
+            // Too big for client-side transcode — do audio-only server-side + warn
+            setStatusMsg("Video too large for browser transcoding — extracting audio server-side (no screenshots for large HEVC files)...");
+            const gcsKeys = await extractAudioServerSide(file);
+            const text = await transcribeChunks(gcsKeys);
+            setTranscript(text);
+            setStep("done");
+            setStatusMsg(`Done! Transcript from ${gcsKeys.length} audio chunk(s). (Screenshots skipped — file too large for browser transcode)`);
+            return;
+          }
+
+          if (needsTranscode) {
+            setStep("transcoding");
+            setProgress(0);
+            videoFile = await transcodeToH264(file);
+          }
+
+          // Extract screenshots
+          setStep("screenshots");
+          setStatusMsg("Extracting screenshots every 3 seconds...");
           setProgress(0);
-          videoFile = await transcodeToH264(file);
+          const frames = await extractScreenshots(videoFile, 3);
+          setScreenshots(frames);
+
+          // Client-side audio extraction
+          setStep("audio");
+          setProgress(0);
+          const audioBuffer = await extractAudioClientSide(videoFile);
+          setStatusMsg(
+            `Audio decoded: ${Math.round(audioBuffer.duration)}s at ${audioBuffer.sampleRate}Hz`,
+          );
+
+          const chunks = splitAudioBuffer(audioBuffer);
+          setStatusMsg(
+            `Audio split into ${chunks.length} chunk(s) (${chunks.map((c) => (c.size / 1024 / 1024).toFixed(1) + "MB").join(", ")})`,
+          );
+
+          setStep("uploading");
+          const gcsKeys = await uploadChunksToGcs(chunks);
+          const text = await transcribeChunks(gcsKeys);
+          setTranscript(text);
+          setStep("done");
+          setStatusMsg(`Done! ${frames.length} screenshots, ${gcsKeys.length} audio chunk(s) transcribed.`);
+          return;
         }
 
-        // Step 1: Extract screenshots
-        setStep("screenshots");
-        setStatusMsg("Extracting screenshots every 3 seconds...");
-        setProgress(0);
-        const frames = await extractScreenshots(videoFile, 3);
-        setScreenshots(frames);
+        // ── AUDIO ONLY MODE ──────────────────────────────────────────────
+        if (isLarge || needsTranscode) {
+          // Server-side for large files or unplayable codecs
+          const gcsKeys = await extractAudioServerSide(file);
+          const text = await transcribeChunks(gcsKeys);
+          setTranscript(text);
+          setStep("done");
+          setStatusMsg(`Done! ${gcsKeys.length} audio chunk(s) transcribed.`);
+          return;
+        }
 
-        // Step 2: Extract audio
+        // Small playable file — client-side audio extraction
         setStep("audio");
         setProgress(0);
-        const audioBuffer = await extractAudio(videoFile);
+        const audioBuffer = await extractAudioClientSide(file);
         setStatusMsg(
           `Audio decoded: ${Math.round(audioBuffer.duration)}s at ${audioBuffer.sampleRate}Hz`,
         );
 
-        // Step 3: Encode + split into chunks
         const chunks = splitAudioBuffer(audioBuffer);
-        setStatusMsg(
-          `Audio split into ${chunks.length} chunk(s) (${chunks.map((c) => (c.size / 1024 / 1024).toFixed(1) + "MB").join(", ")})`,
-        );
-
-        // Step 4: Upload to GCS
         setStep("uploading");
         const gcsKeys = await uploadChunksToGcs(chunks);
-
-        // Step 5: Transcribe
-        setStep("transcribing");
-        setStatusMsg("Transcribing with Whisper...");
-        setProgress(0);
-
-        const res = await fetch("/api/admin/transcribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ gcsKeys }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `Transcription failed (${res.status})`);
-        }
-
-        const data = await res.json();
-        setTranscript(data.transcript);
+        const text = await transcribeChunks(gcsKeys);
+        setTranscript(text);
         setStep("done");
-        setStatusMsg(
-          `Done! ${frames.length} screenshots, ${data.chunks} audio chunk(s) transcribed.`,
-        );
+        setStatusMsg(`Done! ${gcsKeys.length} audio chunk(s) transcribed.`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Something went wrong";
         console.error("Video processing error:", e);
@@ -348,7 +441,16 @@ export default function VideoTranscribe() {
         setStep("error");
       }
     },
-    [canPlayNatively, transcodeToH264, extractScreenshots, extractAudio, uploadChunksToGcs],
+    [
+      mode,
+      canPlayNatively,
+      transcodeToH264,
+      extractScreenshots,
+      extractAudioClientSide,
+      uploadChunksToGcs,
+      extractAudioServerSide,
+      transcribeChunks,
+    ],
   );
 
   // ── Drop / file handlers ──────────────────────────────────────────────────
@@ -382,12 +484,41 @@ export default function VideoTranscribe() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
-  const isProcessing = ["loading", "transcoding", "screenshots", "audio", "uploading", "transcribing"].includes(step);
+  const isProcessing = [
+    "loading", "transcoding", "uploading-video", "extracting-server",
+    "screenshots", "audio", "uploading", "transcribing",
+  ].includes(step);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="px-6 space-y-6">
+      {/* Mode toggle */}
+      {(step === "idle" || step === "error") && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => setMode("full")}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              mode === "full"
+                ? "bg-blue-600 text-white"
+                : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+            }`}
+          >
+            Screenshots + Transcript
+          </button>
+          <button
+            onClick={() => setMode("audio-only")}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              mode === "audio-only"
+                ? "bg-blue-600 text-white"
+                : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+            }`}
+          >
+            Transcript Only
+          </button>
+        </div>
+      )}
+
       {/* Drop zone */}
       {step === "idle" || step === "error" ? (
         <div
@@ -416,8 +547,12 @@ export default function VideoTranscribe() {
             Drop a video here or click to browse
           </p>
           <p className="text-sm text-zinc-400 mt-1">
-            Supports .mov, .mp4, .webm — extracts screenshots every 3s + full
-            transcription
+            {mode === "full"
+              ? "Supports .mov, .mp4, .webm — extracts screenshots every 3s + full transcription"
+              : "Supports .mov, .mp4, .webm — extracts and transcribes audio only"}
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            Large files (&gt;500MB) and HEVC screen recordings are processed server-side
           </p>
         </div>
       ) : null}
@@ -443,6 +578,8 @@ export default function VideoTranscribe() {
             <div className="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full" />
             <span className="text-sm font-medium text-zinc-200">
               {step === "transcoding" && "Transcoding video (HEVC → H.264)..."}
+              {step === "uploading-video" && "Uploading video to server..."}
+              {step === "extracting-server" && "Server extracting audio (FFmpeg)..."}
               {step === "screenshots" && "Extracting screenshots..."}
               {step === "audio" && "Extracting audio..."}
               {step === "uploading" && "Uploading audio..."}

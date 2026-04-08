@@ -43,6 +43,8 @@ const nextConfig: NextConfig = {
     "openai",
     "@google-cloud/storage",
     "pdf-parse",
+    "ffmpeg-static",
+    "fluent-ffmpeg",
   ],
   typescript: { ignoreBuildErrors: true },
   async headers() {
