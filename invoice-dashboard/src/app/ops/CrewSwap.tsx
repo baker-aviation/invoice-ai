@@ -4020,11 +4020,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       setOptimizeStatus("Detecting rotation...");
       await detectRotation();
 
-      // Step 2: Seed flights (fill mode — skips pairs already cached)
-      setOptimizeStatus("Checking flight cache...");
-      await seedFlights();
-
-      // Step 3: Compute routes (skips already-cached drive times)
+      // Step 2: Compute routes — seeds HasData flight cache for swap day + next day
+      // (covers both oncoming and offgoing Thursday morning flights in one pass)
       setOptimizeStatus("Computing routes...");
       await computeRoutes();
 
@@ -4690,13 +4687,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <div className="flex items-center gap-3 text-xs text-amber-700">
               <span><span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedDate.toISOString().slice(0, 10)}.</span>
               <button
-                onClick={seedFlights}
-                disabled={seedingFlights}
+                onClick={computeRoutes}
+                disabled={computingRoutes || seedingFlights}
                 className={`px-3 py-1 rounded-md font-medium whitespace-nowrap ${
-                  seedingFlights ? "bg-gray-200 text-gray-400" : "bg-amber-600 text-white hover:bg-amber-700"
+                  computingRoutes || seedingFlights ? "bg-gray-200 text-gray-400" : "bg-amber-600 text-white hover:bg-amber-700"
                 }`}
               >
-                {seedingFlights ? "Seeding..." : "Seed Flights Now"}
+                {computingRoutes || seedingFlights ? "Computing..." : "Compute Routes Now"}
               </button>
             </div>
           )}
@@ -5501,24 +5498,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               {detectingRotation ? "Detecting..." : "Auto-Detect Rotation"}
             </button>
             <button
-              onClick={seedFlights}
-              disabled={seedingFlights || optimizing}
-              className={`px-2.5 py-1 font-medium border rounded ${
-                seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
-              }`}
-              title="Seed commercial flight cache from Google Flights via HasData"
-            >
-              {seedingFlights ? "Seeding Flights..." : "Seed Flights"}
-            </button>
-            <button
               onClick={computeRoutes}
-              disabled={computingRoutes || optimizing}
+              disabled={computingRoutes || seedingFlights || optimizing}
               className={`px-2.5 py-1 font-medium border rounded ${
-                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200"
+                computingRoutes || seedingFlights ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
               }`}
-              title="Compute drive times for all crew-to-swap routes"
+              title="Seed flight cache + compute routes for all crew-to-swap pairs (swap day + next day)"
             >
-              {computingRoutes ? "Computing..." : "Compute Routes"}
+              {computingRoutes || seedingFlights ? "Computing Routes..." : "Compute Routes"}
             </button>
             <button
               onClick={() => runOptimizer()}

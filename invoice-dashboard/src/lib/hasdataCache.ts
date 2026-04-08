@@ -361,33 +361,37 @@ export async function buildHasdataCache(
     console.log(`[HasdataCache] Seed mode: will upsert over existing (no delete)`);
   }
   if (mode === "fill") {
-    // Fetch pairs that are either missing OR failed (offer_count = 0).
-    // Previous behavior only skipped pairs with any existing row, which meant
-    // 429/timeout failures (stored as empty rows) were never retried.
-    const cachedWithFlights = new Set<string>();
+    // Skip pairs that have flights OR were recently tried with 0 results (dead routes).
+    // Routes with no flights don't need retrying within 24h — they won't magically appear.
+    const skipPairs = new Set<string>();
+    const recentCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     for (const d of datesToSeed) {
       const { data: existing } = await supa
         .from("hasdata_flight_cache")
-        .select("origin_iata, destination_iata, offer_count")
+        .select("origin_iata, destination_iata, offer_count, fetched_at")
         .eq("cache_date", d);
       for (const r of existing ?? []) {
-        // Only skip pairs that actually have flights — retry empty ones
+        const key = `${r.origin_iata}-${r.destination_iata}-${d}`;
         if ((r.offer_count as number) > 0) {
-          cachedWithFlights.add(`${r.origin_iata}-${r.destination_iata}-${d}`);
+          // Has flights — skip
+          skipPairs.add(key);
+        } else if (r.fetched_at && (r.fetched_at as string) > recentCutoff) {
+          // No flights but tried within 24h — skip (dead route)
+          skipPairs.add(key);
         }
       }
     }
     const before = allPairs.length;
-    allPairs = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`));
-    console.log(`[HasdataCache] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} already have flights, retrying empty/failed pairs)`);
+    allPairs = allPairs.filter((p) => !skipPairs.has(`${p.origin}-${p.destination}-${p.date}`));
+    console.log(`[HasdataCache] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} skipped: cached or recently tried)`);
     if (allPairs.length === 0) {
       console.log(`[HasdataCache] Cache is complete for ${datesToSeed.join("+")} — nothing to fetch`);
       return { pairs_queried: 0, offers_cached: 0, errors: [], duration_ms: Date.now() - start };
     }
   }
 
-  // Delegate to seedTargetedPairs with cron-sized batches (50 concurrent, 200ms delay)
-  const result = await seedTargetedPairs(allPairs, { batchSize: 50, delayMs: 200 });
+  // Delegate to seedTargetedPairs with larger batches and shorter delays for speed
+  const result = await seedTargetedPairs(allPairs, { batchSize: 50, delayMs: 100 });
 
   return result;
 }
