@@ -505,9 +505,13 @@ export async function getCommercialFlightStatus(
   const airlineIcao = iataToIcao[airlineIata.toUpperCase()] ?? airlineIata.toUpperCase();
   const faIdent = `${airlineIcao}${num}`;
 
-  const startDate = `${targetDate}T00:00:00Z`;
-  const endDate = `${targetDate}T23:59:59Z`;
-  const url = `${BASE}/flights/${encodeURIComponent(faIdent)}?start=${startDate}&end=${endDate}`;
+  // Use US-local-aligned window: 04:00Z (midnight ET) to next day 08:00Z (midnight PT + margin).
+  // Without this, midnight UTC = 8pm ET catches tonight's flights for tomorrow's date.
+  const startDate = `${targetDate}T04:00:00Z`;
+  const nextDay = new Date(`${targetDate}T12:00:00Z`);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const endDateFull = `${nextDay.toISOString().slice(0, 10)}T08:00:00Z`;
+  const url = `${BASE}/flights/${encodeURIComponent(faIdent)}?start=${startDate}&end=${endDateFull}`;
 
   try {
     const res = await fetch(url, {
@@ -524,12 +528,15 @@ export async function getCommercialFlightStatus(
     const flights = (data.flights ?? []) as FaFlight[];
     if (flights.length === 0) return null;
 
-    // Pick the flight that matches the target date (FA may return multiple days)
-    // and optionally the expected origin airport (same flight number can operate
-    // on multiple routes, e.g., AA1033 DFW→ORD and AA1033 ORD→BOS).
+    // Pick the flight that matches the target date in US local time.
+    // FA returns UTC timestamps, so a 10pm ET flight on 4/8 has UTC date 4/9.
+    // Compare using ET to avoid grabbing wrong-day flights.
     const dateMatches = flights.filter(fl => {
-      const depDate = (fl.scheduled_out ?? fl.estimated_out ?? "").slice(0, 10);
-      return depDate === targetDate;
+      const depIso = fl.scheduled_out ?? fl.estimated_out ?? "";
+      if (!depIso) return false;
+      // Convert to ET date for comparison (covers ET/CT/MT/PT — ET is strictest)
+      const depET = new Date(depIso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      return depET === targetDate;
     });
 
     let f: FaFlight;
