@@ -52,24 +52,30 @@ export async function POST(req: NextRequest) {
 
     console.log(`[SeedFlights] ${allPairs.length} pairs for ${swap_date}`);
 
-    // Fill mode: skip pairs that already have flights cached
+    // Fill mode: skip pairs that already have flights cached OR were recently tried with 0 results
     if (mode === "fill") {
       const supa = createServiceClient();
-      const cachedWithFlights = new Set<string>();
+      const skipPairs = new Set<string>();
+      const recentCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // 24h ago
       for (const d of datesToSeed) {
         const { data: existing } = await supa
           .from("hasdata_flight_cache")
-          .select("origin_iata, destination_iata, offer_count")
+          .select("origin_iata, destination_iata, offer_count, fetched_at")
           .eq("cache_date", d);
         for (const r of existing ?? []) {
+          const key = `${r.origin_iata}-${r.destination_iata}-${d}`;
           if ((r.offer_count as number) > 0) {
-            cachedWithFlights.add(`${r.origin_iata}-${r.destination_iata}-${d}`);
+            // Has flights — skip
+            skipPairs.add(key);
+          } else if (r.fetched_at && (r.fetched_at as string) > recentCutoff) {
+            // No flights but tried within 24h — skip (route doesn't exist, don't retry)
+            skipPairs.add(key);
           }
         }
       }
       const before = allPairs.length;
-      allPairs = allPairs.filter((p) => !cachedWithFlights.has(`${p.origin}-${p.destination}-${p.date}`));
-      console.log(`[SeedFlights] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} already have flights)`);
+      allPairs = allPairs.filter((p) => !skipPairs.has(`${p.origin}-${p.destination}-${p.date}`));
+      console.log(`[SeedFlights] Fill mode: ${allPairs.length} pairs to fetch (${before - allPairs.length} skipped: cached or recently tried)`);
 
       if (allPairs.length === 0) {
         return NextResponse.json({
@@ -85,8 +91,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Seed with conservative batch size (25) for on-demand requests
-    const result = await seedTargetedPairs(allPairs);
+    // Seed with batch size 50 and 100ms delay for faster on-demand results
+    const result = await seedTargetedPairs(allPairs, { batchSize: 50, delayMs: 100 });
 
     return NextResponse.json({
       ok: true,
