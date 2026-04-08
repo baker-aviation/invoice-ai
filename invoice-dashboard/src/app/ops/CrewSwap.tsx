@@ -928,13 +928,14 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onCrewSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  onCrewSwapPointChange?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow, newSwapPoint: string) => void;
   onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
   onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void;
   onConfirmTail?: (tail: string) => void;
@@ -944,7 +945,7 @@ function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail
   selectedDate?: Date;
   tailAircraftTypes?: Record<string, string>;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} onConfirmTail={onConfirmTail} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedDate={selectedDate} tailAircraftTypes={tailAircraftTypes} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} onCrewSwapPointChange={onCrewSwapPointChange} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} onConfirmTail={onConfirmTail} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedDate={selectedDate} tailAircraftTypes={tailAircraftTypes} />;
   return <SwapSheetByRole rows={rows} onArrivalOverride={onArrivalOverride} onToggleConfirm={onToggleConfirm} />;
 }
 
@@ -1005,7 +1006,7 @@ function SwapSheetByRole({ rows, onArrivalOverride, onToggleConfirm }: { rows: C
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onCrewSwapPointChange, onArrivalOverride, onToggleConfirm, onConfirmTail, badPairings, checkairmen, flights, selectedDate, tailAircraftTypes }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -1015,6 +1016,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  onCrewSwapPointChange?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow, newSwapPoint: string) => void;
   onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
   onToggleConfirm?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing") => void;
   onConfirmTail?: (tail: string) => void;
@@ -1211,7 +1213,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               <span className={`text-[10px] font-bold uppercase ${color} w-14 shrink-0`}>{label}</span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
+                  <span className="text-sm font-medium text-gray-900 whitespace-nowrap">{row.name}</span>
                   <DutyDayTag row={row} />
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
                   {/* Per-crew swap point — show if different from tail swap point or if multiple available */}
@@ -1249,25 +1251,29 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                           onChange={(e) => {
                             const newLoc = e.target.value;
                             if (newLoc === crewSwapLoc) return;
-                            // Clear stale transport data and update swap_location immediately
-                            const updatedRow: CrewSwapRow = {
-                              ...row,
-                              swap_location: newLoc,
-                              flight_number: null,
-                              departure_time: null,
-                              arrival_time: null,
-                              available_time: null,
-                              duty_on_time: null,
-                              cost_estimate: null,
-                              duration_minutes: null,
-                              travel_type: "none",
-                              backup_flight: null,
-                              alt_flights: [],
-                              warnings: [],
-                              notes: `Swap point changed to ${newLoc} — searching flights...`,
-                            };
-                            // Open flight picker for the new location (also persists swap_location)
-                            onChangeTransport(tail, role, direction, updatedRow);
+                            if (onCrewSwapPointChange) {
+                              // Auto-recompute transport for this crew member at the new swap point
+                              onCrewSwapPointChange(tail, role, direction, row, newLoc);
+                            } else if (onChangeTransport) {
+                              // Fallback: open flight picker manually
+                              const updatedRow: CrewSwapRow = {
+                                ...row,
+                                swap_location: newLoc,
+                                flight_number: null,
+                                departure_time: null,
+                                arrival_time: null,
+                                available_time: null,
+                                duty_on_time: null,
+                                cost_estimate: null,
+                                duration_minutes: null,
+                                travel_type: "none",
+                                backup_flight: null,
+                                alt_flights: [],
+                                warnings: [],
+                                notes: `Swap point changed to ${newLoc} — searching flights...`,
+                              };
+                              onChangeTransport(tail, role, direction, updatedRow);
+                            }
                           }}
                         >
                           {availablePts.map((pt) => (
@@ -2174,6 +2180,16 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     if (!swapPlan || !selectedCrewSlot) return;
     const { tailNumber, role, direction } = selectedCrewSlot;
 
+    // Compute duty_off_time based on direction
+    let dutyOffTime: string | null = null;
+    if (direction === "oncoming") {
+      // Oncoming crew: duty ends at last leg arrival for this tail
+      dutyOffTime = selectedCrewSlot.lastLegArr ?? null;
+    } else {
+      // Offgoing crew: duty ends when they arrive home (commercial flight arrival)
+      dutyOffTime = selection.arrival_time ?? null;
+    }
+
     setSwapPlan((prev) => {
       if (!prev) return prev;
       const newRows = prev.rows.map((r) => {
@@ -2191,6 +2207,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           duration_minutes: selection.duration_minutes,
           available_time: selection.available_time,
           duty_on_time: selection.duty_on_time,
+          duty_off_time: dutyOffTime,
           backup_flight: selection.backup_flight,
           warnings: [],
           notes: "Manually selected transport",
@@ -2242,6 +2259,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
 
       const result = await res.json();
 
+      // Get tail flight times for duty_off_time computation
+      const swapDateStr = selectedDate.toISOString().slice(0, 10);
+      const tailFlightsSorted = flights.filter((f) =>
+        f.tail_number === tail && f.scheduled_departure?.startsWith(swapDateStr)
+      ).sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+      const lastLegArrival = tailFlightsSorted[tailFlightsSorted.length - 1]?.scheduled_arrival ?? null;
+
       // Update swap_location on all rows for this tail and apply best options
       setSwapPlan((prev) => {
         if (!prev) return prev;
@@ -2263,6 +2287,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             updated.arrival_time = bo.arrive_at;
             updated.available_time = bo.fbo_arrive_at;
             updated.duty_on_time = bo.duty_on_at;
+            // Oncoming: duty ends at last leg; Offgoing: duty ends at arrival home
+            updated.duty_off_time = r.direction === "oncoming" ? lastLegArrival : (bo.arrive_at ?? null);
             updated.cost_estimate = bo.cost_estimate;
             updated.duration_minutes = bo.duration_minutes;
           } else {
@@ -2273,6 +2299,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             updated.arrival_time = null;
             updated.available_time = null;
             updated.duty_on_time = null;
+            updated.duty_off_time = null;
             updated.cost_estimate = null;
             updated.duration_minutes = null;
             updated.backup_flight = null;
@@ -2290,6 +2317,138 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       addToast("success", `${tail} recomputed @ ${newSwapPoint} — est. $${result.total_cost}`);
     } catch (e) {
       addToast("error", `Recompute failed: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  }
+
+  async function handleCrewSwapPointChange(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow, newSwapPoint: string) {
+    if (!swapPlan) return;
+
+    // Immediately update the row to show "searching..." state
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number !== tail || r.name !== row.name || r.direction !== direction) return r;
+        return {
+          ...r,
+          swap_location: newSwapPoint,
+          travel_type: "none" as const,
+          flight_number: null,
+          departure_time: null,
+          arrival_time: null,
+          available_time: null,
+          duty_on_time: null,
+          cost_estimate: null,
+          duration_minutes: null,
+          backup_flight: null,
+          warnings: [],
+          notes: `Searching flights to ${newSwapPoint}...`,
+        };
+      });
+      return { ...prev, rows: newRows };
+    });
+
+    // Look up crew member for the API call
+    const crewMember = crew.find((c) => c.name === row.name && c.role === role)
+      ?? crew.find((c) => c.name === row.name);
+    if (!crewMember) {
+      addToast("error", `Crew member "${row.name}" not found in roster`);
+      return;
+    }
+
+    try {
+      // Fetch transport options for this crew at the new swap point
+      const swapDateStr = selectedDate.toISOString().slice(0, 10);
+      const tailFlights = flights.filter((f) =>
+        f.tail_number === tail && f.scheduled_departure?.startsWith(swapDateStr)
+      ).sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+      const firstLegDep = tailFlights[0]?.scheduled_departure ?? null;
+      const lastLegArr = tailFlights[tailFlights.length - 1]?.scheduled_arrival ?? null;
+
+      const params = new URLSearchParams({
+        crew_member_id: crewMember.id,
+        destination_icao: newSwapPoint.length === 3 ? `K${newSwapPoint}` : newSwapPoint,
+        swap_date: swapDateStr,
+        direction,
+      });
+      if (firstLegDep) params.set("first_leg_dep", firstLegDep);
+      if (lastLegArr) params.set("last_leg_arr", lastLegArr);
+
+      const res = await fetch(`/api/crew/transport-options?${params}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const options = (data.options ?? []) as Array<{
+        type: string; flight_number: string | null; depart_at: string | null;
+        arrive_at: string | null; fbo_arrive_at: string | null; duty_on_at: string | null;
+        cost_estimate: number; duration_minutes: number | null; backup_flight: string | null;
+        origin_iata: string; destination_iata: string | null; score: number;
+        feasibility: { duty_hours: number | null; duty_ok: boolean };
+      }>;
+
+      // Pick the best feasible option (highest score, duty_ok)
+      const feasible = options.filter(o => o.feasibility.duty_ok);
+      const best = feasible.length > 0
+        ? feasible.reduce((a, b) => a.score >= b.score ? a : b)
+        : options.length > 0 ? options.reduce((a, b) => a.score >= b.score ? a : b) : null;
+
+      // Compute duty_off_time: oncoming = last leg arrival, offgoing = commercial arrival home
+      const bestDutyOff = best
+        ? (direction === "oncoming" ? lastLegArr : best.arrive_at)
+        : null;
+
+      setSwapPlan((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((r) => {
+          if (r.tail_number !== tail || r.name !== row.name || r.direction !== direction) return r;
+          if (best) {
+            return {
+              ...r,
+              swap_location: newSwapPoint,
+              travel_type: best.type as CrewSwapRow["travel_type"],
+              flight_number: best.flight_number,
+              departure_time: best.depart_at,
+              arrival_time: best.arrive_at,
+              available_time: best.fbo_arrive_at,
+              duty_on_time: best.duty_on_at,
+              duty_off_time: bestDutyOff,
+              cost_estimate: best.cost_estimate,
+              duration_minutes: best.duration_minutes,
+              backup_flight: best.backup_flight,
+              warnings: !best.feasibility.duty_ok ? ["Duty day exceeds limit"] : [],
+              notes: `Auto-selected best option to ${newSwapPoint}`,
+            };
+          }
+          return {
+            ...r,
+            swap_location: newSwapPoint,
+            travel_type: "none" as const,
+            flight_number: null,
+            departure_time: null,
+            arrival_time: null,
+            available_time: null,
+            duty_on_time: null,
+            duty_off_time: null,
+            cost_estimate: null,
+            duration_minutes: null,
+            backup_flight: null,
+            warnings: ["No transport found for new swap point"],
+            notes: `No flights found to ${newSwapPoint}`,
+          };
+        });
+        const newCost = newRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+        return { ...prev, rows: newRows, total_cost: newCost };
+      });
+
+      if (best) {
+        addToast("success", `${row.name} → ${newSwapPoint}: ${best.flight_number ?? best.type} $${best.cost_estimate}`);
+      } else {
+        addToast("warning", `No transport found for ${row.name} → ${newSwapPoint}`);
+      }
+    } catch (e) {
+      addToast("error", `Transport search failed: ${e instanceof Error ? e.message : "unknown"}`);
     }
   }
 
@@ -3590,9 +3749,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const lockTailsArr = lockedTails.size > 0 && swapPlan ? [...lockedTails] : undefined;
       const lockedRows = lockTailsArr && swapPlan ? swapPlan.rows.filter((r) => lockedTails.has(r.tail_number)) : undefined;
 
-      // Check if we need split-day optimization (some tails on Tuesday)
-      const tueTails = new Set(Object.entries(tailSwapDays).filter(([, d]) => d === "tuesday").map(([t]) => t));
-      const hasSplitDays = tueTails.size > 0;
+      // Check if we need split-day optimization (some tails assigned to non-Wednesday days)
+      const nonWedDayMap = new Map<SwapDay, Set<string>>();
+      for (const [t, d] of Object.entries(tailSwapDays)) {
+        if (d !== "wednesday") {
+          if (!nonWedDayMap.has(d)) nonWedDayMap.set(d, new Set());
+          nonWedDayMap.get(d)!.add(t);
+        }
+      }
+      const hasSplitDays = nonWedDayMap.size > 0;
+      // Legacy alias for downstream references
+      const tueTails = nonWedDayMap.get("tuesday") ?? new Set<string>();
 
       // Convert daily pairs for this optimization day into required_pairings format
       const allPairings = [...requiredPairings];
@@ -3643,21 +3810,35 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       }
 
       if (hasSplitDays) {
-        // ── Split-day optimization: run Tuesday and Wednesday separately ──
+        // ── Split-day optimization: run each assigned day separately ──
         const wedDate = selectedDate.toISOString().slice(0, 10);
-        // Tuesday = day before Wednesday
-        const tueDate = new Date(selectedDate.getTime() - 86400_000).toISOString().slice(0, 10);
+        const dayOffsets: Record<SwapDay, number> = {
+          monday: -2, tuesday: -1, wednesday: 0, thursday: 1, friday: 2, saturday: 3, sunday: 4,
+        };
 
         const allTails = new Set(Object.keys(filteredAssignments ?? {}));
-        const wedTails = new Set([...allTails].filter(t => !tueTails.has(t)));
+        // Tails assigned to non-Wed days
+        const assignedToOtherDays = new Set<string>();
+        for (const tails of nonWedDayMap.values()) {
+          for (const t of tails) assignedToOtherDays.add(t);
+        }
+        const wedTails = new Set([...allTails].filter(t => !assignedToOtherDays.has(t)));
 
-        const [tueResult, wedResult] = await Promise.all([
-          optimizeForDay(tueTails, "tuesday", tueDate),
-          optimizeForDay(wedTails, "wednesday", wedDate),
-        ]);
+        // Build optimization jobs: one per unique day + Wednesday for remaining tails
+        const dayJobs: { day: SwapDay; tails: Set<string>; date: string }[] = [];
+        for (const [day, tails] of nonWedDayMap.entries()) {
+          const dateStr = new Date(selectedDate.getTime() + dayOffsets[day] * 86400_000).toISOString().slice(0, 10);
+          dayJobs.push({ day, tails, date: dateStr });
+        }
+        dayJobs.push({ day: "wednesday", tails: wedTails, date: wedDate });
 
-        if (!tueResult.ok || !wedResult.ok) {
-          const err = (!tueResult.ok ? tueResult.data : wedResult.data) as { error?: string; validation?: { errors: { message: string }[] } };
+        const results = await Promise.all(
+          dayJobs.map(j => optimizeForDay(j.tails, j.day, j.date).then(r => ({ ...r, ...j }))),
+        );
+
+        const failed = results.find(r => !r.ok);
+        if (failed) {
+          const err = failed.data as { error?: string; validation?: { errors: { message: string }[] } };
           if (err?.validation) {
             const vErrors = err.validation.errors;
             setOptimizeError(`Validation failed:\n${vErrors.map(e => e.message).join("\n")}`);
@@ -3667,24 +3848,31 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             addToast("error", err?.error ?? "Optimization failed");
           }
         } else {
-          setDayPlans(prev => ({
-            ...prev,
-            tuesday: tueResult.data as SwapPlanResult,
-            wednesday: wedResult.data as SwapPlanResult,
-          }));
-          // Merge for the main plan view (combined)
-          const tueRows = (tueResult.data as SwapPlanResult).rows ?? [];
-          const wedRows = (wedResult.data as SwapPlanResult).rows ?? [];
+          const newDayPlans: Partial<Record<SwapDay, SwapPlanResult>> = {};
+          let allRows: CrewSwapRow[] = [];
+          let totalCost = 0;
+          const daySummary: string[] = [];
+
+          for (const r of results) {
+            const plan = r.data as SwapPlanResult;
+            newDayPlans[r.day] = plan;
+            const rows = plan.rows ?? [];
+            allRows = [...allRows, ...rows];
+            totalCost += plan.total_cost ?? 0;
+            daySummary.push(`${DAY_LABELS[r.day]} (${rows.length} crew)`);
+          }
+
+          setDayPlans(prev => ({ ...prev, ...newDayPlans }));
           const merged = {
-            ...(wedResult.data as SwapPlanResult),
-            rows: [...tueRows, ...wedRows],
-            total_cost: (tueResult.data as SwapPlanResult).total_cost + (wedResult.data as SwapPlanResult).total_cost,
-            solved_count: tueRows.filter(r => r.travel_type !== "none").length + wedRows.filter(r => r.travel_type !== "none").length,
-            unsolved_count: tueRows.filter(r => r.travel_type === "none").length + wedRows.filter(r => r.travel_type === "none").length,
+            ...(results.find(r => r.day === "wednesday")?.data as SwapPlanResult ?? results[0].data as SwapPlanResult),
+            rows: allRows,
+            total_cost: totalCost,
+            solved_count: allRows.filter(r => r.travel_type !== "none").length,
+            unsolved_count: allRows.filter(r => r.travel_type === "none").length,
           } as SwapPlanResult;
           setSwapPlan(merged);
           setActiveTab("plan");
-          addToast("success", `Split-day optimized: Tue (${tueRows.length} crew), Wed (${wedRows.length} crew), $${merged.total_cost.toLocaleString()}`);
+          addToast("success", `Split-day optimized: ${daySummary.join(", ")}, $${merged.total_cost.toLocaleString()}`);
         }
       } else {
         // ── Single-day optimization (standard Wednesday) ──
@@ -4953,44 +5141,74 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         <div className="rounded-lg border p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">8. Swap Day Assignment</h3>
-            <span className="text-xs text-gray-400">Assign tails to Tuesday or Wednesday swap</span>
+            <span className="text-xs text-gray-400">Assign tails to any weekday swap</span>
           </div>
           <p className="text-xs text-gray-500">
-            Default: all tails swap on Wednesday. Assign specific tails to Tuesday for staggered swaps or better flight options.
+            Default: all tails swap on Wednesday. Assign specific tails to other weekdays for staggered swaps or better flight options.
           </p>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-xs font-semibold text-blue-600 mb-1">Tuesday tails</div>
-              <div className="space-y-1">
-                {Object.entries(tailSwapDays).filter(([, d]) => d === "tuesday").map(([tail]) => (
-                  <div key={tail} className="flex items-center justify-between bg-blue-50 rounded px-2 py-1">
-                    <span className="font-mono text-xs">{tail}</span>
-                    <button onClick={() => setTailSwapDays(prev => { const n = { ...prev }; delete n[tail]; return n; })}
-                      className="text-xs text-red-500 hover:text-red-700">Remove</button>
-                  </div>
-                ))}
-                {Object.entries(tailSwapDays).filter(([, d]) => d === "tuesday").length === 0 && (
-                  <span className="text-xs text-gray-400 italic">No tails assigned to Tuesday</span>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-green-600 mb-1">Wednesday tails (default)</div>
-              <div className="space-y-1 max-h-32 overflow-auto">
-                {(() => {
-                  const allTails = [...new Set(flights.filter(f => f.tail_number).map(f => f.tail_number!))].sort();
-                  const tueTails = new Set(Object.entries(tailSwapDays).filter(([, d]) => d === "tuesday").map(([t]) => t));
-                  return allTails.filter(t => !tueTails.has(t) && !excludedTails.has(t)).map(tail => (
-                    <div key={tail} className="flex items-center justify-between bg-gray-50 rounded px-2 py-0.5">
-                      <span className="font-mono text-xs text-gray-600">{tail}</span>
-                      <button onClick={() => setTailSwapDays(prev => ({ ...prev, [tail]: "tuesday" }))}
-                        className="text-[10px] text-blue-500 hover:text-blue-700">→ Tue</button>
+          {(() => {
+            const weekdays: SwapDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
+            const dayColors: Record<string, { label: string; bg: string; text: string; btn: string }> = {
+              monday:    { label: "Mon", bg: "bg-purple-50", text: "text-purple-600", btn: "text-purple-500 hover:text-purple-700" },
+              tuesday:   { label: "Tue", bg: "bg-blue-50", text: "text-blue-600", btn: "text-blue-500 hover:text-blue-700" },
+              wednesday: { label: "Wed", bg: "bg-green-50", text: "text-green-600", btn: "text-green-500 hover:text-green-700" },
+              thursday:  { label: "Thu", bg: "bg-amber-50", text: "text-amber-600", btn: "text-amber-500 hover:text-amber-700" },
+              friday:    { label: "Fri", bg: "bg-red-50", text: "text-red-600", btn: "text-red-500 hover:text-red-700" },
+            };
+            const allTails = [...new Set(flights.filter(f => f.tail_number).map(f => f.tail_number!))].sort();
+            const assignedTails = new Set(Object.keys(tailSwapDays));
+
+            return (
+              <div className="grid grid-cols-5 gap-2">
+                {weekdays.map(day => {
+                  const dc = dayColors[day];
+                  const isDefault = day === "wednesday";
+                  const dayTails = isDefault
+                    ? allTails.filter(t => !assignedTails.has(t) && !excludedTails.has(t))
+                    : Object.entries(tailSwapDays).filter(([, d]) => d === day).map(([t]) => t);
+
+                  return (
+                    <div key={day}>
+                      <div className={`text-xs font-semibold ${dc.text} mb-1`}>
+                        {dc.label}{isDefault ? " (default)" : ""}
+                      </div>
+                      <div className="space-y-1 max-h-40 overflow-auto">
+                        {dayTails.map(tail => (
+                          <div key={tail} className={`flex items-center justify-between ${isDefault ? "bg-gray-50" : dc.bg} rounded px-2 py-0.5`}>
+                            <span className="font-mono text-xs text-gray-700">{tail}</span>
+                            {isDefault ? (
+                              <select
+                                className="text-[9px] border rounded px-1 py-0.5 bg-white text-gray-500"
+                                value=""
+                                onChange={(e) => {
+                                  if (e.target.value) setTailSwapDays(prev => ({ ...prev, [tail]: e.target.value as SwapDay }));
+                                }}
+                              >
+                                <option value="">→</option>
+                                {weekdays.filter(d => d !== "wednesday").map(d => (
+                                  <option key={d} value={d}>{dayColors[d].label}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <button
+                                onClick={() => setTailSwapDays(prev => { const n = { ...prev }; delete n[tail]; return n; })}
+                                className="text-[10px] text-red-500 hover:text-red-700"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                        {dayTails.length === 0 && !isDefault && (
+                          <span className="text-[10px] text-gray-400 italic">—</span>
+                        )}
+                      </div>
                     </div>
-                  ));
-                })()}
+                  );
+                })}
               </div>
-            </div>
-          </div>
+            );
+          })()}
         </div>
 
         {/* Section 8 was daily pairs — now consolidated into Section 6 above */}
@@ -5546,7 +5764,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             ) : (
               <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
                 lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
-                onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange} onArrivalOverride={handleArrivalOverride}
+                onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange} onCrewSwapPointChange={handleCrewSwapPointChange}
+                onArrivalOverride={handleArrivalOverride}
                 onToggleConfirm={toggleConfirmRow} onConfirmTail={confirmTail}
                 badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
                 flights={flights} selectedDate={selectedDate} tailAircraftTypes={tailAircraftTypes} />
