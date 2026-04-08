@@ -102,7 +102,7 @@ export async function POST(
   // Fetch candidate info for email
   const { data: job } = await supa
     .from("job_application_parse")
-    .select("candidate_name, email, pipeline_stage")
+    .select("id, candidate_name, email, pipeline_stage")
     .eq("application_id", applicationId)
     .maybeSingle();
 
@@ -117,6 +117,7 @@ export async function POST(
       rejected_at: new Date().toISOString(),
       rejection_reason: reason,
       rejection_type: type,
+      rejected_by: auth.email || auth.userId,
       pipeline_stage: "",
       updated_at: new Date().toISOString(),
     })
@@ -125,6 +126,13 @@ export async function POST(
   if (updateErr) {
     return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
+
+  // Invalidate any active form tokens so rejected candidates can't access forms
+  await supa
+    .from("info_session_tokens")
+    .delete()
+    .eq("parse_id", job.id)
+    .is("used_at", null);
 
   // Send rejection email
   let emailSent = false;

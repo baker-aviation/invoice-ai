@@ -81,12 +81,16 @@ export async function GET(
     return NextResponse.json({ error: "No form configured" }, { status: 500 });
   }
 
-  // Fetch candidate name for greeting
+  // Fetch candidate name + rejection status
   const { data: candidate } = await sb
     .from("job_application_parse")
-    .select("candidate_name")
+    .select("candidate_name, rejected_at")
     .eq("id", tokenRow.parse_id)
     .maybeSingle();
+
+  if (candidate?.rejected_at) {
+    return NextResponse.json({ error: "This link is no longer active" }, { status: 410 });
+  }
 
   return NextResponse.json({
     form: {
@@ -132,6 +136,17 @@ export async function POST(
 
   if (new Date(tokenRow.expires_at) < new Date()) {
     return NextResponse.json({ error: "This link has expired" }, { status: 410 });
+  }
+
+  // Check if candidate was rejected
+  const { data: candidate } = await sb
+    .from("job_application_parse")
+    .select("rejected_at")
+    .eq("id", tokenRow.parse_id)
+    .maybeSingle();
+
+  if (candidate?.rejected_at) {
+    return NextResponse.json({ error: "This link is no longer active" }, { status: 410 });
   }
 
   // Parse body

@@ -95,12 +95,16 @@ export async function POST(req: NextRequest) {
 
   const { data: job, error: jobErr } = await supa
     .from("job_application_parse")
-    .select("candidate_name, email, pipeline_stage")
+    .select("candidate_name, email, pipeline_stage, rejected_at")
     .eq("application_id", appId)
     .maybeSingle();
 
   if (jobErr || !job) {
     return NextResponse.json({ error: "Application not found" }, { status: 404 });
+  }
+
+  if (job.rejected_at) {
+    return NextResponse.json({ error: "Cannot send interview email to a rejected candidate" }, { status: 400 });
   }
 
   if (!job.email) {
@@ -169,11 +173,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 300) }, { status: 500 });
     }
 
-    // Save timestamp
+    // Save timestamp + who sent it
     const sentAt = new Date().toISOString();
     await supa
       .from("job_application_parse")
-      .update({ interview_email_sent_at: sentAt, updated_at: sentAt })
+      .update({ interview_email_sent_at: sentAt, interview_email_sent_by: auth.email || auth.userId, updated_at: sentAt })
       .eq("application_id", appId);
 
     return NextResponse.json({ ok: true, email: job.email, sentAt });

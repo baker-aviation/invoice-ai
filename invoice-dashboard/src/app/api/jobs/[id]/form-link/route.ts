@@ -35,15 +35,19 @@ export async function POST(
 
   const sb = getServiceClient();
 
-  // Verify candidate exists
+  // Verify candidate exists and isn't rejected
   const { data: candidate } = await sb
     .from("job_application_parse")
-    .select("id, candidate_name")
+    .select("id, candidate_name, rejected_at")
     .eq("id", parseId)
     .maybeSingle();
 
   if (!candidate) {
     return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
+  }
+
+  if (candidate.rejected_at) {
+    return NextResponse.json({ error: "Cannot generate form link for a rejected candidate" }, { status: 400 });
   }
 
   // Check for existing unused token of same form type
@@ -75,6 +79,7 @@ export async function POST(
     token,
     parse_id: parseId,
     form_type: formType,
+    created_by: auth.email || auth.userId,
   });
 
   if (error) {
