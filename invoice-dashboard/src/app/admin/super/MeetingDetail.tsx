@@ -49,6 +49,8 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
   const [titleInput, setTitleInput] = useState("");
   const [editingTicket, setEditingTicket] = useState<number | null>(null);
   const [ticketEdits, setTicketEdits] = useState<{ title: string; description: string }>({ title: "", description: "" });
+  const [addingNotes, setAddingNotes] = useState<number | null>(null);
+  const [noteText, setNoteText] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const fetchAll = useCallback(async () => {
@@ -119,19 +121,40 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
     }
   };
 
-  // ── Ticket actions ───────────────────────────────────────────────────────
+  // ── Ticket actions (update locally, no full refetch) ──────────────────────
 
-  const ticketAction = async (ticketId: number, action: string) => {
-    await fetch(`/api/admin/meetings/${meetingId}/tickets`, {
+  const ticketAction = async (ticketId: number, action: string, extraBody?: Record<string, unknown>) => {
+    const res = await fetch(`/api/admin/meetings/${meetingId}/tickets`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket_id: ticketId, action }),
+      body: JSON.stringify({ ticket_id: ticketId, action, ...extraBody }),
     });
-    fetchAll();
+    if (res.ok) {
+      setTickets((prev) =>
+        prev.map((t) => (t.id === ticketId ? { ...t, status: action === "accept" ? "accepted" : action === "reject" ? "rejected" : t.status } : t)),
+      );
+    }
+  };
+
+  const acceptWithNotes = async (ticketId: number) => {
+    // Append notes to description before accepting
+    if (noteText.trim()) {
+      await fetch(`/api/admin/meetings/${meetingId}/tickets`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_id: ticketId,
+          description: (tickets.find((t) => t.id === ticketId)?.description || "") + "\n\n---\n**Notes:** " + noteText.trim(),
+        }),
+      });
+    }
+    await ticketAction(ticketId, "accept");
+    setAddingNotes(null);
+    setNoteText("");
   };
 
   const saveTicketEdit = async (ticketId: number) => {
-    await fetch(`/api/admin/meetings/${meetingId}/tickets`, {
+    const res = await fetch(`/api/admin/meetings/${meetingId}/tickets`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -140,8 +163,12 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
         description: ticketEdits.description,
       }),
     });
+    if (res.ok) {
+      setTickets((prev) =>
+        prev.map((t) => (t.id === ticketId ? { ...t, title: ticketEdits.title, description: ticketEdits.description } : t)),
+      );
+    }
     setEditingTicket(null);
-    fetchAll();
   };
 
   // ── Find screenshot closest to a timestamp ───────────────────────────────
@@ -478,6 +505,7 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
                                 <button
                                   onClick={() => {
                                     setEditingTicket(ticket.id);
+                                    setAddingNotes(null);
                                     setTicketEdits({ title: ticket.title, description: ticket.description || "" });
                                   }}
                                   className="px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 rounded hover:bg-zinc-700"
@@ -490,6 +518,20 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
                                   className="px-2 py-1 text-xs bg-emerald-700 text-emerald-100 rounded hover:bg-emerald-600"
                                 >
                                   Accept
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setAddingNotes(addingNotes === ticket.id ? null : ticket.id);
+                                    setEditingTicket(null);
+                                    setNoteText("");
+                                  }}
+                                  className={`px-2 py-1 text-xs rounded ${
+                                    addingNotes === ticket.id
+                                      ? "bg-blue-600 text-white"
+                                      : "bg-blue-900/40 text-blue-300 hover:bg-blue-800/40"
+                                  }`}
+                                >
+                                  + Notes
                                 </button>
                                 <button
                                   onClick={() => ticketAction(ticket.id, "reject")}
@@ -514,8 +556,35 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
                         <p className="text-xs text-zinc-400 mt-2 line-clamp-3">{ticket.description}</p>
                       ) : null}
 
+                      {/* Add notes before accepting */}
+                      {addingNotes === ticket.id && (
+                        <div className="mt-2 space-y-2">
+                          <textarea
+                            value={noteText}
+                            onChange={(e) => setNoteText(e.target.value)}
+                            placeholder="Add notes, context, or details before accepting..."
+                            className="w-full px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded text-sm text-zinc-200 h-20 resize-y placeholder-zinc-500"
+                            autoFocus
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => acceptWithNotes(ticket.id)}
+                              className="px-3 py-1 text-xs bg-emerald-700 text-emerald-100 rounded hover:bg-emerald-600"
+                            >
+                              Accept with Notes
+                            </button>
+                            <button
+                              onClick={() => { setAddingNotes(null); setNoteText(""); }}
+                              className="px-3 py-1 text-xs text-zinc-400 hover:text-zinc-200"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Timestamp links */}
-                      {ticket.timestamp_secs?.length > 0 && !isEditing && (
+                      {ticket.timestamp_secs?.length > 0 && !isEditing && addingNotes !== ticket.id && (
                         <div className="flex gap-1 mt-2">
                           {ticket.timestamp_secs.map((ts, i) => (
                             <button
@@ -543,9 +612,8 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
             <div className="flex gap-2 mt-4 pt-4 border-t border-zinc-700">
               <button
                 onClick={async () => {
-                  for (const t of tickets.filter((t) => t.status === "pending")) {
-                    await ticketAction(t.id, "accept");
-                  }
+                  const pending = tickets.filter((t) => t.status === "pending");
+                  await Promise.all(pending.map((t) => ticketAction(t.id, "accept")));
                 }}
                 className="px-3 py-1.5 text-xs bg-emerald-700 text-emerald-100 rounded-lg hover:bg-emerald-600"
               >
@@ -553,9 +621,8 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
               </button>
               <button
                 onClick={async () => {
-                  for (const t of tickets.filter((t) => t.status === "pending")) {
-                    await ticketAction(t.id, "reject");
-                  }
+                  const pending = tickets.filter((t) => t.status === "pending");
+                  await Promise.all(pending.map((t) => ticketAction(t.id, "reject")));
                 }}
                 className="px-3 py-1.5 text-xs bg-red-900/50 text-red-300 rounded-lg hover:bg-red-800/50"
               >
