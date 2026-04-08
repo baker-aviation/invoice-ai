@@ -1722,6 +1722,49 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               );
             })()}
 
+            {/* Offgoing "can't get home" warning */}
+            {(() => {
+              const offgoingStranded = [offPic, offSic].filter(
+                (r) => r && r.name && r.travel_type === "none" && r.direction === "offgoing"
+              );
+              if (offgoingStranded.length === 0) return null;
+
+              // Check if this is a late swap point (last leg) — offgoing may not have time for flights
+              let lateSwapWarning = false;
+              if (flights && selectedDate) {
+                const wedStr = selectedDate.toISOString().slice(0, 10);
+                const tailLegs = flights
+                  .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr) && isLiveFlightType(f.flight_type))
+                  .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+                const lastLeg = tailLegs[tailLegs.length - 1];
+                if (lastLeg?.scheduled_arrival) {
+                  const arrHour = new Date(lastLeg.scheduled_arrival).getHours();
+                  // If last leg arrives after 5pm local, offgoing may not catch a flight home
+                  if (arrHour >= 17) lateSwapWarning = true;
+                }
+              }
+
+              return (
+                <div className="px-4 py-2 border-t bg-red-50 space-y-1">
+                  {offgoingStranded.map((r) => (
+                    <div key={r!.name} className="flex items-center gap-2 text-[11px]">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-red-600 text-white">
+                        NO WAY HOME
+                      </span>
+                      <span className="text-red-700 font-medium">
+                        {r!.name} ({r!.role}) — no commercial flights found from {r!.swap_location ?? swapLoc} → {r!.home_airports.join("/")}
+                      </span>
+                    </div>
+                  ))}
+                  {lateSwapWarning && (
+                    <div className="text-[10px] text-red-600">
+                      Late swap point — aircraft arrives after 17:00, offgoing crew may miss last commercial flights
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Repositioning warning: next leg departs from different airport than swap point */}
             {(() => {
               if (!flights || !selectedDate) return null;
@@ -2227,94 +2270,147 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
 
     // Get crew assignments for this tail
     const tailRows = swapPlan.rows.filter((r) => r.tail_number === tail);
-    const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
-    const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
-    const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
-    const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
+    const crewRows = tailRows.filter((r) => r.name); // only rows with assigned crew
+
+    if (crewRows.length === 0) {
+      // No crew assigned — just update swap_location
+      setSwapPlan((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((r) => r.tail_number === tail ? { ...r, swap_location: newSwapPoint } : r);
+        return { ...prev, rows: newRows };
+      });
+      addToast("success", `${tail} swap point changed to ${newSwapPoint}`);
+      return;
+    }
 
     addToast("warning", `Recomputing transport for ${tail} @ ${newSwapPoint}...`);
 
-    try {
-      const res = await fetch("/api/crew/recompute-tail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tail_number: tail,
-          new_swap_point: newSwapPoint,
-          swap_date: selectedDate.toISOString().slice(0, 10),
-          crew_assignments: {
-            oncoming_pic: onPic?.name ?? null,
-            oncoming_sic: onSic?.name ?? null,
-            offgoing_pic: offPic?.name ?? null,
-            offgoing_sic: offSic?.name ?? null,
-          },
-        }),
+    // Immediately show "searching..." state for all crew on this tail
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number !== tail) return r;
+        return {
+          ...r,
+          swap_location: newSwapPoint,
+          travel_type: "none" as const,
+          flight_number: null,
+          departure_time: null,
+          arrival_time: null,
+          available_time: null,
+          duty_on_time: null,
+          duty_off_time: null,
+          cost_estimate: null,
+          duration_minutes: null,
+          backup_flight: null,
+          warnings: [],
+          notes: `Searching flights to ${newSwapPoint}...`,
+        };
       });
+      return { ...prev, rows: newRows };
+    });
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        addToast("error", body.error ?? "Recompute failed");
-        return;
-      }
+    // Get tail flight times
+    const swapDateStr = selectedDate.toISOString().slice(0, 10);
+    const tailFlightsSorted = flights.filter((f) =>
+      f.tail_number === tail && f.scheduled_departure?.startsWith(swapDateStr)
+    ).sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+    const firstLegDep = tailFlightsSorted[0]?.scheduled_departure ?? null;
+    const lastLegArr = tailFlightsSorted[tailFlightsSorted.length - 1]?.scheduled_arrival ?? null;
 
-      const result = await res.json();
+    const destIcao = newSwapPoint.length === 3 ? `K${newSwapPoint}` : newSwapPoint;
 
-      // Get tail flight times for duty_off_time computation
-      const swapDateStr = selectedDate.toISOString().slice(0, 10);
-      const tailFlightsSorted = flights.filter((f) =>
-        f.tail_number === tail && f.scheduled_departure?.startsWith(swapDateStr)
-      ).sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
-      const lastLegArrival = tailFlightsSorted[tailFlightsSorted.length - 1]?.scheduled_arrival ?? null;
+    try {
+      // Fetch transport options for ALL crew on this tail in parallel
+      const results = await Promise.all(
+        crewRows.map(async (row) => {
+          const crewMember = crew.find((c) => c.name === row.name && c.role === row.role)
+            ?? crew.find((c) => c.name === row.name);
+          if (!crewMember) return { row, best: null };
 
-      // Update swap_location on all rows for this tail and apply best options
+          const params = new URLSearchParams({
+            crew_member_id: crewMember.id,
+            destination_icao: destIcao,
+            swap_date: swapDateStr,
+            direction: row.direction,
+          });
+          if (firstLegDep) params.set("first_leg_dep", firstLegDep);
+          if (lastLegArr) params.set("last_leg_arr", lastLegArr);
+
+          try {
+            const res = await fetch(`/api/crew/transport-options?${params}`);
+            if (!res.ok) return { row, best: null };
+            const data = await res.json();
+            const options = (data.options ?? []) as Array<{
+              type: string; flight_number: string | null; depart_at: string | null;
+              arrive_at: string | null; fbo_arrive_at: string | null; duty_on_at: string | null;
+              cost_estimate: number; duration_minutes: number | null; backup_flight: string | null;
+              score: number; feasibility: { duty_hours: number | null; duty_ok: boolean };
+            }>;
+            const feasible = options.filter(o => o.feasibility.duty_ok);
+            const best = feasible.length > 0
+              ? feasible.reduce((a, b) => a.score >= b.score ? a : b)
+              : options.length > 0 ? options.reduce((a, b) => a.score >= b.score ? a : b) : null;
+            return { row, best };
+          } catch {
+            return { row, best: null };
+          }
+        })
+      );
+
+      // Apply results
       setSwapPlan((prev) => {
         if (!prev) return prev;
         const newRows = prev.rows.map((r) => {
           if (r.tail_number !== tail) return r;
-          const updated = { ...r, swap_location: newSwapPoint };
-
-          // Find matching recomputed crew result
-          const match = result.crew?.find(
-            (c: { name: string; direction: string; role: string }) =>
-              c.name === r.name && c.direction === r.direction && c.role === r.role
+          const match = results.find((res) =>
+            res.row.name === r.name && res.row.direction === r.direction && res.row.role === r.role
           );
+          if (!match) return { ...r, swap_location: newSwapPoint };
 
-          if (match?.best_option) {
-            const bo = match.best_option;
-            updated.travel_type = bo.type as CrewSwapRow["travel_type"];
-            updated.flight_number = bo.flight_number;
-            updated.departure_time = bo.depart_at;
-            updated.arrival_time = bo.arrive_at;
-            updated.available_time = bo.fbo_arrive_at;
-            updated.duty_on_time = bo.duty_on_at;
-            // Oncoming: duty ends at last leg; Offgoing: duty ends at arrival home
-            updated.duty_off_time = r.direction === "oncoming" ? lastLegArrival : (bo.arrive_at ?? null);
-            updated.cost_estimate = bo.cost_estimate;
-            updated.duration_minutes = bo.duration_minutes;
-          } else {
-            // No transport found for new swap point — clear old transport
-            updated.travel_type = "none";
-            updated.flight_number = null;
-            updated.departure_time = null;
-            updated.arrival_time = null;
-            updated.available_time = null;
-            updated.duty_on_time = null;
-            updated.duty_off_time = null;
-            updated.cost_estimate = null;
-            updated.duration_minutes = null;
-            updated.backup_flight = null;
-            updated.warnings = ["No transport found for new swap point"];
-            updated.notes = `Swap point changed to ${newSwapPoint} — needs manual transport`;
+          if (match.best) {
+            const bo = match.best;
+            return {
+              ...r,
+              swap_location: newSwapPoint,
+              travel_type: bo.type as CrewSwapRow["travel_type"],
+              flight_number: bo.flight_number,
+              departure_time: bo.depart_at,
+              arrival_time: bo.arrive_at,
+              available_time: bo.fbo_arrive_at,
+              duty_on_time: bo.duty_on_at,
+              duty_off_time: r.direction === "oncoming" ? lastLegArr : (bo.arrive_at ?? null),
+              cost_estimate: bo.cost_estimate,
+              duration_minutes: bo.duration_minutes,
+              backup_flight: bo.backup_flight,
+              warnings: !bo.feasibility.duty_ok ? ["Duty day exceeds limit"] : [],
+              notes: `Auto-selected best option to ${newSwapPoint}`,
+            };
           }
-
-          return updated;
+          return {
+            ...r,
+            swap_location: newSwapPoint,
+            travel_type: "none" as const,
+            flight_number: null,
+            departure_time: null,
+            arrival_time: null,
+            available_time: null,
+            duty_on_time: null,
+            duty_off_time: null,
+            cost_estimate: null,
+            duration_minutes: null,
+            backup_flight: null,
+            warnings: ["No transport found for new swap point"],
+            notes: `No flights found to ${newSwapPoint}`,
+          };
         });
-
         const newCost = newRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
         return { ...prev, rows: newRows, total_cost: newCost };
       });
 
-      addToast("success", `${tail} recomputed @ ${newSwapPoint} — est. $${result.total_cost}`);
+      const solved = results.filter(r => r.best).length;
+      const totalCost = results.reduce((s, r) => s + (r.best?.cost_estimate ?? 0), 0);
+      addToast("success", `${tail} @ ${newSwapPoint}: ${solved}/${results.length} crew solved, $${totalCost.toLocaleString()}`);
     } catch (e) {
       addToast("error", `Recompute failed: ${e instanceof Error ? e.message : "unknown"}`);
     }
