@@ -21,6 +21,7 @@ type MinFlight = {
   arrival_icao: string | null;
   scheduled_departure: string;
   jetinsight_url?: string | null;
+  jetinsight_trip_id?: string | null;
 };
 
 type DetectedTrip = {
@@ -87,10 +88,14 @@ function detectTrips(flights: MinFlight[]): DetectedTrip[] {
           if (!isInternationalIcao(lastArrival)) break;
         }
 
-        // Extract JI trip ID from first flight's jetinsight_url
-        const jiUrl = f.jetinsight_url ?? tailFlights.slice(i, j).find((x) => x.jetinsight_url)?.jetinsight_url;
-        const jiMatch = jiUrl?.match(/\/trips\/([A-Za-z0-9]+)/);
-        const jetinsight_trip_id = jiMatch ? jiMatch[1] : null;
+        // Get JI trip ID — prefer direct column, fall back to URL parsing
+        const tripFlights = tailFlights.slice(i, j);
+        const jetinsight_trip_id = f.jetinsight_trip_id
+          ?? tripFlights.find((x) => x.jetinsight_trip_id)?.jetinsight_trip_id
+          ?? (() => {
+            const jiUrl = f.jetinsight_url ?? tripFlights.find((x) => x.jetinsight_url)?.jetinsight_url;
+            return jiUrl?.match(/\/trips\/([A-Za-z0-9]+)/)?.[1] ?? null;
+          })();
 
         trips.push({
           tail_number: tail,
@@ -247,7 +252,7 @@ export async function GET(req: NextRequest) {
 
     const { data: flights } = await supa
       .from("flights")
-      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_url")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_url, jetinsight_trip_id")
       .gte("scheduled_departure", lookback)
       .lte("scheduled_departure", lookahead)
       .order("scheduled_departure");
@@ -518,6 +523,12 @@ export async function GET(req: NextRequest) {
       if (changeAlerts.length > 0) {
         const { error: alertErr } = await supa.from("intl_leg_alerts").insert(changeAlerts);
         if (alertErr) console.error("[intl/trips] change alert error:", alertErr);
+      }
+
+      // Log detection results
+      console.log(`[intl/trips] Detected ${detected.length} trips, matched ${matchedExistingIds.size} existing, inserting ${toInsert.length} new`);
+      for (const dt of toInsert) {
+        console.log(`[intl/trips] NEW: ${dt.tail_number} ${dt.route_icaos.join("→")} (${dt.trip_date}) JI:${dt.jetinsight_trip_id ?? "none"}`);
       }
 
       // Batch insert truly new trips
