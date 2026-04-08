@@ -129,6 +129,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KGAI: [39.1683, -77.1660],   // Montgomery County Airpark, MD
   KHEF: [38.7214, -77.5155],   // Manassas Regional, VA
   KIAD: [38.9445, -77.4558],   // Dulles
+  KLYH: [37.3267, -79.2004],   // Lynchburg Regional, VA
 
   // Canada
   CYYZ: [43.6777, -79.6248],   // Toronto Pearson
