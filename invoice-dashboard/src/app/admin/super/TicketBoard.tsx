@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type TicketSection = "general" | "crew-swap" | "international" | "current-ops" | "duty" | "notams" | "hiring" | "invoices";
+type TicketSection = "general" | "crew-swap" | "international" | "current-ops" | "duty" | "notams" | "hiring" | "invoices" | "push-to-others";
 
 type Ticket = {
   id: number;
@@ -32,7 +32,8 @@ const SECTION_LABELS: Record<TicketSection, { label: string; color: string }> = 
   duty:          { label: "Duty",          color: "bg-orange-100 text-orange-700" },
   notams:        { label: "NOTAMs",        color: "bg-rose-100 text-rose-700" },
   hiring:        { label: "Hiring",        color: "bg-emerald-100 text-emerald-700" },
-  invoices:      { label: "Invoices",      color: "bg-violet-100 text-violet-700" },
+  invoices:          { label: "Invoices",          color: "bg-violet-100 text-violet-700" },
+  "push-to-others":  { label: "Push to Others",    color: "bg-teal-100 text-teal-700" },
 };
 
 /** Derive ticket kind from its data — no DB column needed */

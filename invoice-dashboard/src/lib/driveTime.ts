@@ -259,6 +259,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KCMI: [40.0392, -88.2781],   // Champaign, IL
   KDAY: [39.9024, -84.2194],   // Dayton, OH
   KDSM: [41.5340, -93.6631],   // Des Moines, IA
+  KENW: [42.5957, -87.9278],   // Kenosha Regional, WI
   KFNT: [42.9655, -83.7436],   // Flint, MI
   KGRB: [44.4851, -88.1296],   // Green Bay, WI
   KGYY: [41.6163, -87.4128],   // Gary, IN
