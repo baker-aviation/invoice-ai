@@ -204,7 +204,7 @@ export type EapisLegStatus = {
  * Scrape eAPIS status from the JetInsight trip eAPIS page.
  * Returns per-leg status for all segments found on the page.
  */
-async function scrapeEapisStatus(
+export async function scrapeEapisStatus(
   tripId: string,
   cookie: string,
 ): Promise<EapisLegStatus[]> {
@@ -276,13 +276,15 @@ async function scrapeEapisStatus(
     const statusEls = $(".text-success, .text-warning, .text-danger, [class*=status]");
     const segmentTexts: string[] = [];
 
-    // Collect all text blocks that mention airports
-    $("body").find("*").each((_i, el) => {
-      const t = $(el).text().trim();
-      if (t.match(/[A-Z]{3,4}\s*(?:→|->|to|—)\s*[A-Z]{3,4}/)) {
-        segmentTexts.push(t);
+    // Collect text lines that mention airport route patterns.
+    // Split by newline to avoid parent elements bleeding context across routes.
+    const allText = $("body").text();
+    const lines = allText.split(/\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (/[A-Z]{3,4}\s*(?:→|->|to|—)\s*[A-Z]{3,4}/.test(line)) {
+        segmentTexts.push(line);
       }
-    });
+    }
 
     // Try to pair route patterns with status
     for (const seg of segmentTexts) {
