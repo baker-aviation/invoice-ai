@@ -534,7 +534,9 @@ export async function getCommercialFlightStatus(
 
     let f: FaFlight;
     if (dateMatches.length === 0) {
-      f = flights[0]; // fallback
+      // No flights matching the target date — don't return a different day's
+      // flight (e.g., today's UA1261 when we wanted tomorrow's UA1261)
+      return null;
     } else if (dateMatches.length === 1 || !expectedOrigin) {
       f = dateMatches[0];
     } else {
