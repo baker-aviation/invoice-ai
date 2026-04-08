@@ -556,10 +556,9 @@ export async function GET(req: NextRequest) {
 
         // Backfill snapshot separately (tolerates schema cache issues)
         if (!tripErr && newTrip && Object.keys(initSnap).length > 0) {
-          await supa.from("intl_trips")
-            .update({ schedule_snapshot: initSnap })
-            .eq("id", newTrip.id)
-            .catch(() => {}); // non-critical — gets backfilled on page load anyway
+          try {
+            await supa.from("intl_trips").update({ schedule_snapshot: initSnap }).eq("id", newTrip.id);
+          } catch { /* non-critical — gets backfilled on page load */ }
         }
 
         // JetInsight can reuse trip IDs across tails — retry without JI trip ID on unique constraint violation
