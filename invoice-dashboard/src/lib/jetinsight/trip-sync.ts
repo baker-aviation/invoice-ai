@@ -166,7 +166,154 @@ export async function syncTripDocs(
     );
   }
 
+  // Scrape eAPIS status
+  await sleep(DELAY_MS);
+  try {
+    const eapisStatuses = await scrapeEapisStatus(tripId, cookie);
+    if (eapisStatuses.length > 0) {
+      // Update intl_trip that has this jetinsight_trip_id
+      const { error: eapisErr } = await supa
+        .from("intl_trips")
+        .update({ eapis_status: eapisStatuses })
+        .eq("jetinsight_trip_id", tripId);
+      if (eapisErr) {
+        result.errors.push(`eapis update: ${eapisErr.message}`);
+      }
+    }
+  } catch (err) {
+    result.errors.push(
+      `eapis scrape: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// eAPIS status scraping
+// ---------------------------------------------------------------------------
+
+export type EapisLegStatus = {
+  dep_icao: string;
+  arr_icao: string;
+  status: "approved" | "pending" | "not_filed";
+  provider: "us" | "caricom";
+};
+
+/**
+ * Scrape eAPIS status from the JetInsight trip eAPIS page.
+ * Returns per-leg status for all segments found on the page.
+ */
+async function scrapeEapisStatus(
+  tripId: string,
+  cookie: string,
+): Promise<EapisLegStatus[]> {
+  const res = await fetch(`${BASE_URL}/trips/${tripId}/eapis`, {
+    method: "GET",
+    headers: {
+      Cookie: cookie,
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Baker-Aviation-Sync/1.0",
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 422) return [];
+    throw new Error(`eAPIS page HTTP ${res.status}`);
+  }
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  const legs: EapisLegStatus[] = [];
+
+  // The page contains segments with departure/arrival info and status badges.
+  // Look for segment blocks — they typically have departure and arrival airport codes
+  // and a status indicator (text-success for approved, text-warning for pending).
+
+  // Strategy 1: Look for segment rows/cards with DEPART/ARRIVE patterns
+  // Common patterns: "DEPART OPF" / "ARRIVE TAPA" with status spans
+  $("[class*=segment], .card, .panel, tr, .row, .leg, .eapis-leg, div").each((_i, el) => {
+    const text = $(el).text();
+
+    // Match "DEPART XXXX" and "ARRIVE XXXX" patterns (3-4 char ICAO/IATA codes)
+    const depMatch = text.match(/DEPART\s+([A-Z]{3,4})/i);
+    const arrMatch = text.match(/ARRIVE\s+([A-Z]{3,4})/i);
+
+    if (!depMatch || !arrMatch) return;
+
+    const dep_icao = depMatch[1].toUpperCase();
+    const arr_icao = arrMatch[1].toUpperCase();
+
+    // Already captured this leg?
+    if (legs.some((l) => l.dep_icao === dep_icao && l.arr_icao === arr_icao)) return;
+
+    // Determine status from text/class within this element
+    let status: EapisLegStatus["status"] = "not_filed";
+    const elHtml = $(el).html() ?? "";
+
+    if (/approved/i.test(text) || /text-success/i.test(elHtml)) {
+      status = "approved";
+    } else if (/pending/i.test(text) || /text-warning/i.test(elHtml)) {
+      status = "pending";
+    }
+
+    // Determine provider — CARICOM if mentioned, otherwise US
+    let provider: EapisLegStatus["provider"] = "us";
+    if (/caricom/i.test(text)) {
+      provider = "caricom";
+    }
+    // Override with explicit provider text
+    if (/US:/i.test(text)) provider = "us";
+    if (/CARICOM:/i.test(text)) provider = "caricom";
+
+    legs.push({ dep_icao, arr_icao, status, provider });
+  });
+
+  // Strategy 2: If no legs found, try parsing from status spans directly
+  if (legs.length === 0) {
+    // Look for spans/divs with status text like "US: Approved"
+    const statusEls = $(".text-success, .text-warning, .text-danger, [class*=status]");
+    const segmentTexts: string[] = [];
+
+    // Collect all text blocks that mention airports
+    $("body").find("*").each((_i, el) => {
+      const t = $(el).text().trim();
+      if (t.match(/[A-Z]{3,4}\s*(?:→|->|to|—)\s*[A-Z]{3,4}/)) {
+        segmentTexts.push(t);
+      }
+    });
+
+    // Try to pair route patterns with status
+    for (const seg of segmentTexts) {
+      const routeMatch = seg.match(/([A-Z]{3,4})\s*(?:→|->|to|—)\s*([A-Z]{3,4})/);
+      if (!routeMatch) continue;
+
+      const dep_icao = routeMatch[1];
+      const arr_icao = routeMatch[2];
+      if (legs.some((l) => l.dep_icao === dep_icao && l.arr_icao === arr_icao)) continue;
+
+      let status: EapisLegStatus["status"] = "not_filed";
+      if (/approved/i.test(seg)) status = "approved";
+      else if (/pending/i.test(seg)) status = "pending";
+
+      let provider: EapisLegStatus["provider"] = "us";
+      if (/caricom/i.test(seg)) provider = "caricom";
+
+      legs.push({ dep_icao, arr_icao, status, provider });
+    }
+
+    // Strategy 3: If we have status elements but no route parsing worked,
+    // check if the whole page has a single global status
+    if (legs.length === 0 && statusEls.length > 0) {
+      statusEls.each((_i, el) => {
+        const statusText = $(el).text().trim();
+        console.log(`[eAPIS] Found status element: "${statusText}"`);
+      });
+    }
+  }
+
+  return legs;
 }
 
 /**

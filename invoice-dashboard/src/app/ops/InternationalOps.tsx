@@ -701,7 +701,14 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             if (ldg.length > 0) tags.push({ label: "LDG", done: allDone(ldg), title: `Landing Permit${ldg.length > 1 ? "s" : ""} (${ldg.map((c) => c.airport_icao).join(", ")})` });
             if (ovf.length > 0) tags.push({ label: "OVF", done: allDone(ovf), title: `Overflight Permit${ovf.length > 1 ? "s" : ""} (${ovf.map((c) => c.airport_icao).join(", ")})` });
             if (canpass.length > 0) tags.push({ label: "CAN", done: allDone(canpass), title: "CANPASS Call (4-24hr before Canada arrival)" });
-            if (eapis.length > 0) tags.push({ label: "eAPI", done: allDone(eapis), title: "CARICOM eAPIS Filing" });
+            // eAPIS tag: prefer scraped status from JetInsight, fall back to clearance status
+            const eapisScraped = trip.eapis_status ?? [];
+            const eapisAllApproved = eapisScraped.length > 0 && eapisScraped.every((s) => s.status === "approved");
+            if (eapisScraped.length > 0) {
+              tags.push({ label: "eAPI", done: eapisAllApproved, title: eapisAllApproved ? "eAPIS: All legs approved" : `eAPIS: ${eapisScraped.filter((s) => s.status !== "approved").length} leg(s) not yet approved` });
+            } else if (eapis.length > 0) {
+              tags.push({ label: "eAPI", done: allDone(eapis), title: "CARICOM eAPIS Filing" });
+            }
             if (ib.length > 0) tags.push({ label: "IN", done: allDone(ib), title: "US Inbound Clearance" });
             tags.push({ label: "PAX", done: hasPax, title: trip.is_positioning ? "Positioning — no pax expected" : "Passenger Data on JetInsight" });
 
@@ -1021,6 +1028,32 @@ function TripDetail({ trip, countries, onRefresh }: {
           </div>
         )}
       </div>
+
+      {/* eAPIS Status (scraped from JetInsight) */}
+      {trip.eapis_status && trip.eapis_status.length > 0 && (
+        <div className="border border-gray-200 bg-white rounded-lg px-3 py-2.5">
+          <h4 className="text-xs font-semibold text-gray-700 mb-2">eAPIS Status</h4>
+          <div className="space-y-1">
+            {trip.eapis_status.map((leg: { dep_icao: string; arr_icao: string; status: string; provider: string }, i: number) => (
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <span className="font-medium text-gray-600">{leg.dep_icao} → {leg.arr_icao}:</span>
+                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold ${
+                  leg.status === "approved"
+                    ? "bg-green-100 text-green-700"
+                    : leg.status === "pending"
+                    ? "bg-yellow-100 text-yellow-700"
+                    : "bg-red-100 text-red-600"
+                }`}>
+                  {leg.provider.toUpperCase()} {leg.status === "approved" ? "Approved" : leg.status === "pending" ? "Pending" : "Not Filed"}
+                  {leg.status === "approved" && " \u2713"}
+                  {leg.status === "pending" && " \u25CB"}
+                  {leg.status === "not_filed" && " \u2717"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Suggested handlers from country defaults (Ticket 5) */}
       {(() => {

@@ -133,41 +133,62 @@ function guessStatus(crew: CrewTravel): CrewTravel["status"] {
   if (crew.transport_type === "staying") return "arrived_fbo";
   if (!crew.date) return "unknown";
 
-  // For today's flights, estimate based on current time vs scheduled times
+  // Use Eastern Time for date comparison (Vercel runs in UTC, which causes
+  // tomorrow's crew to look like "today" after ~7pm ET)
   const now = new Date();
-  const today = now.toLocaleDateString("en-CA"); // YYYY-MM-DD
+  const todayET = now.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD
 
   // Parse date like "3/25" or "3/24"
   const dateMatch = crew.date.match(/(\d{1,2})\/(\d{1,2})/);
   if (!dateMatch) return "scheduled";
   const crewDate = `2026-${dateMatch[1].padStart(2, "0")}-${dateMatch[2].padStart(2, "0")}`;
 
-  if (crewDate < today) {
+  if (crewDate < todayET) {
     // Yesterday's travel — should be arrived
     return "arrived_fbo";
   }
-  if (crewDate > today) {
+  if (crewDate > todayET) {
     return "scheduled";
   }
 
   // Today — estimate from times
-  if (!crew.arrival_time) return "scheduled";
-  const arrMatch = crew.arrival_time.match(/^(\d{2})(\d{2})/);
-  if (!arrMatch) return "scheduled";
-  const arrHour = parseInt(arrMatch[1]);
-  const arrMin = parseInt(arrMatch[2]);
+  // For ground transport (uber/rental/brightline), only show "arrived_fbo"
+  // after their duty-on time has passed (they don't have trackable flights)
+  const isGroundTransport = crew.transport_type === "uber" || crew.transport_type === "rental" || crew.transport_type === "brightline";
 
-  // Very rough: current hour in ET
   const etHour = parseInt(now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
   const etMin = parseInt(now.toLocaleString("en-US", { timeZone: "America/New_York", minute: "numeric" }));
   const nowMinutes = etHour * 60 + etMin;
-  const arrMinutes = arrHour * 60 + arrMin;
+
+  if (isGroundTransport) {
+    // Ground transport: scheduled → en_route (within 2hr of duty-on) → arrived_fbo (after duty-on)
+    const dutyMatch = crew.duty_on?.match(/^(\d{2}):?(\d{2})/);
+    if (!dutyMatch) {
+      // No duty-on time — use arrival_time as fallback
+      const arrMatch = crew.arrival_time?.match(/^(\d{2}):?(\d{2})/);
+      if (!arrMatch) return "scheduled";
+      const arrMinutes = parseInt(arrMatch[1]) * 60 + parseInt(arrMatch[2]);
+      if (nowMinutes > arrMinutes + 30) return "arrived_fbo";
+      if (nowMinutes > arrMinutes - 120) return "en_route";
+      return "scheduled";
+    }
+    const dutyMinutes = parseInt(dutyMatch[1]) * 60 + parseInt(dutyMatch[2]);
+    if (nowMinutes > dutyMinutes) return "arrived_fbo";
+    if (nowMinutes > dutyMinutes - 120) return "en_route";
+    return "scheduled";
+  }
+
+  // Commercial flights: use arrival time for status estimation
+  if (!crew.arrival_time) return "scheduled";
+  const arrMatch = crew.arrival_time.match(/^(\d{2}):?(\d{2})/);
+  if (!arrMatch) return "scheduled";
+  const arrMinutes = parseInt(arrMatch[1]) * 60 + parseInt(arrMatch[2]);
 
   if (nowMinutes > arrMinutes + 60) return "arrived_fbo"; // >1hr after arrival → at FBO
   if (nowMinutes > arrMinutes) return "landed";
   if (nowMinutes > arrMinutes - 120) return "en_route"; // within 2hr of arrival
   if (crew.duty_on) {
-    const dutyMatch = crew.duty_on.match(/^(\d{2})(\d{2})/);
+    const dutyMatch = crew.duty_on.match(/^(\d{2}):?(\d{2})/);
     if (dutyMatch) {
       const dutyMinutes = parseInt(dutyMatch[1]) * 60 + parseInt(dutyMatch[2]);
       if (nowMinutes > dutyMinutes) return "departed";
