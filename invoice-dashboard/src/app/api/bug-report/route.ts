@@ -45,9 +45,10 @@ export async function POST(req: NextRequest) {
       .upload(path, buf, { contentType: "image/png", upsert: true });
 
     if (uploadErr) {
-      // Bucket may not exist — create and retry
-      if (uploadErr.message?.includes("not found") || uploadErr.statusCode === "404") {
+      // Bucket may not exist — create and retry regardless of error shape
+      try {
         await sb.storage.createBucket(BUCKET, { public: true });
+      } catch { /* bucket may already exist */ }
         const { error: retryErr } = await sb.storage
           .from(BUCKET)
           .upload(path, buf, { contentType: "image/png", upsert: true });
@@ -56,9 +57,6 @@ export async function POST(req: NextRequest) {
         } else {
           screenshotUrl = sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
         }
-      } else {
-        console.error("Screenshot upload failed:", uploadErr);
-      }
     } else {
       screenshotUrl = sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
     }
