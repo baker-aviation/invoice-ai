@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { getAirportTimezone } from "@/lib/airportTimezones";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -55,6 +55,22 @@ type SwapStatusData = {
   fa_flights_resolved?: number;
   fa_flights_total?: number;
   last_updated: string;
+};
+
+type ImpactSuggestion = {
+  type: string;
+  description: string;
+  estimated_cost_delta: number | null;
+  crew_affected_count: number;
+  auto_applicable: boolean;
+};
+
+type ImpactEntry = {
+  tail_number: string;
+  severity: "critical" | "warning" | "info";
+  affected_crew: { name: string; role: string; direction: string; detail: string }[];
+  suggestions?: ImpactSuggestion[] | null;
+  resolved: boolean;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -135,11 +151,44 @@ const AIRCRAFT_BADGE: Record<string, { cls: string; label: string }> = {
   dual: { cls: "bg-purple-100 text-purple-700", label: "DU" },
 };
 
+// ─── Inline Suggestions ──────────────────────────────────────────────────────
+
+function SuggestionPills({ suggestions, severity }: { suggestions: ImpactSuggestion[]; severity: string }) {
+  const dotColor: Record<string, string> = {
+    no_action: "bg-green-400",
+    earlier_flight: "bg-blue-400",
+    backup_flight: "bg-blue-300",
+    ground_transport: "bg-purple-400",
+    rebook: "bg-indigo-400",
+    pool_swap: "bg-teal-400",
+    reoptimize: "bg-amber-400",
+    review_swap_points: "bg-amber-300",
+  };
+
+  return (
+    <div className={`mt-1 px-2 py-1.5 rounded-md border text-[10px] space-y-0.5 ${
+      severity === "critical" ? "bg-red-50/50 border-red-200" : "bg-amber-50/50 border-amber-200"
+    }`}>
+      <div className="text-[9px] text-gray-500 uppercase font-semibold tracking-wider">Suggested Actions</div>
+      {suggestions.slice(0, 3).map((s, i) => (
+        <div key={i} className="flex items-start gap-1.5">
+          <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor[s.type] ?? "bg-gray-400"}`} />
+          <span className="text-gray-700">{s.description}</span>
+          {s.estimated_cost_delta != null && s.estimated_cost_delta > 0 && (
+            <span className="text-gray-400 flex-shrink-0">(~${s.estimated_cost_delta})</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Crew Card ───────────────────────────────────────────────────────────────
 
-function CrewCard({ crew, onStatusOverride }: {
+function CrewCard({ crew, onStatusOverride, impactInfo }: {
   crew: CrewTravel;
   onStatusOverride: (name: string, status: CrewTravel["status"]) => void;
+  impactInfo?: { severity: string; suggestions: ImpactSuggestion[] } | null;
 }) {
   const tb = transportBadge(crew.transport_type);
   const sc = statusColor(crew.status);
@@ -259,6 +308,11 @@ function CrewCard({ crew, onStatusOverride }: {
       {crew.notes && (
         <div className="text-[10px] text-gray-400 truncate" title={crew.notes}>{crew.notes}</div>
       )}
+
+      {/* Impact suggestions */}
+      {impactInfo && impactInfo.suggestions.length > 0 && (
+        <SuggestionPills suggestions={impactInfo.suggestions} severity={impactInfo.severity} />
+      )}
     </div>
   );
 }
@@ -303,6 +357,19 @@ export default function SwapStatus() {
   const [viewMode, setViewMode] = useState<"list" | "cards" | "tail">("list");
 
   const [enriching, setEnriching] = useState(false);
+  const [impacts, setImpacts] = useState<ImpactEntry[]>([]);
+
+  // Build lookup: "name|tail" → suggestions for unresolved impacts
+  const suggestionLookup = new Map<string, { severity: string; suggestions: ImpactSuggestion[] }>();
+  for (const imp of impacts) {
+    if (imp.resolved || !imp.suggestions?.length) continue;
+    for (const crew of imp.affected_crew) {
+      const key = `${crew.name}|${imp.tail_number}`;
+      if (!suggestionLookup.has(key)) {
+        suggestionLookup.set(key, { severity: imp.severity, suggestions: imp.suggestions });
+      }
+    }
+  }
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -330,6 +397,17 @@ export default function SwapStatus() {
         // FA enrichment failed — keep sheet data with time-based guesses
       } finally {
         setEnriching(false);
+      }
+
+      // Step 3: Fetch impact suggestions (if plan exists for this swap date)
+      try {
+        const impRes = await fetch(`/api/crew/swap-plan/impact?swap_date=${d.swap_date}`);
+        if (impRes.ok) {
+          const impData = await impRes.json();
+          setImpacts(impData.impacts ?? []);
+        }
+      } catch {
+        // Impact fetch failed — no suggestions shown, not critical
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");
@@ -488,8 +566,9 @@ export default function SwapStatus() {
                 const eta = crew.live_arrival
                   ? fmtLocalTime(crew.live_arrival, crew.direction === "oncoming" ? crew.swap_location : (crew.home_airports[0] ?? crew.swap_location))
                   : crew.arrival_time ? fmtTime24(crew.arrival_time) : "—";
-                return (
-                  <tr key={`${crew.name}-${crew.direction}`} className={`hover:bg-gray-50 ${
+                const crewImpact = suggestionLookup.get(`${crew.name}|${crew.tail_number}`);
+                return (<React.Fragment key={`${crew.name}-${crew.direction}`}>
+                  <tr className={`hover:bg-gray-50 ${
                     crew.status === "cancelled" ? "bg-red-50/50" :
                     crew.status === "delayed" ? "bg-amber-50/50" :
                     crew.status === "landed" || crew.status === "arrived_fbo" ? "bg-green-50/30" : ""
@@ -567,7 +646,14 @@ export default function SwapStatus() {
                       {crew.status_detail ?? crew.notes ?? "—"}
                     </td>
                   </tr>
-                );
+                  {crewImpact && crewImpact.suggestions.length > 0 && (
+                    <tr className="bg-gray-50/50">
+                      <td colSpan={12} className="px-2 py-1">
+                        <SuggestionPills suggestions={crewImpact.suggestions} severity={crewImpact.severity} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>);
               })}
             </tbody>
           </table>
@@ -578,7 +664,12 @@ export default function SwapStatus() {
       {data && viewMode === "cards" && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
           {filtered.map((crew) => (
-            <CrewCard key={`${crew.name}-${crew.direction}`} crew={crew} onStatusOverride={handleStatusOverride} />
+            <CrewCard
+              key={`${crew.name}-${crew.direction}`}
+              crew={crew}
+              onStatusOverride={handleStatusOverride}
+              impactInfo={suggestionLookup.get(`${crew.name}|${crew.tail_number}`)}
+            />
           ))}
         </div>
       )}
