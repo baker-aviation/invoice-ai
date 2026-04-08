@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { toBlobURL, fetchFile } from "@ffmpeg/util";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type Step = "idle" | "loading" | "screenshots" | "audio" | "uploading" | "transcribing" | "done" | "error";
+type Step = "idle" | "loading" | "transcoding" | "screenshots" | "audio" | "uploading" | "transcribing" | "done" | "error";
 
 type Screenshot = {
   time: number; // seconds
@@ -87,6 +89,68 @@ export default function VideoTranscribe() {
   const [selectedImg, setSelectedImg] = useState<Screenshot | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+
+  // ── Check if browser can play the video natively ─────────────────────────
+
+  const canPlayNatively = useCallback((file: File): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      const url = URL.createObjectURL(file);
+      video.preload = "auto";
+      video.muted = true;
+
+      const cleanup = () => URL.revokeObjectURL(url);
+
+      video.onloadedmetadata = () => { cleanup(); resolve(true); };
+      video.onerror = () => { cleanup(); resolve(false); };
+
+      video.src = url;
+    });
+  }, []);
+
+  // ── Transcode HEVC → H.264 via FFmpeg.wasm ──────────────────────────────
+
+  const transcodeToH264 = useCallback(async (file: File): Promise<File> => {
+    if (!ffmpegRef.current) {
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on("progress", ({ progress }) => {
+        setProgress(Math.round(progress * 100));
+      });
+
+      setStatusMsg("Loading FFmpeg (first time may take a moment)...");
+      const baseURL = "/ffmpeg";
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+      });
+      ffmpegRef.current = ffmpeg;
+    }
+
+    const ffmpeg = ffmpegRef.current;
+    const ext = file.name.split(".").pop() || "mov";
+    const inputName = `input.${ext}`;
+    const outputName = "output.mp4";
+
+    setStatusMsg("Transcoding video to H.264 (this may take a minute)...");
+    await ffmpeg.writeFile(inputName, await fetchFile(file));
+    await ffmpeg.exec([
+      "-i", inputName,
+      "-c:v", "libx264",
+      "-preset", "fast",
+      "-crf", "23",
+      "-c:a", "aac",
+      "-movflags", "+faststart",
+      outputName,
+    ]);
+
+    const data = await ffmpeg.readFile(outputName) as Uint8Array;
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+
+    const blob = new Blob([new Uint8Array(data.buffer as ArrayBuffer)], { type: "video/mp4" });
+    return new File([blob], file.name.replace(/\.\w+$/, ".mp4"), { type: "video/mp4" });
+  }, []);
 
   const reset = () => {
     setStep("idle");
@@ -221,17 +285,26 @@ export default function VideoTranscribe() {
         setScreenshots([]);
         setTranscript("");
 
+        // Step 0: Transcode if browser can't play natively (e.g. HEVC .mov)
+        let videoFile = file;
+        const playable = await canPlayNatively(file);
+        if (!playable) {
+          setStep("transcoding");
+          setProgress(0);
+          videoFile = await transcodeToH264(file);
+        }
+
         // Step 1: Extract screenshots
         setStep("screenshots");
         setStatusMsg("Extracting screenshots every 3 seconds...");
         setProgress(0);
-        const frames = await extractScreenshots(file, 3);
+        const frames = await extractScreenshots(videoFile, 3);
         setScreenshots(frames);
 
         // Step 2: Extract audio
         setStep("audio");
         setProgress(0);
-        const audioBuffer = await extractAudio(file);
+        const audioBuffer = await extractAudio(videoFile);
         setStatusMsg(
           `Audio decoded: ${Math.round(audioBuffer.duration)}s at ${audioBuffer.sampleRate}Hz`,
         );
@@ -275,7 +348,7 @@ export default function VideoTranscribe() {
         setStep("error");
       }
     },
-    [extractScreenshots, extractAudio, uploadChunksToGcs],
+    [canPlayNatively, transcodeToH264, extractScreenshots, extractAudio, uploadChunksToGcs],
   );
 
   // ── Drop / file handlers ──────────────────────────────────────────────────
@@ -309,7 +382,7 @@ export default function VideoTranscribe() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
-  const isProcessing = ["loading", "screenshots", "audio", "uploading", "transcribing"].includes(step);
+  const isProcessing = ["loading", "transcoding", "screenshots", "audio", "uploading", "transcribing"].includes(step);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -369,6 +442,7 @@ export default function VideoTranscribe() {
           <div className="flex items-center gap-3 mb-3">
             <div className="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full" />
             <span className="text-sm font-medium text-zinc-200">
+              {step === "transcoding" && "Transcoding video (HEVC → H.264)..."}
               {step === "screenshots" && "Extracting screenshots..."}
               {step === "audio" && "Extracting audio..."}
               {step === "uploading" && "Uploading audio..."}
