@@ -10,6 +10,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { analyzeAlertImpact, type PlanImpact } from "@/lib/swapPlanImpact";
 import { generateSuggestions, type Suggestion } from "./suggestions";
 import { postImpactAlerts, type ImpactWithSuggestions } from "./slackAlerts";
+import { checkCommercialDelays } from "./commercialDelays";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,7 @@ export type GameDayResult = {
   suggestions_generated: number;
   slack_sent: number;
   slack_rate_limited: number;
+  commercial_delays: { crew_checked: number; impacts_created: number } | null;
   errors: string[];
 };
 
@@ -44,6 +46,7 @@ export async function runGameDayPipeline(): Promise<GameDayResult> {
     suggestions_generated: 0,
     slack_sent: 0,
     slack_rate_limited: 0,
+    commercial_delays: null,
     errors: [],
   };
 
@@ -152,6 +155,25 @@ export async function runGameDayPipeline(): Promise<GameDayResult> {
         `Slack: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  // ── 8. Check commercial flight delays for crew in transit ──────────────
+  try {
+    const delayResult = await checkCommercialDelays();
+    result.commercial_delays = {
+      crew_checked: delayResult.crew_checked,
+      impacts_created: delayResult.impacts_created,
+    };
+    result.impacts_found += delayResult.impacts_created;
+    result.suggestions_generated += delayResult.suggestions_generated;
+    result.slack_sent += delayResult.slack_sent;
+    if (delayResult.errors.length > 0) {
+      result.errors.push(...delayResult.errors.map((e) => `[commercial] ${e}`));
+    }
+  } catch (err) {
+    result.errors.push(
+      `Commercial delays: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return result;
