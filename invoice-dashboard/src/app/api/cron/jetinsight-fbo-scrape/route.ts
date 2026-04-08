@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const airportsParam = params.get("airports");
   const dryRun = params.get("dryRun") === "true";
+  const includeDetails = params.get("includeDetails") !== "false"; // default true
   const limit = params.get("limit") ? parseInt(params.get("limit")!, 10) : undefined;
   const offset = params.get("offset") ? parseInt(params.get("offset")!, 10) : undefined;
 
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest) {
     : undefined;
 
   try {
-    const result = await scrapeFboAirports({ airports, dryRun, limit, offset });
+    const result = await scrapeFboAirports({ airports, dryRun, limit, offset, includeDetails });
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(
@@ -52,10 +53,10 @@ export async function POST(req: NextRequest) {
   if ("error" in auth) return auth.error;
 
   const body = await req.json();
-  const { airports, dryRun, limit, offset } = body;
+  const { airports, dryRun, limit, offset, includeDetails = true } = body;
 
   try {
-    const result = await scrapeFboAirports({ airports, dryRun, limit, offset });
+    const result = await scrapeFboAirports({ airports, dryRun, limit, offset, includeDetails });
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(
