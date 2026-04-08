@@ -7,10 +7,18 @@ import { computeCityPairMatrix, seedTargetedPairs } from "@/lib/hasdataCache";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 min — same as cron
 
+const PairSchema = z.object({
+  origin: z.string(),
+  destination: z.string(),
+  date: z.string().optional(),
+});
+
 const RequestSchema = z.object({
   swap_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "swap_date must be YYYY-MM-DD"),
   tails: z.array(z.string()).optional(),
   mode: z.enum(["seed", "fill"]).default("fill"),
+  /** Explicit pairs to seed — skips matrix computation when provided */
+  pairs: z.array(PairSchema).optional(),
 }).strip();
 
 /**
@@ -38,11 +46,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten().fieldErrors }, { status: 400 });
   }
 
-  const { swap_date, mode } = parsed.data;
+  const { swap_date, mode, pairs: explicitPairs } = parsed.data;
 
-  console.log(`[SeedFlights] ${auth.email} triggered ${mode} seed for ${swap_date}`);
+  console.log(`[SeedFlights] ${auth.email} triggered ${mode} seed for ${swap_date}${explicitPairs ? ` (${explicitPairs.length} explicit pairs)` : ""}`);
 
   try {
+    // If explicit pairs provided, seed just those (used by on-demand swap point changes)
+    if (explicitPairs && explicitPairs.length > 0) {
+      const pairsWithDate = explicitPairs.map((p) => ({
+        origin: p.origin,
+        destination: p.destination,
+        date: p.date ?? swap_date,
+      }));
+      const result = await seedTargetedPairs(pairsWithDate, { batchSize: 10, delayMs: 100 });
+      return NextResponse.json({ ok: true, swap_date, mode: "explicit", ...result });
+    }
+
     // Compute full city-pair matrix (fast — just DB queries)
     const basePairs = await computeCityPairMatrix(swap_date);
 
