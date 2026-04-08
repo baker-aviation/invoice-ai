@@ -540,6 +540,8 @@ export async function GET(req: NextRequest) {
           if (times) initSnap[fid] = times;
         }
 
+        // Insert without schedule_snapshot first (Supabase schema cache may be stale),
+        // then backfill snapshot in a separate update
         let { data: newTrip, error: tripErr } = await supa
           .from("intl_trips")
           .insert({
@@ -547,11 +549,18 @@ export async function GET(req: NextRequest) {
             route_icaos: dt.route_icaos,
             flight_ids: dt.flight_ids,
             trip_date: dt.trip_date,
-            schedule_snapshot: Object.keys(initSnap).length > 0 ? initSnap : null,
             jetinsight_trip_id: dt.jetinsight_trip_id,
           })
           .select("id")
           .single();
+
+        // Backfill snapshot separately (tolerates schema cache issues)
+        if (!tripErr && newTrip && Object.keys(initSnap).length > 0) {
+          await supa.from("intl_trips")
+            .update({ schedule_snapshot: initSnap })
+            .eq("id", newTrip.id)
+            .catch(() => {}); // non-critical — gets backfilled on page load anyway
+        }
 
         // JetInsight can reuse trip IDs across tails — retry without JI trip ID on unique constraint violation
         if (tripErr?.code === "23505" && dt.jetinsight_trip_id) {
