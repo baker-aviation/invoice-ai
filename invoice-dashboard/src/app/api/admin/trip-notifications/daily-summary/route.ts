@@ -78,8 +78,37 @@ export async function POST(req: NextRequest) {
 
   const flights = allTomorrowFlights ?? [];
 
-  // Backfill missing salesperson from trip_salespersons
+  // Backfill missing salesperson from trip_salespersons + same-trip propagation
   await backfillSalesperson(supa, flights);
+
+  // Last resort: for flights STILL missing salesperson, check if any other flight
+  // with the same trip_id (on any date) has salesperson populated by the scraper.
+  const LIVE_TYPES_SET = new Set(LIVE_TYPES);
+  const stillMissing = flights.filter(
+    (f) => f.jetinsight_trip_id && !f.salesperson && f.flight_type && LIVE_TYPES_SET.has(f.flight_type),
+  );
+  if (stillMissing.length > 0) {
+    const missingTripIds = [...new Set(stillMissing.map((f) => f.jetinsight_trip_id as string))];
+    const { data: knownLegs } = await supa
+      .from("flights")
+      .select("jetinsight_trip_id, salesperson")
+      .in("jetinsight_trip_id", missingTripIds)
+      .not("salesperson", "is", null)
+      .limit(500);
+
+    if (knownLegs && knownLegs.length > 0) {
+      const tripToSP = new Map<string, string>();
+      for (const leg of knownLegs) {
+        if (leg.jetinsight_trip_id && leg.salesperson) {
+          tripToSP.set(leg.jetinsight_trip_id, leg.salesperson);
+        }
+      }
+      for (const f of stillMissing) {
+        const sp = tripToSP.get(f.jetinsight_trip_id!);
+        if (sp) f.salesperson = sp;
+      }
+    }
+  }
 
   // Filter to sold legs with salesperson
   const filteredLegs = flights

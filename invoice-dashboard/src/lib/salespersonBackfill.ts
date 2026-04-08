@@ -64,31 +64,64 @@ export async function backfillSalesperson(
     });
   }
 
+  // Also build a trip_id-only fallback for salesperson (all legs of a trip share the same salesperson)
+  const tripFallback = new Map<string, string>();
+  for (const sp of tripSP) {
+    if (sp.salesperson_name && !tripFallback.has(sp.trip_id)) {
+      tripFallback.set(sp.trip_id, sp.salesperson_name);
+    }
+  }
+
   let filled = 0;
   for (const f of flights) {
     if (!f.jetinsight_trip_id) continue;
     const key = `${f.jetinsight_trip_id}|${f.departure_icao}|${f.arrival_icao}`;
     const sp = lookup.get(key);
-    if (!sp) continue;
 
     let changed = false;
-    if (!f.salesperson && sp.salesperson) {
-      f.salesperson = sp.salesperson;
-      changed = true;
+    if (!f.salesperson) {
+      // Try exact route match first, then trip_id-only fallback
+      const name = sp?.salesperson ?? tripFallback.get(f.jetinsight_trip_id);
+      if (name) {
+        f.salesperson = name;
+        changed = true;
+      }
     }
-    if (!f.customer_name && sp.customer) {
-      f.customer_name = sp.customer;
-      changed = true;
-    }
-    if (!f.origin_fbo && sp.origin_fbo) {
-      f.origin_fbo = sp.origin_fbo;
-      changed = true;
-    }
-    if (!f.destination_fbo && sp.destination_fbo) {
-      f.destination_fbo = sp.destination_fbo;
-      changed = true;
+    if (sp) {
+      if (!f.customer_name && sp.customer) {
+        f.customer_name = sp.customer;
+        changed = true;
+      }
+      if (!f.origin_fbo && sp.origin_fbo) {
+        f.origin_fbo = sp.origin_fbo;
+        changed = true;
+      }
+      if (!f.destination_fbo && sp.destination_fbo) {
+        f.destination_fbo = sp.destination_fbo;
+        changed = true;
+      }
     }
     if (changed) filled++;
+  }
+
+  // Second pass: propagate salesperson within the same trip_id from flights that already have it.
+  // This catches cases where the scraper filled some legs but not others, without needing trip_salespersons.
+  const tripSalespersonFromFlights = new Map<string, string>();
+  for (const f of flights) {
+    if (f.jetinsight_trip_id && f.salesperson) {
+      if (!tripSalespersonFromFlights.has(f.jetinsight_trip_id)) {
+        tripSalespersonFromFlights.set(f.jetinsight_trip_id, f.salesperson);
+      }
+    }
+  }
+  for (const f of flights) {
+    if (f.jetinsight_trip_id && !f.salesperson) {
+      const name = tripSalespersonFromFlights.get(f.jetinsight_trip_id);
+      if (name) {
+        f.salesperson = name;
+        filled++;
+      }
+    }
   }
 
   return filled;
