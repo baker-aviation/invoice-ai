@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { analyzeAlertImpact, type PlanImpact } from "@/lib/swapPlanImpact";
+import { generateSuggestions, type ImpactSuggestion } from "@/lib/impactSuggestions";
 
 export const dynamic = "force-dynamic";
 
@@ -90,6 +91,34 @@ export async function POST(req: NextRequest) {
   }
   const impacts = Array.from(impactsByTail.values());
 
+  // Generate suggestions for each impact
+  const swapDateStr = swap_date as string;
+  const impactSuggestions = new Map<string, ImpactSuggestion[]>();
+
+  for (const imp of impacts) {
+    // Find the alert info for this impact
+    const alert = alerts.find((a) => a.id === imp.alert_id);
+    if (!alert) continue;
+
+    try {
+      const suggestions = await generateSuggestions({
+        tail_number: imp.tail_number,
+        severity: imp.severity,
+        affected_crew: imp.affected_crew,
+        alert: {
+          change_type: alert.change_type,
+          old_value: alert.old_value,
+          new_value: alert.new_value,
+        },
+        plan_rows: planRows as Parameters<typeof generateSuggestions>[0]["plan_rows"],
+        swap_date: swapDateStr,
+      });
+      impactSuggestions.set(imp.tail_number, suggestions);
+    } catch (err) {
+      console.error(`[impact] Suggestion generation failed for ${imp.tail_number}:`, err);
+    }
+  }
+
   // Upsert impacts (use first alert_id per tail as the key)
   if (impacts.length > 0) {
     const rows = impacts.map((imp) => ({
@@ -98,6 +127,7 @@ export async function POST(req: NextRequest) {
       tail_number: imp.tail_number,
       affected_crew: imp.affected_crew,
       severity: imp.severity,
+      suggestions: impactSuggestions.get(imp.tail_number) ?? null,
       resolved: false,
     }));
 
