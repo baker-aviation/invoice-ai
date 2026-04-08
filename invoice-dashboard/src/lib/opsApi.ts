@@ -1002,6 +1002,8 @@ export type IntlTrip = {
   is_positioning?: boolean;
   // True if all flights became domestic (route changed, trip may be stale)
   is_domestic_now?: boolean;
+  // eAPIS status per leg (scraped from JetInsight)
+  eapis_status?: Array<{ dep_icao: string; arr_icao: string; status: string; provider: string }> | null;
 };
 
 export type IntlTripClearance = {
