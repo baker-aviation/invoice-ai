@@ -176,9 +176,29 @@ export async function syncTripDocs(
 function extractPassengerNames(html: string): string[] {
   const names: string[] = [];
 
-  // Try parsing the embedded passenger_data JSON
-  // Only include passengers who are allocated to this trip (is_allocated=true)
-  // If none are allocated, fall back to checking pax count from schedule data
+  // Strategy 1: Use customs_docs_data — shows ONLY passengers assigned to flight segments
+  const customsMatch = html.match(/customs_docs_data\s*=\s*(\{[\s\S]*?\});/);
+  if (customsMatch) {
+    try {
+      const customsData = JSON.parse(customsMatch[1]) as Record<string, Record<string, unknown>>;
+      const paxIds = new Set<string>();
+      for (const segment of Object.values(customsData)) {
+        for (const paxId of Object.keys(segment)) paxIds.add(paxId);
+      }
+      if (paxIds.size > 0) {
+        const paxMatch = html.match(/passenger_data\s*=\s*(\[[\s\S]*?\]);/);
+        if (paxMatch) {
+          const paxData = JSON.parse(paxMatch[1]) as Array<{ name: string; id: string }>;
+          for (const p of paxData) {
+            if (paxIds.has(p.id) && p.name?.trim()) names.push(p.name.trim());
+          }
+          if (names.length > 0) return [...new Set(names)];
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Strategy 2: Parse passenger_data with is_allocated filter
   const jsonMatch = html.match(/passenger_data\s*=\s*(\[[\s\S]*?\]);/);
   if (jsonMatch) {
     try {
@@ -187,7 +207,6 @@ function extractPassengerNames(html: string): string[] {
         is_allocated: boolean;
       }>;
 
-      // Only take allocated passengers (actually assigned to this trip's legs)
       const allocated = paxData.filter((p) => p.is_allocated);
       if (allocated.length > 0) {
         for (const p of allocated) {
@@ -196,8 +215,6 @@ function extractPassengerNames(html: string): string[] {
         return [...new Set(names)];
       }
 
-      // If no one is allocated but pax count is small (≤ max seats), take all
-      // This handles trips where ops didn't click the allocate checkboxes
       if (paxData.length <= 12) {
         for (const p of paxData) {
           if (p.name?.trim()) names.push(p.name.trim());
@@ -205,11 +222,8 @@ function extractPassengerNames(html: string): string[] {
         return [...new Set(names)];
       }
 
-      // Large unallocated list = customer's full passenger database, skip
       return [];
-    } catch {
-      // Fall through to HTML parsing
-    }
+    } catch { /* fall through */ }
   }
 
   // Fallback: parse HTML table
