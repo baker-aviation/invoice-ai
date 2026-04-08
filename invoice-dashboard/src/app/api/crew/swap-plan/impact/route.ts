@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { analyzeAlertImpact, type PlanImpact } from "@/lib/swapPlanImpact";
-import { generateSuggestions, type ImpactSuggestion } from "@/lib/impactSuggestions";
+import { generateSuggestions, type Suggestion } from "@/lib/gameday/suggestions";
 
 export const dynamic = "force-dynamic";
 
@@ -91,45 +91,37 @@ export async function POST(req: NextRequest) {
   }
   const impacts = Array.from(impactsByTail.values());
 
-  // Generate suggestions for each impact
-  const swapDateStr = swap_date as string;
-  const impactSuggestions = new Map<string, ImpactSuggestion[]>();
-
-  for (const imp of impacts) {
-    // Find the alert info for this impact
-    const alert = alerts.find((a) => a.id === imp.alert_id);
-    if (!alert) continue;
-
+  // Generate suggestions for critical/warning impacts (reuse gameday engine)
+  const actionableImpacts = impacts.filter(
+    (i) => i.severity === "critical" || i.severity === "warning",
+  );
+  let suggestionMap = new Map<string, Suggestion[]>();
+  if (actionableImpacts.length > 0) {
     try {
-      const suggestions = await generateSuggestions({
-        tail_number: imp.tail_number,
-        severity: imp.severity,
-        affected_crew: imp.affected_crew,
-        alert: {
-          change_type: alert.change_type,
-          old_value: alert.old_value,
-          new_value: alert.new_value,
-        },
-        plan_rows: planRows as Parameters<typeof generateSuggestions>[0]["plan_rows"],
-        swap_date: swapDateStr,
-      });
-      impactSuggestions.set(imp.tail_number, suggestions);
+      suggestionMap = await generateSuggestions(
+        actionableImpacts,
+        swap_date as string,
+        planRows as Parameters<typeof generateSuggestions>[2],
+      );
     } catch (err) {
-      console.error(`[impact] Suggestion generation failed for ${imp.tail_number}:`, err);
+      console.error("[impact] Suggestion generation failed:", err);
     }
   }
 
   // Upsert impacts (use first alert_id per tail as the key)
   if (impacts.length > 0) {
-    const rows = impacts.map((imp) => ({
-      swap_plan_id: plan.id,
-      alert_id: imp.alert_id,
-      tail_number: imp.tail_number,
-      affected_crew: imp.affected_crew,
-      severity: imp.severity,
-      suggestions: impactSuggestions.get(imp.tail_number) ?? null,
-      resolved: false,
-    }));
+    const rows = impacts.map((imp) => {
+      const suggestions = suggestionMap.get(imp.alert_id) ?? [];
+      return {
+        swap_plan_id: plan.id,
+        alert_id: imp.alert_id,
+        tail_number: imp.tail_number,
+        affected_crew: imp.affected_crew,
+        severity: imp.severity,
+        suggestions: suggestions.length > 0 ? suggestions : null,
+        resolved: false,
+      };
+    });
 
     const { error: upsertErr } = await supa
       .from("swap_plan_impacts")
