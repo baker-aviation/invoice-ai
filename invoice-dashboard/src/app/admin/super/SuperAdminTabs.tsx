@@ -5,14 +5,16 @@ import SuperAdminDashboard from "./SuperAdminDashboard";
 import AircraftTracker from "./AircraftTracker";
 import VideoTranscribe from "./VideoTranscribe";
 import TicketBoard from "./TicketBoard";
+import MeetingsTab from "./MeetingsTab";
 
-type Tab = "system" | "aircraft-tracker" | "tickets" | "video-transcribe";
+type Tab = "system" | "aircraft-tracker" | "tickets" | "video-transcribe" | "meetings";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "system", label: "System" },
   { key: "aircraft-tracker", label: "Aircraft Tracker" },
   { key: "tickets", label: "Tickets" },
   { key: "video-transcribe", label: "Video Transcribe" },
+  { key: "meetings", label: "Meetings" },
 ];
 
 export default function SuperAdminTabs() {
@@ -42,6 +44,7 @@ export default function SuperAdminTabs() {
       {activeTab === "aircraft-tracker" && <AircraftTracker />}
       {activeTab === "tickets" && <TicketBoard />}
       {activeTab === "video-transcribe" && <VideoTranscribe />}
+      {activeTab === "meetings" && <MeetingsTab />}
     </div>
   );
 }
