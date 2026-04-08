@@ -18,6 +18,7 @@ import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { extractSwapPointsPublic, type FlightLeg } from "@/lib/swapOptimizer";
 import { isCommercialAirport, findNearbyCommercialAirports, hasCoords } from "@/lib/driveTime";
 import type { FlightOffer } from "@/lib/amadeus";
+import { postSlackMessage } from "@/lib/slack";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -645,6 +646,18 @@ export async function detectNewAirports(options?: {
 
   // Sort by flight count descending (most impactful gaps first)
   newAirports.sort((a, b) => b.appears_in_flights - a.appears_in_flights);
+
+  // Alert Charlie about airports with no coordinates (can't even find nearby commercial)
+  const noCoords = newAirports.filter((a) => !hasCoords(a.icao));
+  if (noCoords.length > 0) {
+    const list = noCoords.slice(0, 10).map(
+      (a) => `• *${a.icao}* — ${a.appears_in_flights} flights, first: ${a.first_seen_date}`,
+    ).join("\n");
+    await postSlackMessage({
+      channel: "D0AK75CPPJM", // Charlie DM
+      text: `:warning: *${noCoords.length} airport(s) missing coordinates*\nCan't find nearby commercial airports for these:\n${list}${noCoords.length > 10 ? `\n...and ${noCoords.length - 10} more` : ""}\n\nAdd coords to \`driveTime.ts AIRPORT_COORDS\``,
+    }).catch(() => {}); // don't fail the whole function
+  }
 
   return {
     new_airports: newAirports,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret, requireAdmin, isAuthed } from "@/lib/api-auth";
 import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
+import { runGameDayPipeline, type GameDayResult } from "@/lib/gameday/pipeline";
 
 export const maxDuration = 120;
 
@@ -13,7 +14,19 @@ async function sync() {
       ...result,
     });
   }
-  return NextResponse.json({ ok: true, ...result });
+
+  // Run Game Day pipeline if schedule changes were detected
+  let gameDayResult: GameDayResult | null = null;
+  const alertsCreated = result.changeDetection?.alerts_created ?? 0;
+  if (alertsCreated > 0) {
+    try {
+      gameDayResult = await runGameDayPipeline();
+    } catch (err) {
+      console.error("[GameDay] pipeline error:", err);
+    }
+  }
+
+  return NextResponse.json({ ok: true, ...result, gameday: gameDayResult });
 }
 
 /**

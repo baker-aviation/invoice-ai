@@ -2,6 +2,7 @@
 // OSRM results cached in Supabase `drive_time_cache` and in-memory Map.
 
 import { createServiceClient } from "@/lib/supabase/service";
+import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 
 // ─── In-memory OSRM cache (populated by loadDriveTimeCache / fetchOSRMDriveTime) ──
 // Key: "ORIG|DEST", Value: { minutes, miles, source }
@@ -491,7 +492,8 @@ export function hasCoords(icao: string): boolean {
   return resolveToCoordKey(icao) !== null;
 }
 
-/** Resolve an airport code (ICAO, IATA, or FAA LID) to its AIRPORT_COORDS key */
+/** Resolve an airport code (ICAO, IATA, or FAA LID) to its AIRPORT_COORDS key.
+ *  Also checks FBO→commercial aliases when the FBO itself isn't in AIRPORT_COORDS. */
 function resolveToCoordKey(code: string): string | null {
   const upper = code.toUpperCase();
   if (upper in AIRPORT_COORDS) return upper;
@@ -499,6 +501,13 @@ function resolveToCoordKey(code: string): string | null {
   if (upper.length === 3) {
     const withK = `K${upper}`;
     if (withK in AIRPORT_COORDS) return withK;
+  }
+  // Try FBO→commercial alias (e.g. KPDK→KATL)
+  const alias = DEFAULT_AIRPORT_ALIASES.find(
+    (a) => a.fbo_icao === upper && a.preferred,
+  );
+  if (alias && alias.commercial_icao in AIRPORT_COORDS) {
+    return alias.commercial_icao;
   }
   return null;
 }

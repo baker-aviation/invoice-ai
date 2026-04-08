@@ -131,6 +131,14 @@ type SavedPlan = {
   notes: string | null;
 };
 
+type ImpactSuggestion = {
+  type: string;
+  description: string;
+  estimated_cost_delta: number | null;
+  crew_affected_count: number;
+  auto_applicable: boolean;
+};
+
 type PlanImpact = {
   id: string;
   alert_id: string;
@@ -138,6 +146,12 @@ type PlanImpact = {
   affected_crew: { name: string; role: string; direction: string; detail: string }[];
   severity: "critical" | "warning" | "info";
   resolved: boolean;
+  suggestions?: ImpactSuggestion[] | null;
+  resolution_type?: string | null;
+  resolution_note?: string | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  detected_at?: string | null;
 };
 
 type PlanVersion = {
@@ -342,6 +356,21 @@ function TailStatusGrid({ rows, impactedTails, onTileClick }: {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+type SwapAssignmentShape = { oncoming_pic: string | null; oncoming_sic: string | null; offgoing_pic: string | null; offgoing_sic: string | null };
+
+function buildSummaryFromAssignments(
+  assignments: Record<string, SwapAssignmentShape> | null | undefined,
+): Record<string, number> {
+  if (!assignments) return {};
+  const vals = Object.values(assignments);
+  return {
+    oncoming_pic: vals.filter((a) => a.oncoming_pic).length,
+    oncoming_sic: vals.filter((a) => a.oncoming_sic).length,
+    offgoing_pic: vals.filter((a) => a.offgoing_pic).length,
+    offgoing_sic: vals.filter((a) => a.offgoing_sic).length,
+  };
+}
 
 function getNextWednesday(): Date {
   const now = new Date();
@@ -2862,21 +2891,23 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     setCheckingImpacts(true);
     try {
       if (savedPlanMeta) {
-        // Server-side: cross-reference against saved plan + persist results
-        const res = await fetch("/api/crew/swap-plan/impact", {
+        // Server-side: run analysis to update DB, then fetch full results with suggestions
+        await fetch("/api/crew/swap-plan/impact", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ swap_date: selectedDate.toISOString().slice(0, 10) }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          setPlanImpacts(data.impacts?.map((imp: PlanImpact & { id?: string }, i: number) => ({
+        // Now fetch full impact list (includes suggestions + resolution tracking)
+        const getRes = await fetch(`/api/crew/swap-plan/impact?swap_date=${selectedDate.toISOString().slice(0, 10)}`);
+        if (getRes.ok) {
+          const data = await getRes.json();
+          setPlanImpacts(data.impacts?.map((imp: PlanImpact & { id?: string; swap_leg_alerts?: { detected_at?: string } }, i: number) => ({
             ...imp,
             id: imp.id ?? `temp-${i}`,
-            resolved: false,
+            detected_at: imp.swap_leg_alerts?.detected_at ?? imp.detected_at ?? null,
           })) ?? []);
-          const count = data.impacts?.length ?? 0;
-          addToast(count > 0 ? "warning" : "success", count > 0 ? `${count} impact(s) detected` : "No impacts found");
+          const unresolved = (data.impacts ?? []).filter((i: PlanImpact) => !i.resolved).length;
+          addToast(unresolved > 0 ? "warning" : "success", unresolved > 0 ? `${unresolved} active impact(s)` : "No active impacts");
         }
       } else {
         // Client-side: analyze in-memory plan against current alerts
@@ -2945,6 +2976,28 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       addToast("error", "Impact analysis failed");
     }
     finally { setCheckingImpacts(false); }
+  }
+
+  async function resolveImpact(impactId: string, resolutionType: string) {
+    try {
+      const res = await fetch("/api/crew/swap-plan/impact", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: impactId, resolution_type: resolutionType }),
+      });
+      if (res.ok) {
+        setPlanImpacts((prev) =>
+          prev.map((imp) =>
+            imp.id === impactId
+              ? { ...imp, resolved: true, resolution_type: resolutionType, resolved_at: new Date().toISOString() }
+              : imp,
+          ),
+        );
+        addToast("success", `Impact ${resolutionType.replace(/_/g, " ")}`);
+      }
+    } catch {
+      addToast("error", "Failed to resolve impact");
+    }
   }
 
   // Auto-check impacts when plan is loaded and there are unacknowledged alerts
@@ -3355,7 +3408,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           unique_crew: data.roster?.active ?? 0,
           upserted: data.roster?.upserted ?? 0,
           errors: data.errors,
-          summary: {},
+          summary: buildSummaryFromAssignments(data.swap_assignments),
           swap_assignments: data.swap_assignments,
           oncoming_pool: data.oncoming_pool,
         });
@@ -3448,7 +3501,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           unique_crew: data.roster?.active ?? 0,
           upserted: data.roster?.upserted ?? 0,
           errors: data.errors,
-          summary: {},
+          summary: buildSummaryFromAssignments(data.swap_assignments),
           swap_assignments: data.swap_assignments,
           oncoming_pool: data.oncoming_pool,
         });
@@ -5644,24 +5697,59 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         )}
       </div>
 
-      {/* Plan impacts */}
+      {/* Plan impacts — active */}
       {planImpacts.filter(i => !i.resolved).length > 0 && (
         <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
-          <div className="px-4 py-3 bg-red-50 border-b">
+          <div className="px-4 py-3 bg-red-50 border-b flex items-center justify-between">
             <h3 className="text-sm font-semibold text-red-700 uppercase tracking-wider">
-              Plan Impacts ({planImpacts.filter(i => !i.resolved).length})
+              Active Impacts ({planImpacts.filter(i => !i.resolved).length})
             </h3>
+            <button
+              onClick={() => { checkImpacts(); }}
+              className="px-2.5 py-1 text-[10px] rounded bg-red-100 text-red-700 hover:bg-red-200"
+            >
+              Refresh
+            </button>
           </div>
           <div className="divide-y">
             {planImpacts.filter(i => !i.resolved).map((imp) => (
-              <div key={imp.id} className={`px-4 py-3 ${imp.severity === "critical" ? "bg-red-50/50" : "bg-amber-50/50"}`}>
-                <div className="flex items-center gap-3 mb-1">
-                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-                    imp.severity === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                  }`}>
-                    {imp.severity}
-                  </span>
-                  <span className="font-mono font-bold text-sm text-gray-900">{imp.tail_number}</span>
+              <div key={imp.id} className={`px-4 py-3 ${imp.severity === "critical" ? "bg-red-50/50" : imp.severity === "warning" ? "bg-amber-50/50" : "bg-blue-50/50"}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-3">
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                      imp.severity === "critical" ? "bg-red-100 text-red-700"
+                      : imp.severity === "warning" ? "bg-amber-100 text-amber-700"
+                      : "bg-blue-100 text-blue-700"
+                    }`}>
+                      {imp.severity}
+                    </span>
+                    <span className="font-mono font-bold text-sm text-gray-900">{imp.tail_number}</span>
+                    {imp.detected_at && (
+                      <span className="text-[10px] text-gray-400">
+                        {new Date(imp.detected_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => resolveImpact(imp.id, "no_action_needed")}
+                      className="px-2 py-0.5 text-[10px] rounded bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    >
+                      No Action
+                    </button>
+                    <button
+                      onClick={() => resolveImpact(imp.id, "manual_fix")}
+                      className="px-2 py-0.5 text-[10px] rounded bg-green-100 text-green-700 hover:bg-green-200"
+                    >
+                      Resolved
+                    </button>
+                    <button
+                      onClick={() => resolveImpact(imp.id, "dismissed")}
+                      className="px-2 py-0.5 text-[10px] rounded bg-gray-50 text-gray-400 hover:bg-gray-100"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
                 </div>
                 <div className="space-y-0.5 ml-16">
                   {imp.affected_crew.map((c, ci) => (
@@ -5672,10 +5760,60 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     </div>
                   ))}
                 </div>
+                {/* Suggestions */}
+                {imp.suggestions && imp.suggestions.length > 0 && (
+                  <div className="mt-2 ml-16 space-y-1">
+                    <div className="text-[10px] text-gray-500 uppercase font-semibold">Suggested Actions</div>
+                    {imp.suggestions.map((s, si) => (
+                      <div key={si} className="flex items-start gap-2 text-xs">
+                        <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                          s.type === "no_action" ? "bg-green-400"
+                          : s.type === "earlier_flight" ? "bg-blue-400"
+                          : s.type === "ground_transport" ? "bg-purple-400"
+                          : s.type === "reoptimize" ? "bg-amber-400"
+                          : "bg-gray-400"
+                        }`} />
+                        <span className="text-gray-700">{s.description}</span>
+                        {s.estimated_cost_delta != null && s.estimated_cost_delta > 0 && (
+                          <span className="text-gray-400 flex-shrink-0">(~${s.estimated_cost_delta})</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
         </div>
+      )}
+
+      {/* Resolved impacts (collapsed) */}
+      {planImpacts.filter(i => i.resolved).length > 0 && (
+        <details className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <summary className="px-4 py-3 bg-green-50 border-b text-sm font-semibold text-green-700 uppercase tracking-wider cursor-pointer">
+            Resolved ({planImpacts.filter(i => i.resolved).length})
+          </summary>
+          <div className="divide-y">
+            {planImpacts.filter(i => i.resolved).map((imp) => (
+              <div key={imp.id} className="px-4 py-2 bg-gray-50/50">
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-green-100 text-green-700">
+                    {imp.resolution_type?.replace(/_/g, " ") ?? "resolved"}
+                  </span>
+                  <span className="font-mono text-sm text-gray-500">{imp.tail_number}</span>
+                  <span className="text-xs text-gray-400">
+                    {imp.affected_crew.map((c) => c.name).join(", ")}
+                  </span>
+                  {imp.resolved_at && (
+                    <span className="text-[10px] text-gray-400 ml-auto">
+                      {new Date(imp.resolved_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       </>}

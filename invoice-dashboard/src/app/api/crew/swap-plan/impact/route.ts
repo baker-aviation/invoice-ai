@@ -123,7 +123,8 @@ export async function POST(req: NextRequest) {
 
 /**
  * PATCH /api/crew/swap-plan/impact
- * Body: { id: "uuid" } — mark impact as resolved
+ * Body: { id: "uuid", resolution_type?, resolution_note?, resolved_by? }
+ * Mark impact as resolved with optional resolution details.
  */
 export async function PATCH(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -135,11 +136,71 @@ export async function PATCH(req: NextRequest) {
   }
 
   const supa = createServiceClient();
+  const updateData: Record<string, unknown> = {
+    resolved: true,
+    resolved_at: new Date().toISOString(),
+  };
+
+  if (body.resolution_type) updateData.resolution_type = body.resolution_type;
+  if (body.resolution_note) updateData.resolution_note = body.resolution_note;
+  if (body.resolved_by) updateData.resolved_by = body.resolved_by;
+
   const { error } = await supa
     .from("swap_plan_impacts")
-    .update({ resolved: true })
+    .update(updateData)
     .eq("id", body.id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * GET /api/crew/swap-plan/impact?swap_date=2026-04-09
+ * Returns all impacts (resolved and unresolved) for a swap date's active plan.
+ */
+export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const swapDate = req.nextUrl.searchParams.get("swap_date");
+  if (!swapDate) {
+    return NextResponse.json({ error: "swap_date required" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+
+  // Find active plan
+  const { data: plan } = await supa
+    .from("swap_plans")
+    .select("id")
+    .eq("swap_date", swapDate)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (!plan) {
+    return NextResponse.json({ impacts: [], summary: { critical: 0, warning: 0, info: 0, total: 0, resolved: 0 } });
+  }
+
+  // Get all impacts for this plan
+  const { data: impacts, error } = await supa
+    .from("swap_plan_impacts")
+    .select("*, swap_leg_alerts!inner(change_type, old_value, new_value, detected_at)")
+    .eq("swap_plan_id", plan.id)
+    .order("created_at", { ascending: false });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const all = impacts ?? [];
+  const unresolved = all.filter((i) => !i.resolved);
+
+  return NextResponse.json({
+    impacts: all,
+    summary: {
+      critical: unresolved.filter((i) => i.severity === "critical").length,
+      warning: unresolved.filter((i) => i.severity === "warning").length,
+      info: unresolved.filter((i) => i.severity === "info").length,
+      total: all.length,
+      resolved: all.filter((i) => i.resolved).length,
+    },
+  });
 }

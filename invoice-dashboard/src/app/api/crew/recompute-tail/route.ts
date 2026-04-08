@@ -6,6 +6,8 @@ import type { PilotRoute } from "@/lib/pilotRoutes";
 import { toIata, toIcao } from "@/lib/swapOptimizer";
 import { estimateDriveTime } from "@/lib/driveTime";
 import { UBER_MAX_MINUTES } from "@/lib/swapRules";
+import { getCachedRoute, type CachedFlight } from "@/lib/commercialFlightCache";
+import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 
 export const dynamic = "force-dynamic";
 
@@ -142,42 +144,86 @@ export async function POST(req: NextRequest) {
       });
       totalCost += bestRoute.cost_estimate;
     } else {
-      // Check if ground transport is possible
+      // No pilot_routes for this swap point — try commercial flight cache
       const homeAirports = (crewRow.home_airports as string[]) ?? [];
-      let groundOption = null;
+
+      // Resolve new_swap_point to commercial airport IATA for cache lookup
+      const swapIata = resolveToCommercialIata(new_swap_point);
+
+      let bestFlight: CachedFlight | null = null;
+      let bestFlightOrigin = "";
       for (const home of homeAirports) {
-        const drive = estimateDriveTime(toIcao(home), new_swap_point);
-        if (drive && drive.estimated_drive_minutes <= 300) {
-          const isUber = drive.estimated_drive_minutes <= UBER_MAX_MINUTES;
-          const cost = isUber
-            ? Math.max(25, Math.round(drive.estimated_drive_miles * 2.0))
-            : 80 + Math.round(drive.estimated_drive_miles * 0.50);
-          groundOption = {
-            type: isUber ? "uber" : "rental_car",
-            flight_number: null,
-            origin_iata: toIata(home),
-            depart_at: null,
-            arrive_at: null,
-            fbo_arrive_at: null,
-            duty_on_at: null,
-            cost_estimate: cost,
-            duration_minutes: drive.estimated_drive_minutes,
-            score: isUber ? 70 : 50,
-            has_backup: false,
-            backup_flight: null,
-          };
-          totalCost += cost;
-          break;
+        const homeIata = toIata(toIcao(home));
+        const flights = await getCachedRoute(homeIata, swapIata, swap_date);
+        if (flights.length > 0) {
+          // Pick first (earliest departure) — they're sorted by scheduled_departure
+          if (!bestFlight) {
+            bestFlight = flights[0];
+            bestFlightOrigin = homeIata;
+          }
         }
       }
 
-      results.push({
-        name: slot.name,
-        role: slot.role,
-        direction: slot.direction,
-        best_option: groundOption,
-        option_count: groundOption ? 1 : 0,
-      });
+      if (bestFlight) {
+        const cost = bestFlight.hasdata_price ?? bestFlight.estimated_price ?? 350;
+        results.push({
+          name: slot.name,
+          role: slot.role,
+          direction: slot.direction,
+          best_option: {
+            type: "commercial",
+            flight_number: bestFlight.flight_number,
+            origin_iata: bestFlightOrigin,
+            depart_at: bestFlight.scheduled_departure,
+            arrive_at: bestFlight.scheduled_arrival,
+            fbo_arrive_at: null,
+            duty_on_at: null,
+            cost_estimate: cost,
+            duration_minutes: bestFlight.duration_minutes,
+            score: 85,
+            has_backup: false,
+            backup_flight: null,
+          },
+          option_count: 1,
+        });
+        totalCost += cost;
+      } else {
+        // Last resort: ground transport
+        let groundOption = null;
+        for (const home of homeAirports) {
+          const drive = estimateDriveTime(toIcao(home), new_swap_point);
+          if (drive && drive.estimated_drive_minutes <= 300) {
+            const isUber = drive.estimated_drive_minutes <= UBER_MAX_MINUTES;
+            const cost = isUber
+              ? Math.max(25, Math.round(drive.estimated_drive_miles * 2.0))
+              : 80 + Math.round(drive.estimated_drive_miles * 0.50);
+            groundOption = {
+              type: isUber ? "uber" : "rental_car",
+              flight_number: null,
+              origin_iata: toIata(home),
+              depart_at: null,
+              arrive_at: null,
+              fbo_arrive_at: null,
+              duty_on_at: null,
+              cost_estimate: cost,
+              duration_minutes: drive.estimated_drive_minutes,
+              score: isUber ? 70 : 50,
+              has_backup: false,
+              backup_flight: null,
+            };
+            totalCost += cost;
+            break;
+          }
+        }
+
+        results.push({
+          name: slot.name,
+          role: slot.role,
+          direction: slot.direction,
+          best_option: groundOption,
+          option_count: groundOption ? 1 : 0,
+        });
+      }
     }
   }
 
@@ -188,4 +234,17 @@ export async function POST(req: NextRequest) {
     crew: results,
     total_cost: totalCost,
   });
+}
+
+/**
+ * Resolve an FBO ICAO to the preferred commercial airport IATA code.
+ * Falls back to stripping the K-prefix if no alias exists.
+ */
+function resolveToCommercialIata(icao: string): string {
+  const upper = icao.toUpperCase();
+  const alias = DEFAULT_AIRPORT_ALIASES.find(
+    (a) => a.fbo_icao === upper && a.preferred,
+  );
+  if (alias) return toIata(alias.commercial_icao);
+  return toIata(upper);
 }

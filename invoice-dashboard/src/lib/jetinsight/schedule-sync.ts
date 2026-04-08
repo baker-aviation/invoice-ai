@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { postSlackMessage } from "@/lib/slack";
 import { parseScheduleJson, type ScheduleEvent } from "./schedule-parser";
 import { isLoginRedirect } from "./parser";
+import { detectScheduleChanges, type ChangeDetectionResult } from "@/lib/gameday/changeDetection";
 
 const BASE_URL = "https://portal.jetinsight.com";
 const CHARLIE_SLACK_ID = "D0AK75CPPJM";
@@ -17,6 +18,7 @@ export interface ScheduleSyncResult {
   mxNotesUpserted: number;
   errors: string[];
   sessionExpired: boolean;
+  changeDetection?: ChangeDetectionResult;
 }
 
 /**
@@ -115,7 +117,7 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   const { data: existingFlights } = await supa
     .from("flights")
     .select(
-      "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid, diverted",
+      "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_event_uuid, diverted",
     )
     .gte("scheduled_departure", start.toISOString())
     .lte("scheduled_departure", end.toISOString());
@@ -288,6 +290,37 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
     } else {
       result.flightsCancelled = staleIds.length;
     }
+  }
+
+  // ── Game Day: detect schedule changes and create swap_leg_alerts ────────
+  try {
+    const changeResult = await detectScheduleChanges({
+      updates,
+      inserts,
+      cancelledFlights: staleJsonFlights.map((f) => ({
+        id: f.id,
+        tail_number: f.tail_number,
+        departure_icao: f.departure_icao,
+        arrival_icao: f.arrival_icao,
+        scheduled_departure: f.scheduled_departure,
+      })),
+      existingFlights: flights.map((f) => ({
+        id: f.id,
+        tail_number: f.tail_number,
+        departure_icao: f.departure_icao,
+        arrival_icao: f.arrival_icao,
+        scheduled_departure: f.scheduled_departure,
+        scheduled_arrival: f.scheduled_arrival,
+      })),
+    });
+    result.changeDetection = changeResult;
+    if (changeResult.errors.length > 0) {
+      result.errors.push(...changeResult.errors.map((e) => `[ChangeDetect] ${e}`));
+    }
+  } catch (err) {
+    result.errors.push(
+      `[ChangeDetect] ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // Log sync run
