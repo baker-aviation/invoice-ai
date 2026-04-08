@@ -2475,14 +2475,45 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
 
-      const data = await res.json();
-      const options = (data.options ?? []) as Array<{
+      let data = await res.json();
+      type TransportOpt = {
         type: string; flight_number: string | null; depart_at: string | null;
         arrive_at: string | null; fbo_arrive_at: string | null; duty_on_at: string | null;
         cost_estimate: number; duration_minutes: number | null; backup_flight: string | null;
         origin_iata: string; destination_iata: string | null; score: number;
         feasibility: { duty_hours: number | null; duty_ok: boolean };
-      }>;
+      };
+
+      // If flights weren't seeded for this airport, seed on-demand and retry
+      if (data.flights_not_seeded && data.unseeded_pairs?.length > 0) {
+        setSwapPlan((prev) => {
+          if (!prev) return prev;
+          return { ...prev, rows: prev.rows.map((r) =>
+            r.tail_number === tail && r.name === row.name && r.direction === direction
+              ? { ...r, notes: `Seeding flights to ${newSwapPoint}... (first time lookup)` }
+              : r,
+          )};
+        });
+
+        try {
+          const seedRes = await fetch("/api/crew/seed-flights", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ swap_date: swapDateStr, pairs: data.unseeded_pairs }),
+          });
+          if (seedRes.ok) {
+            // Retry transport-options now that flights are cached
+            const retryRes = await fetch(`/api/crew/transport-options?${params}`);
+            if (retryRes.ok) {
+              data = await retryRes.json();
+            }
+          }
+        } catch {
+          // Seeding failed — continue with ground-only options
+        }
+      }
+
+      const options = (data.options ?? []) as TransportOpt[];
 
       // Pick the best feasible option (highest score, duty_ok)
       const feasible = options.filter(o => o.feasibility.duty_ok);
@@ -4358,7 +4389,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <span className="text-green-600">
               {uploadResult.total_parsed} parsed, {uploadResult.unique_crew} unique, {uploadResult.upserted} upserted
             </span>
-            {uploadResult.summary && (
+            {uploadResult.summary && Object.values(uploadResult.summary).some(v => v > 0) && (
               <span className="text-green-500 ml-2 text-xs">
                 (On-PIC: {uploadResult.summary.oncoming_pic ?? 0}, On-SIC: {uploadResult.summary.oncoming_sic ?? 0},
                  Off-PIC: {uploadResult.summary.offgoing_pic ?? 0}, Off-SIC: {uploadResult.summary.offgoing_sic ?? 0})
@@ -4367,7 +4398,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             {uploadResult.swap_assignments && (
               <span className="text-green-500 ml-2 text-xs">
                 | {Object.keys(uploadResult.swap_assignments).length} tails
-                {uploadResult.oncoming_pool && ` | Pool: ${uploadResult.oncoming_pool.pic.length} PICs, ${uploadResult.oncoming_pool.sic.length} SICs to assign`}
+                {oncomingPool
+                  ? ` | Pool: ${oncomingPool.pic.length} PICs, ${oncomingPool.sic.length} SICs to assign`
+                  : uploadResult.oncoming_pool
+                    ? ` | Pool: ${uploadResult.oncoming_pool.pic.length} PICs, ${uploadResult.oncoming_pool.sic.length} SICs to assign`
+                    : ""}
               </span>
             )}
             {uploadResult.errors && uploadResult.errors.length > 0 && (

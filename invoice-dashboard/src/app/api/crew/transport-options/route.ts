@@ -357,6 +357,14 @@ export async function GET(req: NextRequest) {
     return b.score - a.score;
   });
 
+  // Check if any requested flight pairs were missing from the cache.
+  // If so, tell the frontend so it can offer to seed them on-demand.
+  const commercialOptions = options.filter((o) => o.type === "commercial");
+  const flightsNotSeeded = pairsToQuery.length > 0 && commercialOptions.length === 0;
+  const unseededPairs = flightsNotSeeded
+    ? pairsToQuery.map((p) => ({ origin: p.origin, destination: p.dest, date: swapDate }))
+    : [];
+
   return NextResponse.json({
     crew: {
       id: crewRow.id,
@@ -371,6 +379,8 @@ export async function GET(req: NextRequest) {
     direction,
     options,
     total: options.length,
+    flights_not_seeded: flightsNotSeeded,
+    unseeded_pairs: unseededPairs,
   });
 }
 
