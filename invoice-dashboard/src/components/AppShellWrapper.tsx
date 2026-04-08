@@ -4,6 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import { AppShell } from "@/components/AppShell";
+import { BugReportButton } from "@/components/BugReportButton";
 import { createClient } from "@/lib/supabase/client";
 
 function MinimalShell({ children, title }: { children: React.ReactNode; title: string }) {
@@ -58,8 +59,18 @@ export function AppShellWrapper({ children }: { children: React.ReactNode }) {
 
   // Chief pilot gets a minimal shell
   if (loaded && role === "chief_pilot") {
-    return <MinimalShell title="Interview Review">{children}</MinimalShell>;
+    return (
+      <>
+        <MinimalShell title="Interview Review">{children}</MinimalShell>
+        <BugReportButton />
+      </>
+    );
   }
 
-  return <AppShell>{children}</AppShell>;
+  return (
+    <>
+      <AppShell>{children}</AppShell>
+      <BugReportButton />
+    </>
+  );
 }
