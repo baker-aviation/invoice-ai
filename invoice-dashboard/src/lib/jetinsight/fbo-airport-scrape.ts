@@ -33,6 +33,10 @@ export interface ScrapedFbo {
   security_fee: number | null;
   overnight_fee: number | null;
   parking_info: string;
+  ji_uuid: string | null;
+  email: string;
+  url: string;
+  services: string[];
 }
 
 export interface AirportScrapeResult {
@@ -132,6 +136,11 @@ export function parseAirportPage(
       const name = nameCell.text().trim().replace(/\s*✏️?\s*$/, "").trim();
       if (!name || name === "Name") return;
 
+      // Extract JetInsight FBO UUID from links in the row
+      const rowHtml = $(row).html() || "";
+      const uuidMatch = rowHtml.match(/airport_fbos\/([a-f0-9-]{36})/);
+      const ji_uuid = uuidMatch ? uuidMatch[1] : null;
+
       const phone = cells.length > 1 ? $(cells[1]).text().trim() : "";
       const hours = cells.length > 2 ? $(cells[2]).text().trim() : "";
       const avgasText = cells.length > 3 ? $(cells[3]).text().trim() : "";
@@ -147,6 +156,7 @@ export function parseAirportPage(
         avgas_price: parseDollarAmount(avgasText),
         jet_a_price: parseDollarAmount(jetAText),
         preferred,
+        ji_uuid,
       });
     });
   }
@@ -202,10 +212,82 @@ export function parseAirportPage(
       security_fee: entry.security_fee ?? null,
       overnight_fee: entry.overnight_fee ?? null,
       parking_info: entry.parking_info || "",
+      ji_uuid: entry.ji_uuid ?? null,
+      email: entry.email || "",
+      url: entry.url || "",
+      services: entry.services || [],
     });
   }
 
   return { landingFee, fbos };
+}
+
+// ---------------------------------------------------------------------------
+// FBO Detail Modal (email, URL, services)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the FBO detail modal via Rails UJS AJAX endpoint.
+ * Returns a JS snippet containing escaped HTML with contact info and services.
+ */
+async function fetchFboDetail(uuid: string, cookie: string): Promise<string> {
+  const url = `${BASE_URL}/airport_fbos/${uuid}/edit?info_only=true`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Cookie: cookie,
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Baker-Aviation-Sync/1.0",
+      Accept: "text/javascript, application/javascript",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`FBO detail fetch failed: ${res.status} for ${uuid}`);
+  }
+
+  return res.text();
+}
+
+/**
+ * Parse the JS response from the FBO detail modal to extract
+ * email, URL, and services list.
+ */
+export function parseFboDetail(js: string): { email: string; url: string; services: string[] } {
+  let email = "";
+  let url = "";
+  const services: string[] = [];
+
+  // Email: look for "Email</label></div>\n  <div class="col-sm-8">value</div>"
+  const emailMatch = js.match(/Email<\\\/label><\\\/div>\\n\s*<div class=\\"col-sm-8\\">([^<\\]+)/);
+  if (emailMatch) email = emailMatch[1].trim();
+
+  // URL
+  const urlMatch = js.match(/URL<\\\/label><\\\/div>\\n\s*<div class=\\"col-sm-8\\">([^<\\]+)/);
+  if (urlMatch) url = urlMatch[1].trim();
+
+  // Services: split on <\/br> to get "Category: item1, item2" lines
+  const servicesMatch = js.match(/Services<\\\/label><\\\/div>\\n\s*<div class=\\"col-sm-8\\">([^"]*?)\\n\s*<\\\/div>/);
+  if (servicesMatch) {
+    const raw = servicesMatch[1];
+    const parts = raw.split(/<\\\/br>/);
+    for (const part of parts) {
+      // Strip HTML tags and clean up
+      const clean = part
+        .replace(/<[^>]*>/g, "")
+        .replace(/\\"/g, '"')
+        .replace(/\\\//g, "/")
+        .replace(/\\n/g, "")
+        .trim();
+      if (clean && clean.length > 2) {
+        services.push(clean);
+      }
+    }
+  }
+
+  return { email, url, services };
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +347,7 @@ export async function scrapeFboAirports(
     dryRun?: boolean;
     limit?: number;
     offset?: number;
+    includeDetails?: boolean;
   } = {},
 ): Promise<{ results: AirportScrapeResult[]; totalFbos: number; totalAirports: number; errors: string[] }> {
   const supa = createServiceClient();
@@ -323,6 +406,29 @@ export async function scrapeFboAirports(
         const html = await fetchAirportPage(icao, tail, cookie);
         const { landingFee, fbos } = parseAirportPage(html, icao, tail, aircraftType);
 
+        // Optionally fetch FBO detail modals for email/URL/services
+        if (options.includeDetails) {
+          for (const fbo of fbos) {
+            if (!fbo.ji_uuid) continue;
+            try {
+              await sleep(DELAY_MS);
+              const js = await fetchFboDetail(fbo.ji_uuid, cookie);
+              const detail = parseFboDetail(js);
+              fbo.email = detail.email;
+              fbo.url = detail.url;
+              fbo.services = detail.services;
+            } catch (detailErr) {
+              const msg = detailErr instanceof Error ? detailErr.message : String(detailErr);
+              if (msg === "SESSION_EXPIRED") {
+                errors.push(`Session expired fetching detail for ${fbo.fbo_name} at ${icao}`);
+                aborted = true;
+                break;
+              }
+              errors.push(`Detail ${fbo.fbo_name}@${icao}: ${msg}`);
+            }
+          }
+        }
+
         results.push({ icao, faa, aircraft_type: aircraftType, aircraft_tail: tail, landing_fee: landingFee, fbos });
         totalFbos += fbos.length;
 
@@ -333,24 +439,33 @@ export async function scrapeFboAirports(
             }
 
             const is24hr = /24\s*h|24\/7|always\s*open/i.test(fbo.hours);
+            const upsertData: Record<string, unknown> = {
+              airport_code: faa,
+              fbo_name: fbo.fbo_name,
+              chain: "",
+              aircraft_type: aircraftType,
+              facility_fee: fbo.facility_fee,
+              gallons_to_waive: fbo.gallons_to_waive,
+              security_fee: fbo.security_fee,
+              landing_fee: landingFee,
+              overnight_fee: fbo.overnight_fee,
+              parking_info: fbo.parking_info || null,
+              jet_a_price: fbo.jet_a_price,
+              hours: fbo.hours || null,
+              phone: fbo.phone || null,
+              is_24hr: is24hr,
+              source: "jetinsight-scrape",
+            };
+            // Include detail fields only when we actually fetched them
+            if (options.includeDetails && fbo.ji_uuid) {
+              upsertData.ji_fbo_uuid = fbo.ji_uuid;
+              upsertData.email = fbo.email || "";
+              upsertData.url = fbo.url || "";
+              upsertData.services = fbo.services || [];
+              upsertData.ji_source_updated_at = new Date().toISOString();
+            }
             await supa.from("fbo_handling_fees").upsert(
-              {
-                airport_code: faa,
-                fbo_name: fbo.fbo_name,
-                chain: "",
-                aircraft_type: aircraftType,
-                facility_fee: fbo.facility_fee,
-                gallons_to_waive: fbo.gallons_to_waive,
-                security_fee: fbo.security_fee,
-                landing_fee: landingFee,
-                overnight_fee: fbo.overnight_fee,
-                parking_info: fbo.parking_info || null,
-                jet_a_price: fbo.jet_a_price,
-                hours: fbo.hours || null,
-                phone: fbo.phone || null,
-                is_24hr: is24hr,
-                source: "jetinsight-scrape",
-              },
+              upsertData,
               { onConflict: "airport_code,fbo_name,aircraft_type" },
             );
           }

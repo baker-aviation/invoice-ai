@@ -35,20 +35,22 @@ export interface TripNotesResult {
 /**
  * Parse fuel choices from trip notes HTML.
  *
- * Format: "Fuel (PBI): Jet Aviation / WFS: 1+: $6.37"
- * Format: "Fuel (APF): Naples Aviation / Avfuel: 200+: $8.27"
+ * Format 1: "Fuel (PBI): Jet Aviation / WFS: 1+: $6.37"
+ * Format 2: "Fuel (TAPA): Release requested for 251 USG @ $9.6401 from EVO"
+ * Format 3: "Fuel (PBI): Jet Aviation / Avfuel: 200+: $8.27AVFUEL ACCOUNT" (no space before trailing text)
  */
 export function parseFuelChoices(html: string, tripId: string): TripFuelChoice[] {
   const $ = cheerio.load(html);
   const bodyText = $("body").text();
 
   const choices: TripFuelChoice[] = [];
+  const seen = new Set<string>(); // dedup by airport
 
-  // Match all "Fuel (XXX): FBO / Vendor: Tier: $Price" patterns
-  const fuelPattern = /Fuel\s*\(([A-Z]{3,4})\)\s*:\s*([^/\n]+?)\s*\/\s*([^:]+?)\s*:\s*([^:]+?)\s*:\s*\$([0-9]+(?:\.[0-9]+)?)/gi;
+  // Pattern 1: "Fuel (XXX): FBO / Vendor: Tier: $Price"
+  const pattern1 = /Fuel\s*\(([A-Z]{3,4})\)\s*:\s*([^/\n]+?)\s*\/\s*([^:]+?)\s*:\s*([^:]+?)\s*:\s*\$([0-9]+(?:\.[0-9]+)?)/gi;
 
   let match;
-  while ((match = fuelPattern.exec(bodyText)) !== null) {
+  while ((match = pattern1.exec(bodyText)) !== null) {
     const airport = match[1].trim();
     const fbo = match[2].trim();
     const vendor = match[3].trim();
@@ -56,17 +58,42 @@ export function parseFuelChoices(html: string, tripId: string): TripFuelChoice[]
     const price = parseFloat(match[5]);
 
     if (price > 0 && fbo && vendor) {
-      // Normalize airport to ICAO
       const icao = airport.length === 3 ? `K${airport}` : airport;
+      if (!seen.has(icao)) {
+        seen.add(icao);
+        choices.push({
+          trip_id: tripId,
+          airport_code: icao,
+          fbo_name: fbo,
+          fuel_vendor: vendor,
+          volume_tier: tier,
+          price_per_gallon: price,
+        });
+      }
+    }
+  }
 
-      choices.push({
-        trip_id: tripId,
-        airport_code: icao,
-        fbo_name: fbo,
-        fuel_vendor: vendor,
-        volume_tier: tier,
-        price_per_gallon: price,
-      });
+  // Pattern 2: "Fuel (XXX): Release requested for NNN USG @ $Price from Vendor"
+  const pattern2 = /Fuel\s*\(([A-Z]{3,4})\)\s*:\s*Release\s+requested\s+for\s+[\d,.]+\s*USG?\s*@\s*\$([0-9]+(?:\.[0-9]+)?)\s*from\s+([^\n,]+)/gi;
+
+  while ((match = pattern2.exec(bodyText)) !== null) {
+    const airport = match[1].trim();
+    const price = parseFloat(match[2]);
+    const vendor = match[3].trim();
+
+    if (price > 0 && vendor) {
+      const icao = airport.length === 3 ? `K${airport}` : airport;
+      if (!seen.has(icao)) {
+        seen.add(icao);
+        choices.push({
+          trip_id: tripId,
+          airport_code: icao,
+          fbo_name: "",  // not in this format
+          fuel_vendor: vendor,
+          volume_tier: "release",
+          price_per_gallon: price,
+        });
+      }
     }
   }
 

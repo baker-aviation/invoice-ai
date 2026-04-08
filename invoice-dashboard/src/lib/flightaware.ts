@@ -534,6 +534,7 @@ export async function getCommercialFlightStatus(
     const dateMatches = flights.filter(fl => {
       const depIso = fl.scheduled_out ?? fl.estimated_out ?? "";
       if (!depIso) return false;
+      // Convert to ET date for comparison (covers ET/CT/MT/PT — ET is strictest)
       const depET = new Date(depIso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
       return depET === targetDate;
     });
