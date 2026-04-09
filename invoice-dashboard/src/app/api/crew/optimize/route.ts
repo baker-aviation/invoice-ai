@@ -198,8 +198,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Use client pool, auto-detected pool, or auto-build from roster
-  let effectivePool: OncomingPool | null = clientOncomingPool ?? autoDetectedPool;
+  // Use client pool, auto-detected pool, or auto-build from roster.
+  // Treat empty pool (0 PICs + 0 SICs) as null so we fall through to auto-build.
+  const clientPoolEmpty = clientOncomingPool && (clientOncomingPool.pic?.length ?? 0) === 0 && (clientOncomingPool.sic?.length ?? 0) === 0;
+  let effectivePool: OncomingPool | null = (clientPoolEmpty ? null : clientOncomingPool) ?? autoDetectedPool;
 
   // If we have swap assignments but no pool, derive the pool from the roster.
   // Steps:
