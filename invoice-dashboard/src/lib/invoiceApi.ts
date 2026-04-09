@@ -204,7 +204,7 @@ export async function fetchAlerts(params: {
 
   let query = supa
     .from("invoice_alerts")
-    .select("id, created_at, document_id, rule_id, status, slack_status, match_payload, acknowledged, acknowledged_by, acknowledged_at")
+    .select("id, created_at, document_id, rule_id, status, slack_status, match_payload, acknowledged, acknowledged_by, acknowledged_at, assigned_to, assigned_at, resolution, resolution_note, resolved_at, resolved_by")
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -274,7 +274,34 @@ export async function fetchAlerts(params: {
       acknowledged: (row.acknowledged as boolean) ?? false,
       acknowledged_by: (row.acknowledged_by as string) ?? null,
       acknowledged_at: (row.acknowledged_at as string) ?? null,
+      assigned_to: (row.assigned_to as string) ?? null,
+      assigned_at: (row.assigned_at as string) ?? null,
+      resolution: (row.resolution as AlertRow["resolution"]) ?? "havent_started",
+      resolution_note: (row.resolution_note as string) ?? null,
+      resolved_at: (row.resolved_at as string) ?? null,
+      resolved_by: (row.resolved_by as string) ?? null,
     });
+  }
+
+  // Batch-fetch comment and email counts
+  const alertIds = alerts.map((a) => a.id);
+  if (alertIds.length > 0) {
+    const [{ data: commentCounts }, { data: emailCounts }] = await Promise.all([
+      supa.from("invoice_alert_comments").select("alert_id").in("alert_id", alertIds),
+      supa.from("invoice_alert_emails").select("alert_id").in("alert_id", alertIds),
+    ]);
+    const ccMap = new Map<string, number>();
+    for (const c of commentCounts ?? []) {
+      ccMap.set(c.alert_id as string, (ccMap.get(c.alert_id as string) ?? 0) + 1);
+    }
+    const ecMap = new Map<string, number>();
+    for (const e of emailCounts ?? []) {
+      ecMap.set(e.alert_id as string, (ecMap.get(e.alert_id as string) ?? 0) + 1);
+    }
+    for (const a of alerts) {
+      a.comment_count = ccMap.get(a.id) ?? 0;
+      a.email_count = ecMap.get(a.id) ?? 0;
+    }
   }
 
   // Text search

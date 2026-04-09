@@ -1,43 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import { Badge } from "@/components/Badge";
+import type { AlertRow, AlertComment, AlertEmail, AlertAssignee, AlertResolution } from "@/lib/types";
+import { ALERT_RESOLUTIONS, RESOLUTION_LABELS } from "@/lib/types";
 
 /** Vendors to hide from the alerts table (case-insensitive substring match) */
-const EXCLUDED_VENDORS = [
-  "starr indemnity",
-  "textron aviation",
-];
+const EXCLUDED_VENDORS = ["starr indemnity", "textron aviation"];
 
-type AlertRow = {
-  id: string;
-  created_at?: string | null;
-  document_id?: string | null;
-  status?: string | null;
-  slack_status?: string | null;
-  rule_name?: string | null;
-  vendor?: string | null;
-  airport_code?: string | null;
-  tail?: string | null;
-  fee_name?: string | null;
-  fee_amount?: number | string | null;
-  currency?: string | null;
-  pinned?: boolean;
-  pin_note?: string | null;
-  pin_resolved?: boolean;
-  acknowledged?: boolean;
-  acknowledged_by?: string | null;
-  acknowledged_at?: string | null;
-};
+type WorkqueueFilter = "open" | "assigned" | "resolved" | "all";
 
-type PinLocal = { pinned: boolean; pin_note: string | null; pin_resolved: boolean };
-
-function norm(v: any) {
+function norm(v: unknown) {
   return String(v ?? "").trim();
 }
 
-function fmtTime(s: any): string {
+function fmtTime(s: unknown): string {
   const t = norm(s);
   if (!t) return "—";
   const d = new Date(t);
@@ -69,54 +47,376 @@ function slackBadgeVariant(status: string | null | undefined): "success" | "warn
   return "default";
 }
 
-type ShareState = "idle" | "loading" | "success" | "error";
-type SentFilter = "all" | "unsent" | "sent";
-type AckFilter = "all" | "unack" | "ack";
+const RESOLUTION_SHORT: Record<AlertResolution, string> = {
+  havent_started: "Not Started",
+  in_progress: "In Progress",
+  pending_fbo: "Pending FBO",
+  needs_jawad: "Jawad",
+  refund_received: "Refund",
+  credit_applied: "Credit",
+  disputed: "Disputed",
+  no_action: "No Action",
+};
+
+const RESOLVED_SET = new Set<AlertResolution>(["refund_received", "credit_applied", "disputed", "no_action"]);
 
 const PAGE_SIZE = 25;
 
-const BookmarkIcon = ({ filled, className }: { filled?: boolean; className?: string }) => (
-  <svg className={className ?? "w-3.5 h-3.5"} fill={filled ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-  </svg>
-);
+// ─── Detail Panel ────────────────────────────────────────────────
 
-export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAlerts: AlertRow[]; pdfUrls?: Record<string, string> }) {
-  const [alerts] = useState<AlertRow[]>(initialAlerts);
+function DetailPanel({
+  alert,
+  pdfUrl,
+  assignees,
+  onAssign,
+  onResolve,
+}: {
+  alert: AlertRow;
+  pdfUrl: string | null;
+  assignees: AlertAssignee[];
+  onAssign: (alertId: string, name: string | null) => void;
+  onResolve: (alertId: string, resolution: AlertResolution, note: string | null) => void;
+}) {
+  const [tab, setTab] = useState<"details" | "comments" | "emails">("details");
+  const [comments, setComments] = useState<AlertComment[]>([]);
+  const [emails, setEmails] = useState<AlertEmail[]>([]);
+  const [commentText, setCommentText] = useState("");
+  const [commentLoading, setCommentLoading] = useState(false);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [loadingEmails, setLoadingEmails] = useState(false);
+
+  // Email compose state
+  const [showEmailCompose, setShowEmailCompose] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailCc, setEmailCc] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
+
+  // Resolution note editing
+  const [resNote, setResNote] = useState(alert.resolution_note ?? "");
+
+  // Load comments on mount
+  useEffect(() => {
+    setLoadingComments(true);
+    fetch(`/api/alerts/comments/${alert.id}`)
+      .then((r) => r.json())
+      .then((d) => setComments(d.comments ?? []))
+      .catch(() => {})
+      .finally(() => setLoadingComments(false));
+  }, [alert.id]);
+
+  // Load emails when tab switches
+  useEffect(() => {
+    if (tab !== "emails") return;
+    setLoadingEmails(true);
+    fetch(`/api/alerts/emails/${alert.id}`)
+      .then((r) => r.json())
+      .then((d) => setEmails(d.emails ?? []))
+      .catch(() => {})
+      .finally(() => setLoadingEmails(false));
+  }, [tab, alert.id]);
+
+  const addComment = async () => {
+    if (!commentText.trim()) return;
+    setCommentLoading(true);
+    try {
+      const res = await fetch(`/api/alerts/comments/${alert.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: commentText }),
+      });
+      const data = await res.json();
+      if (data.ok && data.comment) {
+        setComments((prev) => [...prev, data.comment]);
+        setCommentText("");
+      }
+    } finally {
+      setCommentLoading(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!emailTo.trim() || !emailBody.trim()) return;
+    setEmailSending(true);
+    try {
+      const to = emailTo.split(",").map((s) => s.trim()).filter(Boolean);
+      const cc = emailCc ? emailCc.split(",").map((s) => s.trim()).filter(Boolean) : [];
+      const res = await fetch(`/api/alerts/emails/${alert.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to, cc, body: emailBody }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setShowEmailCompose(false);
+        setEmailTo("");
+        setEmailCc("");
+        setEmailBody("");
+        // Refresh email list
+        const listRes = await fetch(`/api/alerts/emails/${alert.id}`);
+        const listData = await listRes.json();
+        setEmails(listData.emails ?? []);
+      } else {
+        window.alert(`Send failed: ${data.error || "Unknown error"}`);
+      }
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
+  const tabs = [
+    { key: "details" as const, label: "Resolution" },
+    { key: "comments" as const, label: `Comments${comments.length ? ` (${comments.length})` : ""}` },
+    { key: "emails" as const, label: `Emails${emails.length || alert.email_count ? ` (${emails.length || alert.email_count})` : ""}` },
+  ];
+
+  return (
+    <div className="border-t bg-slate-50 p-4">
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              tab === t.key
+                ? "border-blue-600 text-blue-700"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+        {pdfUrl && (
+          <a
+            href={pdfUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto px-3 py-2 text-sm text-blue-600 hover:underline"
+          >
+            View PDF →
+          </a>
+        )}
+      </div>
+
+      {/* ── Resolution Tab ── */}
+      {tab === "details" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Assigned To</label>
+            <select
+              value={alert.assigned_to ?? ""}
+              onChange={(e) => onAssign(alert.id, e.target.value || null)}
+              className="h-9 rounded-lg border px-3 text-sm bg-white w-full max-w-xs"
+            >
+              <option value="">Unassigned</option>
+              {assignees.map((a) => (
+                <option key={a.id} value={a.name}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Status</label>
+            <select
+              value={alert.resolution ?? "havent_started"}
+              onChange={(e) => onResolve(alert.id, e.target.value as AlertResolution, resNote || null)}
+              className="h-9 rounded-lg border px-3 text-sm bg-white w-full max-w-xs"
+            >
+              {ALERT_RESOLUTIONS.map((r) => (
+                <option key={r} value={r}>{RESOLUTION_LABELS[r]}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="text-xs font-medium text-gray-600 block mb-1">Resolution Notes</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={resNote}
+                onChange={(e) => setResNote(e.target.value)}
+                placeholder="What was the outcome? e.g. $150 refund issued by Atlantic"
+                className="flex-1 h-9 rounded-lg border px-3 text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onResolve(alert.id, alert.resolution ?? "havent_started", resNote || null);
+                }}
+              />
+              <button
+                onClick={() => onResolve(alert.id, alert.resolution ?? "havent_started", resNote || null)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 text-white text-sm hover:bg-slate-700"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+
+          {alert.resolved_by && (
+            <div className="md:col-span-2 text-xs text-gray-500">
+              Resolved by {alert.resolved_by} on {fmtTime(alert.resolved_at)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Comments Tab ── */}
+      {tab === "comments" && (
+        <div className="space-y-3">
+          {loadingComments ? (
+            <div className="text-sm text-gray-400">Loading comments…</div>
+          ) : comments.length === 0 ? (
+            <div className="text-sm text-gray-400">No comments yet. Start the conversation.</div>
+          ) : (
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {comments.map((c) => (
+                <div key={c.id} className="bg-white rounded-lg border p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-semibold text-gray-700">{c.author}</span>
+                    <span className="text-xs text-gray-400">{fmtTime(c.created_at)}</span>
+                  </div>
+                  <div className="text-sm text-gray-800 whitespace-pre-wrap">{c.body}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="Add a comment…"
+              className="flex-1 h-9 rounded-lg border px-3 text-sm"
+              onKeyDown={(e) => e.key === "Enter" && addComment()}
+              disabled={commentLoading}
+            />
+            <button
+              onClick={addComment}
+              disabled={commentLoading || !commentText.trim()}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 text-white text-sm hover:bg-slate-700 disabled:opacity-40"
+            >
+              {commentLoading ? "…" : "Send"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Emails Tab ── */}
+      {tab === "emails" && (
+        <div className="space-y-3">
+          {loadingEmails ? (
+            <div className="text-sm text-gray-400">Loading email thread…</div>
+          ) : emails.length === 0 ? (
+            <div className="text-sm text-gray-400">No emails yet. Send the first one to the FBO.</div>
+          ) : (
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {emails.map((e) => (
+                <div
+                  key={e.id}
+                  className={`rounded-lg border p-3 ${
+                    e.direction === "outbound" ? "bg-blue-50 border-blue-200" : "bg-white"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant={e.direction === "outbound" ? "default" : "success"}>
+                      {e.direction === "outbound" ? "Sent" : "Received"}
+                    </Badge>
+                    <span className="text-xs text-gray-600">{e.from_address}</span>
+                    <span className="text-xs text-gray-400 ml-auto">{fmtTime(e.received_at || e.created_at)}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mb-1">
+                    To: {e.to_addresses.join(", ")}
+                    {e.cc_addresses.length > 0 && <> · CC: {e.cc_addresses.join(", ")}</>}
+                  </div>
+                  <div className="text-xs font-medium text-gray-700 mb-1">{e.subject}</div>
+                  <div className="text-sm text-gray-800 whitespace-pre-wrap">
+                    {e.body_text || "(HTML email — view in email client)"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!showEmailCompose ? (
+            <button
+              onClick={() => setShowEmailCompose(true)}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
+            >
+              Compose Email to FBO
+            </button>
+          ) : (
+            <div className="bg-white rounded-lg border p-3 space-y-2">
+              <div className="text-xs font-medium text-gray-600">From: operations@baker-aviation.com</div>
+              <input
+                type="text"
+                value={emailTo}
+                onChange={(e) => setEmailTo(e.target.value)}
+                placeholder="To: fbo@example.com (comma-separated)"
+                className="w-full h-9 rounded-lg border px-3 text-sm"
+              />
+              <input
+                type="text"
+                value={emailCc}
+                onChange={(e) => setEmailCc(e.target.value)}
+                placeholder="CC: (optional, comma-separated)"
+                className="w-full h-9 rounded-lg border px-3 text-sm"
+              />
+              <textarea
+                value={emailBody}
+                onChange={(e) => setEmailBody(e.target.value)}
+                placeholder="Email body…"
+                className="w-full rounded-lg border px-3 py-2 text-sm min-h-[100px]"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={sendEmail}
+                  disabled={emailSending || !emailTo.trim() || !emailBody.trim()}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-40"
+                >
+                  {emailSending ? "Sending…" : "Send Email"}
+                </button>
+                <button
+                  onClick={() => setShowEmailCompose(false)}
+                  className="px-3 py-1.5 rounded-lg border text-sm text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Table ──────────────────────────────────────────────────
+
+export default function AlertsTable({
+  initialAlerts,
+  pdfUrls = {},
+}: {
+  initialAlerts: AlertRow[];
+  pdfUrls?: Record<string, string>;
+}) {
+  const [alerts, setAlerts] = useState<AlertRow[]>(initialAlerts);
+  const [assignees, setAssignees] = useState<AlertAssignee[]>([]);
 
   const [airport, setAirport] = useState<string>("all");
   const [vendor, setVendor] = useState<string>("all");
+  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [q, setQ] = useState<string>("");
-  const [sentFilter, setSentFilter] = useState<SentFilter>("all");
+  const [wqFilter, setWqFilter] = useState<WorkqueueFilter>("open");
   const [page, setPage] = useState(0);
-  const [shareStates, setShareStates] = useState<Record<string, ShareState>>({});
-  const [previewId, setPreviewId] = useState<string | null>(null);
-  const [ackFilter, setAckFilter] = useState<AckFilter>("unack");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [shareStates, setShareStates] = useState<Record<string, "idle" | "loading" | "success" | "error">>({});
 
-  // Acknowledge state tracked by alert id
-  const [ackOverrides, setAckOverrides] = useState<Record<string, boolean>>({});
-  const [ackLoading, setAckLoading] = useState<Record<string, boolean>>({});
-
-  const isAcked = useCallback((a: AlertRow): boolean => {
-    if (a.id in ackOverrides) return ackOverrides[a.id];
-    return a.acknowledged ?? false;
-  }, [ackOverrides]);
-
-  // Pin state tracked by document_id (multiple alerts can share a document)
-  const [pinOverrides, setPinOverrides] = useState<Record<string, PinLocal>>({});
-  const [pinFormId, setPinFormId] = useState<string | null>(null);
-  const [pinNote, setPinNote] = useState("");
-  const [pinLoading, setPinLoading] = useState(false);
-
-  const getPinState = useCallback((a: AlertRow): PinLocal => {
-    const docId = a.document_id;
-    if (docId && pinOverrides[docId]) return pinOverrides[docId];
-    return {
-      pinned: a.pinned ?? false,
-      pin_note: a.pin_note ?? null,
-      pin_resolved: a.pin_resolved ?? false,
-    };
-  }, [pinOverrides]);
+  // Load assignees on mount
+  useEffect(() => {
+    fetch("/api/alerts/assignees")
+      .then((r) => r.json())
+      .then((d) => setAssignees(d.assignees ?? []))
+      .catch(() => {});
+  }, []);
 
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -124,7 +424,7 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
       const code = norm(a.airport_code).toUpperCase();
       if (code) set.add(code);
     }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    return Array.from(set).sort();
   }, [alerts]);
 
   const vendors = useMemo(() => {
@@ -132,64 +432,47 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
     for (const a of alerts) {
       const v = norm(a.vendor);
       if (!v) continue;
-      const lower = v.toLowerCase();
-      if (EXCLUDED_VENDORS.some((ex) => lower.includes(ex))) continue;
+      if (EXCLUDED_VENDORS.some((ex) => v.toLowerCase().includes(ex))) continue;
       set.add(v);
     }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    return Array.from(set).sort();
+  }, [alerts]);
+
+  const uniqueAssignees = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of alerts) {
+      if (a.assigned_to) set.add(a.assigned_to);
+    }
+    return Array.from(set).sort();
   }, [alerts]);
 
   const filtered = useMemo(() => {
     const qn = q.trim().toLowerCase();
-
     return alerts.filter((a) => {
-      // Exclude non-FBO vendors (insurance, OEMs, etc.)
       const vLower = norm(a.vendor).toLowerCase();
       if (vLower && EXCLUDED_VENDORS.some((ex) => vLower.includes(ex))) return false;
 
-      if (airport !== "all") {
-        const ac = norm(a.airport_code).toUpperCase();
-        if (ac !== airport) return false;
-      }
+      if (airport !== "all" && norm(a.airport_code).toUpperCase() !== airport) return false;
+      if (vendor !== "all" && norm(a.vendor) !== vendor) return false;
+      if (assigneeFilter !== "all" && (a.assigned_to ?? "") !== assigneeFilter) return false;
 
-      if (vendor !== "all") {
-        const v = norm(a.vendor);
-        if (v !== vendor) return false;
-      }
-
-      if (sentFilter !== "all") {
-        const ss = String(a.slack_status ?? "").toLowerCase();
-        const isSent = ss === "sent";
-        if (sentFilter === "sent" && !isSent) return false;
-        if (sentFilter === "unsent" && isSent) return false;
-      }
-
-      if (ackFilter !== "all") {
-        const acked = isAcked(a);
-        if (ackFilter === "ack" && !acked) return false;
-        if (ackFilter === "unack" && acked) return false;
-      }
+      // Workqueue filter
+      const res = a.resolution ?? "havent_started";
+      const isResolved = RESOLVED_SET.has(res as AlertResolution);
+      if (wqFilter === "open" && (isResolved || a.assigned_to)) return false;
+      if (wqFilter === "assigned" && (!a.assigned_to || isResolved)) return false;
+      if (wqFilter === "resolved" && !isResolved) return false;
 
       if (qn) {
-        const hay = [
-          a.document_id,
-          a.rule_name,
-          a.vendor,
-          a.airport_code,
-          a.tail,
-          a.fee_name,
-          a.status,
-          a.slack_status,
-        ]
+        const hay = [a.document_id, a.rule_name, a.vendor, a.airport_code, a.tail, a.fee_name, a.status, a.slack_status, a.assigned_to, a.resolution_note]
           .map((x) => norm(x).toLowerCase())
           .join(" ");
-
         if (!hay.includes(qn)) return false;
       }
 
       return true;
     });
-  }, [alerts, airport, vendor, sentFilter, ackFilter, isAcked, q]);
+  }, [alerts, airport, vendor, assigneeFilter, wqFilter, q]);
 
   const filteredTotal = useMemo(() => {
     return filtered.reduce((sum, a) => {
@@ -204,201 +487,143 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
   const clear = () => {
     setAirport("all");
     setVendor("all");
-    setSentFilter("all");
-    setAckFilter("unack");
+    setAssigneeFilter("all");
+    setWqFilter("open");
     setQ("");
     setPage(0);
   };
+
+  // ── Actions ──
+
+  const handleAssign = useCallback(async (alertId: string, name: string | null) => {
+    const res = await fetch(`/api/alerts/assign/${alertId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assigned_to: name }),
+    });
+    if (res.ok) {
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alertId
+            ? { ...a, assigned_to: name, assigned_at: name ? new Date().toISOString() : null }
+            : a,
+        ),
+      );
+    }
+  }, []);
+
+  const handleResolve = useCallback(async (alertId: string, resolution: AlertResolution, note: string | null) => {
+    const res = await fetch(`/api/alerts/resolve/${alertId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resolution, resolution_note: note }),
+    });
+    if (res.ok) {
+      const isResolved = RESOLVED_SET.has(resolution);
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alertId
+            ? {
+                ...a,
+                resolution,
+                resolution_note: note,
+                resolved_at: isResolved ? new Date().toISOString() : null,
+                resolved_by: isResolved ? "you" : null,
+              }
+            : a,
+        ),
+      );
+    }
+  }, []);
 
   const shareOne = async (alertId: string) => {
     setShareStates((prev) => ({ ...prev, [alertId]: "loading" }));
     try {
       const res = await fetch(`/api/alerts/send-one/${alertId}`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setShareStates((prev) => ({ ...prev, [alertId]: "success" }));
       } else {
-        const msg = data?.error || data?.detail || `HTTP ${res.status}`;
-        console.error("share error", msg, data);
-        alert(`Send failed: ${msg}`);
+        const data = await res.json().catch(() => ({}));
+        window.alert(`Send failed: ${data.error || `HTTP ${res.status}`}`);
         setShareStates((prev) => ({ ...prev, [alertId]: "error" }));
       }
-    } catch (e: any) {
-      console.error("share error", e);
-      alert(`Send failed: ${e?.message || "Network error"}`);
+    } catch {
       setShareStates((prev) => ({ ...prev, [alertId]: "error" }));
     }
   };
 
-  // Pin an invoice from the alerts table
-  const handlePin = async (docId: string) => {
-    setPinLoading(true);
-    try {
-      const res = await fetch(`/api/invoices/${docId}/pin`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: pinNote }),
-      });
-      if (res.ok) {
-        setPinOverrides((prev) => ({
-          ...prev,
-          [docId]: { pinned: true, pin_note: pinNote || null, pin_resolved: false },
-        }));
-        setPinFormId(null);
-        setPinNote("");
-      } else {
-        const data = await res.json().catch(() => ({}));
-        alert(`Pin failed: ${data.error ?? res.status}`);
-      }
-    } finally {
-      setPinLoading(false);
+  // ── Workqueue filter counts ──
+  const counts = useMemo(() => {
+    let open = 0, assigned = 0, resolved = 0;
+    for (const a of alerts) {
+      const vLower = norm(a.vendor).toLowerCase();
+      if (vLower && EXCLUDED_VENDORS.some((ex) => vLower.includes(ex))) continue;
+      const res = a.resolution ?? "havent_started";
+      const isRes = RESOLVED_SET.has(res as AlertResolution);
+      if (isRes) resolved++;
+      else if (a.assigned_to) assigned++;
+      else open++;
     }
-  };
-
-  // Update note on an already-pinned invoice
-  const handleUpdateNote = async (docId: string) => {
-    setPinLoading(true);
-    try {
-      const res = await fetch(`/api/invoices/${docId}/pin`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: pinNote }),
-      });
-      if (res.ok) {
-        setPinOverrides((prev) => ({
-          ...prev,
-          [docId]: { ...prev[docId], pinned: true, pin_note: pinNote || null, pin_resolved: false },
-        }));
-        setPinFormId(null);
-      }
-    } finally {
-      setPinLoading(false);
-    }
-  };
-
-  // Resolve a pin
-  const handleResolve = async (docId: string) => {
-    if (!confirm("Resolve this pin? It will move to history.")) return;
-    setPinLoading(true);
-    try {
-      const res = await fetch(`/api/invoices/${docId}/pin`, { method: "DELETE" });
-      if (res.ok) {
-        setPinOverrides((prev) => ({
-          ...prev,
-          [docId]: { ...prev[docId], pinned: true, pin_resolved: true, pin_note: prev[docId]?.pin_note ?? null },
-        }));
-        setPinFormId(null);
-      }
-    } finally {
-      setPinLoading(false);
-    }
-  };
-
-  // Toggle acknowledge on an alert
-  const toggleAck = async (alertId: string, currentlyAcked: boolean) => {
-    setAckLoading((prev) => ({ ...prev, [alertId]: true }));
-    try {
-      const res = await fetch(`/api/alerts/acknowledge/${alertId}`, {
-        method: currentlyAcked ? "DELETE" : "POST",
-      });
-      if (res.ok) {
-        setAckOverrides((prev) => ({ ...prev, [alertId]: !currentlyAcked }));
-      } else {
-        const data = await res.json().catch(() => ({}));
-        alert(`Acknowledge failed: ${data.error ?? res.status}`);
-      }
-    } catch (e: any) {
-      alert(`Acknowledge failed: ${e?.message || "Network error"}`);
-    } finally {
-      setAckLoading((prev) => ({ ...prev, [alertId]: false }));
-    }
-  };
-
-  const openPinForm = (alertId: string, currentNote: string | null) => {
-    setPinFormId(pinFormId === alertId ? null : alertId);
-    setPinNote(currentNote ?? "");
-    setPreviewId(null); // collapse PDF if open
-  };
+    return { open, assigned, resolved, all: open + assigned + resolved };
+  }, [alerts]);
 
   return (
     <div className="p-6 space-y-4">
-      {/* Filters + Search */}
+      {/* Workqueue tabs */}
+      <div className="flex gap-1 bg-white rounded-xl border shadow-sm p-1">
+        {([
+          ["open", `Open (${counts.open})`],
+          ["assigned", `Assigned (${counts.assigned})`],
+          ["resolved", `Resolved (${counts.resolved})`],
+          ["all", `All (${counts.all})`],
+        ] as [WorkqueueFilter, string][]).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => { setWqFilter(key); setPage(0); }}
+            className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              wqFilter === key
+                ? "bg-slate-900 text-white"
+                : "text-gray-600 hover:bg-gray-100"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
       <div className="rounded-xl border bg-white shadow-sm p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="flex flex-col gap-3 md:flex-row md:items-end">
             <div className="flex flex-col gap-1">
               <label className="text-xs text-gray-600">Airport</label>
-              <select
-                className="h-10 rounded-lg border px-3 text-sm bg-white"
-                value={airport}
-                onChange={(e) => { setAirport(e.target.value); setPage(0); }}
-              >
+              <select className="h-9 rounded-lg border px-3 text-sm bg-white" value={airport} onChange={(e) => { setAirport(e.target.value); setPage(0); }}>
                 <option value="all">All</option>
-                {airports.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
+                {airports.map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
             </div>
 
             <div className="flex flex-col gap-1">
               <label className="text-xs text-gray-600">Vendor</label>
-              <select
-                className="h-10 rounded-lg border px-3 text-sm bg-white min-w-[220px]"
-                value={vendor}
-                onChange={(e) => { setVendor(e.target.value); setPage(0); }}
-              >
+              <select className="h-9 rounded-lg border px-3 text-sm bg-white min-w-[200px]" value={vendor} onChange={(e) => { setVendor(e.target.value); setPage(0); }}>
                 <option value="all">All</option>
-                {vendors.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
+                {vendors.map((v) => <option key={v} value={v}>{v}</option>)}
               </select>
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Status</label>
-              <div className="flex h-10 items-center gap-1 rounded-lg border px-1 bg-white">
-                {(["all", "unsent", "sent"] as SentFilter[]).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => { setSentFilter(f); setPage(0); }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      sentFilter === f
-                        ? "bg-slate-900 text-white"
-                        : "text-gray-600 hover:bg-gray-100"
-                    }`}
-                  >
-                    {f === "all" ? "All" : f === "unsent" ? "Unsent" : "Sent"}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Acknowledged</label>
-              <div className="flex h-10 items-center gap-1 rounded-lg border px-1 bg-white">
-                {(["all", "unack", "ack"] as AckFilter[]).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => { setAckFilter(f); setPage(0); }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      ackFilter === f
-                        ? "bg-slate-900 text-white"
-                        : "text-gray-600 hover:bg-gray-100"
-                    }`}
-                  >
-                    {f === "all" ? "All" : f === "unack" ? "New" : "Ack'd"}
-                  </button>
-                ))}
-              </div>
+              <label className="text-xs text-gray-600">Assignee</label>
+              <select className="h-9 rounded-lg border px-3 text-sm bg-white min-w-[140px]" value={assigneeFilter} onChange={(e) => { setAssigneeFilter(e.target.value); setPage(0); }}>
+                <option value="all">All</option>
+                {uniqueAssignees.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
             </div>
 
             <div className="flex flex-col gap-1">
               <label className="text-xs text-gray-600">Search</label>
               <input
-                className="h-10 rounded-lg border px-3 text-sm min-w-[260px]"
-                placeholder="Search vendor, airport, tail, fee, rule…"
+                className="h-9 rounded-lg border px-3 text-sm min-w-[240px]"
+                placeholder="Search vendor, airport, tail, fee, notes…"
                 value={q}
                 onChange={(e) => { setQ(e.target.value); setPage(0); }}
               />
@@ -406,22 +631,10 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={clear}
-              className="h-10 rounded-lg border px-3 text-sm hover:bg-gray-50"
-            >
-              Clear
-            </button>
-
+            <button onClick={clear} className="h-9 rounded-lg border px-3 text-sm hover:bg-gray-50">Clear</button>
             <div className="text-xs text-gray-500 text-right">
-              <div>
-                <span className="font-medium text-gray-900">{filtered.length}</span> of{" "}
-                <span className="font-medium text-gray-900">{alerts.length}</span> alerts
-              </div>
-              <div className="font-medium text-gray-900">
-                {fmtCurrency(filteredTotal)}
-              </div>
+              <div><span className="font-medium text-gray-900">{filtered.length}</span> alerts</div>
+              <div className="font-medium text-gray-900">{fmtCurrency(filteredTotal)}</div>
             </div>
           </div>
         </div>
@@ -433,219 +646,142 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
           <table className="min-w-full text-sm">
             <thead className="bg-gray-100 text-left text-gray-700">
               <tr>
-                <th className="px-4 py-3 font-medium">Time</th>
-                <th className="px-4 py-3 font-medium">Rule</th>
-                <th className="px-4 py-3 font-medium">Vendor</th>
-                <th className="px-4 py-3 font-medium">Airport</th>
-                <th className="px-4 py-3 font-medium">Tail</th>
-                <th className="px-4 py-3 font-medium">Fee</th>
-                <th className="px-4 py-3 font-medium text-right">Amount</th>
-                <th className="px-4 py-3 font-medium">Slack</th>
-                <th className="px-4 py-3"></th>
+                <th className="px-3 py-3 font-medium">Time</th>
+                <th className="px-3 py-3 font-medium">Vendor</th>
+                <th className="px-3 py-3 font-medium">Airport</th>
+                <th className="px-3 py-3 font-medium">Tail</th>
+                <th className="px-3 py-3 font-medium">Fee</th>
+                <th className="px-3 py-3 font-medium text-right">Amount</th>
+                <th className="px-3 py-3 font-medium">Assignee</th>
+                <th className="px-3 py-3 font-medium">Status</th>
+                <th className="px-3 py-3 font-medium text-center">Activity</th>
+                <th className="px-3 py-3"></th>
               </tr>
             </thead>
-
-            <tbody>
-              {paged.map((a) => {
-                const shareState = shareStates[a.id] ?? "idle";
-                const pdfUrl = a.document_id ? pdfUrls[a.document_id] : null;
-                const isPreview = previewId === a.id;
-                const isPinForm = pinFormId === a.id;
+            {paged.map((a) => {
                 const variant = amountVariant(a.fee_amount);
-                const pin = getPinState(a);
-                const isActivePinned = pin.pinned && !pin.pin_resolved;
-                const acked = isAcked(a);
-                const ackBusy = ackLoading[a.id] ?? false;
+                const isExpanded = expandedId === a.id;
+                const pdfUrl = a.document_id ? pdfUrls[a.document_id] : null;
+                const res = (a.resolution ?? "havent_started") as AlertResolution;
+                const shareState = shareStates[a.id] ?? "idle";
                 return (
-                  <>
-                    <tr key={a.id} className={`border-t transition ${acked ? "bg-gray-50/60 opacity-60 hover:opacity-100" : "hover:bg-gray-50"}`}>
-                      <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
-                      <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
-                      <td className="px-4 py-3">{a.vendor ?? "—"}</td>
-                      <td className="px-4 py-3">{a.airport_code ?? "—"}</td>
-                      <td className="px-4 py-3">{a.tail ?? "—"}</td>
-                      <td className="px-4 py-3 text-gray-600">{a.fee_name ?? "—"}</td>
-                      <td className={`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${
+                  <tbody key={a.id}>
+                    <tr
+                      className={`border-t cursor-pointer transition ${
+                        isExpanded ? "bg-blue-50" : RESOLVED_SET.has(res) ? "bg-gray-50/60 opacity-70 hover:opacity-100" : "hover:bg-gray-50"
+                      }`}
+                      onClick={() => setExpandedId(isExpanded ? null : a.id)}
+                    >
+                      <td className="px-3 py-2.5 whitespace-nowrap text-xs text-gray-500">{fmtTime(a.created_at)}</td>
+                      <td className="px-3 py-2.5 font-medium max-w-[200px] truncate">{a.vendor ?? "—"}</td>
+                      <td className="px-3 py-2.5">{a.airport_code ?? "—"}</td>
+                      <td className="px-3 py-2.5">{a.tail ?? "—"}</td>
+                      <td className="px-3 py-2.5 text-gray-600 max-w-[180px] truncate">{a.fee_name ?? "—"}</td>
+                      <td className={`px-3 py-2.5 text-right font-semibold tabular-nums whitespace-nowrap ${
                         variant === "danger" ? "text-red-700" : variant === "warning" ? "text-amber-700" : "text-gray-900"
                       }`}>
                         {fmtCurrency(a.fee_amount, a.currency)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <Badge variant={slackBadgeVariant(a.slack_status)}>
-                          {String(a.slack_status ?? "pending")}
-                        </Badge>
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={a.assigned_to ?? ""}
+                          onChange={(e) => handleAssign(a.id, e.target.value || null)}
+                          className={`h-7 rounded border px-1.5 text-xs bg-white ${
+                            a.assigned_to ? "border-blue-300 text-blue-700" : "border-gray-200 text-gray-400"
+                          }`}
+                        >
+                          <option value="">—</option>
+                          {assignees.map((as) => <option key={as.id} value={as.name}>{as.name}</option>)}
+                        </select>
                       </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-2">
-                          {/* Acknowledge button */}
-                          <button
-                            type="button"
-                            onClick={() => toggleAck(a.id, acked)}
-                            disabled={ackBusy}
-                            title={acked ? `Acknowledged${a.acknowledged_by ? ` by ${a.acknowledged_by}` : ""}` : "Acknowledge"}
-                            className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 ${
-                              acked
-                                ? "border-green-300 text-green-700 bg-green-50 hover:bg-green-100"
-                                : "border-gray-300 text-gray-400 hover:text-green-600 hover:border-green-300 hover:bg-green-50"
-                            }`}
-                          >
-                            <svg className="w-3.5 h-3.5 inline -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={acked ? 3 : 2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                            </svg>
-                          </button>
-                          {/* Pin / Flag button */}
-                          <button
-                            type="button"
-                            onClick={() => openPinForm(a.id, pin.pin_note)}
-                            title={isActivePinned ? `Pinned: ${pin.pin_note || "no note"}` : "Flag for review"}
-                            className={`text-xs px-2 py-1 rounded border transition-colors ${
-                              isActivePinned
-                                ? "border-red-300 text-red-600 bg-red-50 hover:bg-red-100"
-                                : isPinForm
-                                ? "border-amber-300 text-amber-700 bg-amber-50"
-                                : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                            }`}
-                          >
-                            <BookmarkIcon filled={isActivePinned} className="w-3.5 h-3.5 inline -mt-0.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => shareOne(a.id)}
-                            disabled={shareState === "loading"}
-                            title="Send this alert to Slack"
-                            className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                              shareState === "success"
-                                ? "border-green-300 text-green-700 bg-green-50"
-                                : shareState === "error"
-                                ? "border-red-300 text-red-600 bg-red-50"
-                                : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                            }`}
-                          >
-                            {shareState === "loading" ? "…" : shareState === "success" ? "Sent" : shareState === "error" ? "Error" : "Send"}
-                          </button>
-                          {pdfUrl && (
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={res}
+                          onChange={(e) => handleResolve(a.id, e.target.value as AlertResolution, a.resolution_note ?? null)}
+                          className={`h-7 rounded border px-1.5 text-xs bg-white ${
+                            RESOLVED_SET.has(res) ? "border-green-300 text-green-700"
+                            : res === "needs_jawad" ? "border-red-300 text-red-700"
+                            : res === "havent_started" ? "border-gray-200 text-gray-400"
+                            : "border-amber-300 text-amber-700"
+                          }`}
+                        >
+                          {ALERT_RESOLUTIONS.map((r) => (
+                            <option key={r} value={r}>{RESOLUTION_SHORT[r]}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
+                          {(a.comment_count ?? 0) > 0 && (
+                            <span title={`${a.comment_count} comments`}>
+                              <svg className="w-3.5 h-3.5 inline -mt-0.5 mr-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                              </svg>
+                              {a.comment_count}
+                            </span>
+                          )}
+                          {(a.email_count ?? 0) > 0 && (
+                            <span title={`${a.email_count} emails`}>
+                              <svg className="w-3.5 h-3.5 inline -mt-0.5 mr-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                              </svg>
+                              {a.email_count}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Badge variant={slackBadgeVariant(a.slack_status)}>
+                            {String(a.slack_status ?? "pending")}
+                          </Badge>
+                          {shareState !== "success" && (
                             <button
-                              type="button"
-                              onClick={() => { setPreviewId(isPreview ? null : a.id); setPinFormId(null); }}
-                              className={`text-xs px-2 py-1 rounded border transition-colors ${
-                                isPreview ? "border-blue-300 text-blue-700 bg-blue-50" : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                              }`}
+                              onClick={() => shareOne(a.id)}
+                              disabled={shareState === "loading"}
+                              title="Send to Slack"
+                              className="text-xs px-1.5 py-1 rounded border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40"
                             >
-                              {isPreview ? "Hide" : "PDF"}
+                              {shareState === "loading" ? "…" : "→ Slack"}
                             </button>
                           )}
-                          <Link className="text-xs text-blue-600 hover:underline" href={`/invoices/${a.document_id}?from=alerts`}>
-                            Detail
+                          <Link
+                            className="text-xs text-blue-600 hover:underline"
+                            href={`/invoices/${a.document_id}?from=alerts`}
+                          >
+                            Invoice
                           </Link>
                         </div>
                       </td>
                     </tr>
 
-                    {/* Pin / Flag expandable row */}
-                    {isPinForm && a.document_id && (
-                      <tr key={`${a.id}-pin`}>
-                        <td colSpan={9} className="p-0">
-                          <div className={`border-t p-3 ${isActivePinned ? "bg-red-50" : "bg-amber-50"}`}>
-                            {isActivePinned ? (
-                              // Already pinned — show note + edit/resolve
-                              <div className="flex items-center gap-3">
-                                <BookmarkIcon filled className="w-4 h-4 text-red-600 shrink-0" />
-                                <input
-                                  type="text"
-                                  value={pinNote}
-                                  onChange={(e) => setPinNote(e.target.value)}
-                                  placeholder="Update note…"
-                                  className="border rounded px-2 py-1.5 text-sm flex-1 max-w-md"
-                                  autoFocus
-                                  onKeyDown={(e) => e.key === "Enter" && a.document_id && handleUpdateNote(a.document_id)}
-                                />
-                                <button
-                                  onClick={() => a.document_id && handleUpdateNote(a.document_id)}
-                                  disabled={pinLoading}
-                                  className="text-xs px-3 py-1.5 rounded border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 disabled:opacity-50"
-                                >
-                                  {pinLoading ? "…" : "Save"}
-                                </button>
-                                <button
-                                  onClick={() => a.document_id && handleResolve(a.document_id)}
-                                  disabled={pinLoading}
-                                  className="text-xs px-3 py-1.5 rounded border border-red-300 text-red-700 bg-white hover:bg-red-50 disabled:opacity-50"
-                                >
-                                  {pinLoading ? "…" : "Resolve"}
-                                </button>
-                                <button
-                                  onClick={() => setPinFormId(null)}
-                                  className="text-xs text-gray-500 hover:text-gray-700"
-                                >
-                                  Close
-                                </button>
-                              </div>
-                            ) : (
-                              // Not pinned — pin form
-                              <div className="flex items-center gap-3">
-                                <BookmarkIcon className="w-4 h-4 text-amber-600 shrink-0" />
-                                <span className="text-xs text-amber-800 font-medium shrink-0">Flag for review:</span>
-                                <input
-                                  type="text"
-                                  value={pinNote}
-                                  onChange={(e) => setPinNote(e.target.value)}
-                                  placeholder="Why does this need review?"
-                                  className="border rounded px-2 py-1.5 text-sm flex-1 max-w-md"
-                                  autoFocus
-                                  onKeyDown={(e) => e.key === "Enter" && a.document_id && handlePin(a.document_id)}
-                                />
-                                <button
-                                  onClick={() => a.document_id && handlePin(a.document_id)}
-                                  disabled={pinLoading}
-                                  className="text-xs px-3 py-1.5 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-                                >
-                                  {pinLoading ? "…" : "Pin"}
-                                </button>
-                                <button
-                                  onClick={() => setPinFormId(null)}
-                                  className="text-xs text-gray-500 hover:text-gray-700"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                    {/* Expanded detail panel */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={10} className="p-0">
+                          <DetailPanel
+                            alert={a}
+                            pdfUrl={pdfUrl}
+                            assignees={assignees}
+                            onAssign={handleAssign}
+                            onResolve={handleResolve}
+                          />
                         </td>
                       </tr>
                     )}
-
-                    {isPreview && pdfUrl && (
-                      <tr key={`${a.id}-preview`}>
-                        <td colSpan={9} className="p-0">
-                          <div className="border-t bg-gray-50 p-3">
-                            <div className="flex items-center justify-between mb-2">
-                              <span className="text-xs text-gray-500">Invoice PDF — {a.vendor}</span>
-                              <a href={pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
-                                Open in new tab
-                              </a>
-                            </div>
-                            <iframe
-                              src={pdfUrl}
-                              className="w-full rounded border"
-                              style={{ height: "600px" }}
-                              title={`Invoice ${a.document_id}`}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </>
+                  </tbody>
                 );
               })}
 
-              {filtered.length === 0 && (
+            {filtered.length === 0 && (
+              <tbody>
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-gray-500">
+                  <td colSpan={10} className="px-4 py-10 text-center text-gray-500">
                     No alerts found.
                   </td>
                 </tr>
-              )}
-            </tbody>
+              </tbody>
+            )}
           </table>
         </div>
       </div>
@@ -654,18 +790,14 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <button
-            type="button"
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
             className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ← Previous
           </button>
-          <span className="text-xs text-gray-500">
-            Page {page + 1} of {totalPages}
-          </span>
+          <span className="text-xs text-gray-500">Page {page + 1} of {totalPages}</span>
           <button
-            type="button"
             onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
             disabled={page >= totalPages - 1}
             className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
