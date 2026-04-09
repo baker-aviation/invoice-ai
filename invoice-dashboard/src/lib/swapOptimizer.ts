@@ -5375,16 +5375,29 @@ export function solveOffgoingFirst(params: {
       for (const c of task.candidates) {
         c.score = scoreCandidate(c, task, null);
       }
-      // Pick the candidate with the LATEST fboLeaveTime — maximizes the oncoming window.
-      // Previously we picked the best-scored (earliest departure), creating impossibly
-      // tight deadlines like 8:45am that no oncoming crew can meet. The offgoing crew
-      // takes a later flight home, giving oncoming all day to arrive.
       const viableCandidates = task.candidates.filter((c) => c.type !== "none");
-      viableCandidates.sort((a, b) => {
-        const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? 0;
-        const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? 0;
-        return bLeave - aLeave; // latest first
-      });
+
+      // Offgoing departure strategy depends on whether the aircraft is LEAVING or STAYING:
+      // - before_live / between_legs: aircraft departs, offgoing doesn't need to stay.
+      //   Pick earliest reasonable flight AFTER the aircraft departs (crew gets home sooner).
+      // - after_live / idle: aircraft stays at swap point, someone must be there.
+      //   Pick latest viable flight to maximize oncoming handoff window.
+      const aircraftLeaving = swapPoint.position === "before_live" || swapPoint.position === "between_legs";
+      if (aircraftLeaving) {
+        // Sort by earliest departure — get offgoing home ASAP after aircraft leaves
+        viableCandidates.sort((a, b) => {
+          const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? Infinity;
+          const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? Infinity;
+          return aLeave - bLeave; // earliest first
+        });
+      } else {
+        // Sort by latest departure — maximize oncoming arrival window
+        viableCandidates.sort((a, b) => {
+          const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? 0;
+          const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? 0;
+          return bLeave - aLeave; // latest first
+        });
+      }
       task.best = viableCandidates[0] ?? task.candidates[0] ?? null;
 
       const best = task.best;
