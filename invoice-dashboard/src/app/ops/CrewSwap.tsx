@@ -1082,8 +1082,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   return (
     <div className="space-y-3 p-3">
       {tails.map(([tail, tailRows]) => {
-        const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
-        const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+        // Hide oncoming crew with NO TRANSPORT whose warnings say UNSOLVABLE —
+        // they were assigned by the optimizer but transport planner confirmed no viable route.
+        // Show them as unassigned so user knows to manually handle.
+        const isUnsolvable = (r: CrewSwapRow | undefined) =>
+          r && r.travel_type === "none" && !r.name.startsWith("[UNASSIGNED") && r.warnings.some((w) => w.includes("UNSOLVABLE"));
+        const onPicRaw = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+        const onSicRaw = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+        const onPic = isUnsolvable(onPicRaw) ? undefined : onPicRaw;
+        const onSic = isUnsolvable(onSicRaw) ? undefined : onSicRaw;
         const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
         const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
         // Use actual aircraft type from ics_sources (tail → type), fall back to crew type
@@ -1767,11 +1774,14 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       const isLive = tag.label === "REV" || tag.label === "OWN";
                       // All times in swap point timezone for consistency
                       const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
-                      // Show day label if leg is not on swap day
-                      const legDateStr = f.scheduled_departure?.slice(0, 10) ?? "";
+                      // Show day label when the local display time is on a different calendar day
+                      // (catches overnight legs stored as UTC that appear as prior-day local time)
+                      const depDate = f.scheduled_departure ? new Date(f.scheduled_departure) : null;
                       const swapDateStr = selectedDate?.toISOString().slice(0, 10) ?? "";
-                      const isOtherDay = legDateStr && swapDateStr && legDateStr !== swapDateStr;
-                      const dayLabel = isOtherDay ? new Date(f.scheduled_departure).toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
+                      const localDepDay = depDate ? depDate.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
+                      const swapDay = selectedDate ? selectedDate.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
+                      const isOtherDay = localDepDay && swapDay && localDepDay !== swapDay;
+                      const dayLabel = isOtherDay ? localDepDay : null;
                       return (
                         <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""} ${isOtherDay ? "opacity-50" : ""}`}>
                           {i > 0 && <span className="text-gray-300 mx-1">|</span>}
