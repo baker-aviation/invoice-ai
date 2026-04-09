@@ -129,7 +129,7 @@ export async function POST(
   // Short ID for tag (first 8 chars of UUID)
   const shortId = id.slice(0, 8).toUpperCase();
   const tag = `[BA-ALERT-${shortId}]`;
-  const subject = `${tag} ${feeName} — ${vendor}${airport ? ` | ${airport}` : ""}${tail ? ` | ${tail}` : ""}`;
+  const subject = `${feeName} — ${vendor}${airport ? ` | ${airport}` : ""}${tail ? ` | ${tail}` : ""}`;
 
   // Build HTML
   const htmlBody = bodyText
@@ -194,7 +194,7 @@ export async function POST(
     subject: isReply ? `Re: ${lastEmail.subject}` : subject,
     body: {
       contentType: "HTML",
-      content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}<br><br><span style="color:#999;font-size:11px;">Ref: ${tag}</span></div>`,
+      content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}<br><br><span style="color:#d4d4d4;font-size:9px;">${tag}</span></div>`,
     },
     toRecipients: to.map((addr) => ({ emailAddress: { address: addr } })),
     ccRecipients: cc.map((addr) => ({ emailAddress: { address: addr } })),

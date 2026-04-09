@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret, requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { postSlackMessage } from "@/lib/slack";
 
 async function getGraphToken(): Promise<string> {
   const tenant = process.env.MS_TENANT_ID;
@@ -49,21 +50,60 @@ async function pullReplies(): Promise<{ imported: number; skipped: number; total
     ? new Date(latest.received_at as string).toISOString()
     : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  // Fetch emails containing BA-ALERT tag
-  const filter = `receivedDateTime ge ${since} and contains(subject, 'BA-ALERT')`;
-  const graphUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages?$filter=${encodeURIComponent(filter)}&$top=50&$select=id,subject,from,toRecipients,ccRecipients,body,receivedDateTime,conversationId,internetMessageId&$orderby=receivedDateTime asc`;
+  // Strategy 1: Fetch emails containing BA-ALERT in subject (legacy outbound had tag in subject)
+  // Strategy 2: Also fetch by conversationId for threads where tag is only in body
+  const filter1 = `receivedDateTime ge ${since} and contains(subject, 'BA-ALERT')`;
+  const graphUrl1 = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages?$filter=${encodeURIComponent(filter1)}&$top=50&$select=id,subject,from,toRecipients,ccRecipients,body,receivedDateTime,conversationId,internetMessageId&$orderby=receivedDateTime asc`;
 
-  const msgRes = await fetch(graphUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!msgRes.ok) {
-    const errText = await msgRes.text();
-    throw new Error(`Graph fetch failed: ${msgRes.status} ${errText.slice(0, 200)}`);
+  // Also fetch by known conversation IDs from our outbound emails
+  const { data: convRows } = await supa
+    .from("invoice_alert_emails")
+    .select("graph_conversation_id, alert_id")
+    .eq("direction", "outbound")
+    .not("graph_conversation_id", "is", null);
+  const convMap = new Map<string, string>();
+  for (const row of convRows ?? []) {
+    if (row.graph_conversation_id) convMap.set(row.graph_conversation_id as string, row.alert_id as string);
   }
 
-  const msgData = await msgRes.json();
-  const messages = msgData.value ?? [];
+  const [msgRes1, ...convResults] = await Promise.all([
+    fetch(graphUrl1, { headers: { Authorization: `Bearer ${token}` } }),
+    // Fetch by conversationId in batches (Graph limits filter length)
+    ...(convMap.size > 0
+      ? [
+          fetch(
+            `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages?$filter=${encodeURIComponent(
+              `receivedDateTime ge ${since} and (${[...convMap.keys()].slice(0, 10).map((c) => `conversationId eq '${c}'`).join(" or ")})`
+            )}&$top=50&$select=id,subject,from,toRecipients,ccRecipients,body,receivedDateTime,conversationId,internetMessageId&$orderby=receivedDateTime asc`,
+            { headers: { Authorization: `Bearer ${token}` } },
+          ),
+        ]
+      : []),
+  ]);
+
+  if (!msgRes1.ok) {
+    const errText = await msgRes1.text();
+    throw new Error(`Graph fetch failed: ${msgRes1.status} ${errText.slice(0, 200)}`);
+  }
+
+  const msgData1 = await msgRes1.json();
+  const allMessages = [...(msgData1.value ?? [])];
+
+  // Merge conversation-based results (dedup by id)
+  const seenMsgIds = new Set(allMessages.map((m: { id: string }) => m.id));
+  for (const convRes of convResults) {
+    if (convRes.ok) {
+      const convData = await convRes.json();
+      for (const msg of convData.value ?? []) {
+        if (!seenMsgIds.has(msg.id)) {
+          allMessages.push(msg);
+          seenMsgIds.add(msg.id);
+        }
+      }
+    }
+  }
+
+  const messages = allMessages;
 
   // Known message IDs for dedup
   const { data: existing } = await supa
@@ -87,18 +127,29 @@ async function pullReplies(): Promise<{ imported: number; skipped: number; total
     if (knownIds.has(msg.internetMessageId)) { skipped++; continue; }
     if (ourMessageIds.has(msg.id) || ourInternetIds.has(msg.internetMessageId)) { skipped++; continue; }
 
-    const match = TAG_RE.exec(msg.subject ?? "");
-    if (!match) { skipped++; continue; }
+    // Try tag in subject first, then body, then conversationId
+    const subjectMatch = TAG_RE.exec(msg.subject ?? "");
+    const bodyMatch = !subjectMatch ? TAG_RE.exec(msg.body?.content ?? "") : null;
+    const match = subjectMatch || bodyMatch;
 
-    const shortId = match[1].toLowerCase();
-    const { data: alerts } = await supa
-      .from("invoice_alerts")
-      .select("id")
-      .ilike("id", `${shortId}%`)
-      .limit(1);
+    let alertId: string | null = null;
 
-    if (!alerts?.length) { skipped++; continue; }
-    const alertId = alerts[0].id as string;
+    if (match) {
+      const shortId = match[1].toLowerCase();
+      const { data: alerts } = await supa
+        .from("invoice_alerts")
+        .select("id")
+        .ilike("id", `${shortId}%`)
+        .limit(1);
+      if (alerts?.length) alertId = alerts[0].id as string;
+    }
+
+    // Fallback: match by conversationId from our outbound threads
+    if (!alertId && msg.conversationId && convMap.has(msg.conversationId)) {
+      alertId = convMap.get(msg.conversationId)!;
+    }
+
+    if (!alertId) { skipped++; continue; }
 
     const fromAddr = msg.from?.emailAddress?.address?.toLowerCase() ?? "";
     if (fromAddr === mailbox.toLowerCase()) { skipped++; continue; }
@@ -123,6 +174,48 @@ async function pullReplies(): Promise<{ imported: number; skipped: number; total
       graph_internet_message_id: msg.internetMessageId,
       received_at: msg.receivedDateTime,
     });
+
+    // Notify Slack if alert is assigned
+    try {
+      const { data: alertRow } = await supa
+        .from("invoice_alerts")
+        .select("assigned_to, match_payload")
+        .eq("id", alertId)
+        .single();
+
+      if (alertRow?.assigned_to) {
+        const mp = (alertRow.match_payload ?? {}) as Record<string, string>;
+        const vendor = mp.vendor || "Unknown FBO";
+        const preview = bodyText.slice(0, 150) + (bodyText.length > 150 ? "…" : "");
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://baker-ai-gamma.vercel.app");
+
+        await postSlackMessage({
+          channel: process.env.SLACK_INVOICE_ALERTS_CHANNEL || "C0AG6HZ4Q6N",
+          text: `Email reply on alert assigned to ${alertRow.assigned_to}`,
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `*Email reply received* — assigned to *${alertRow.assigned_to}*\n*From:* ${fromAddr}\n*Vendor:* ${vendor}\n\n>${preview.replace(/\n/g, "\n>")}`,
+              },
+            },
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  text: { type: "plain_text", text: "View Alert" },
+                  url: `${appUrl}/invoices?tab=alerts`,
+                },
+              ],
+            },
+          ],
+        });
+      }
+    } catch (slackErr) {
+      console.error("[alert-replies] Slack notification failed:", slackErr);
+    }
 
     imported++;
   }
