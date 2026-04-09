@@ -590,7 +590,7 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                           className="w-full mt-2 px-2 py-1 bg-zinc-700 border border-zinc-600 rounded text-sm text-zinc-200 h-20 resize-y"
                         />
                       ) : ticket.description ? (
-                        <p className="text-xs text-zinc-400 mt-2 line-clamp-3">{ticket.description}</p>
+                        <p className="text-sm text-zinc-200 mt-2 line-clamp-3">{ticket.description}</p>
                       ) : null}
 
                       {/* Add notes before accepting */}
