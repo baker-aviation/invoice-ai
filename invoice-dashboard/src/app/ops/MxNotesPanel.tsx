@@ -16,6 +16,8 @@ type MxNoteWithAttachments = MxNote & {
   attachments?: Attachment[];
 };
 
+const COMMON_KEYWORDS = ["FADEC", "Lights", "Oil", "Tire", "Brake", "APU", "Engine", "Hydraulic", "Avionics", "Gear", "MEL", "Interior", "Fuel"];
+
 export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?: MxNote[] }) {
   const [notes, setNotes] = useState<MxNoteWithAttachments[]>(initialNotes);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -24,6 +26,8 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showKeywords, setShowKeywords] = useState(false);
 
   // Create form state
   const [newSubject, setNewSubject] = useState("");
@@ -123,14 +127,40 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
     setLoading(false);
   }
 
-  // Acknowledge (dismiss)
-  async function handleAcknowledge(noteId: string) {
+  // Complete — marks done, stays visible in green
+  async function handleComplete(noteId: string) {
+    setNotes((prev) => prev.map((n) =>
+      n.id === noteId ? { ...n, completed_at: new Date().toISOString() } : n
+    ));
     try {
-      const res = await fetch(`/api/ops/mx-notes/${noteId}`, { method: "DELETE" });
-      if (res.ok) {
-        setNotes((prev) => prev.filter((n) => n.id !== noteId));
-        if (expandedId === noteId) setExpandedId(null);
-      }
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "complete" }),
+      });
+    } catch { /* ignore */ }
+  }
+
+  // Delete — permanently removes
+  async function handleDelete(noteId: string) {
+    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    if (expandedId === noteId) setExpandedId(null);
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, { method: "DELETE" });
+    } catch { /* ignore */ }
+  }
+
+  // Toggle parts/tools needed
+  async function togglePartsTools(noteId: string, current: boolean) {
+    setNotes((prev) => prev.map((n) =>
+      n.id === noteId ? { ...n, parts_tools_needed: !current } : n
+    ));
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parts_tools_needed: !current }),
+      });
     } catch { /* ignore */ }
   }
 
@@ -190,9 +220,22 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
     } catch { /* ignore */ }
   }
 
-  // Group notes by tail number
+  // Filter + group notes by tail number
+  const filteredNotes = searchQuery
+    ? notes.filter((n) => {
+        const q = searchQuery.toLowerCase();
+        return (
+          (n.subject?.toLowerCase().includes(q)) ||
+          (n.body?.toLowerCase().includes(q)) ||
+          (n.description?.toLowerCase().includes(q)) ||
+          (n.tail_number?.toLowerCase().includes(q)) ||
+          (n.airport_icao?.toLowerCase().includes(q))
+        );
+      })
+    : notes;
+
   const grouped = new Map<string, MxNoteWithAttachments[]>();
-  for (const note of notes) {
+  for (const note of filteredNotes) {
     const key = note.tail_number ?? "Unassigned";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(note);
@@ -212,7 +255,7 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
       {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-700">
-          Active MX Notes <span className="text-gray-400 font-normal">({notes.length})</span>
+          Active MX Notes <span className="text-gray-400 font-normal">({filteredNotes.length}{searchQuery ? ` / ${notes.length}` : ""})</span>
         </h3>
         <button
           onClick={() => setShowCreate(!showCreate)}
@@ -220,6 +263,49 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
         >
           {showCreate ? "Cancel" : "+ New Note"}
         </button>
+      </div>
+
+      {/* Search bar with keyword dropdown */}
+      <div className="relative">
+        <div className="flex gap-2">
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search MX notes by keyword, tail, airport..."
+            className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          <button
+            onClick={() => setShowKeywords(!showKeywords)}
+            className="px-3 py-1.5 text-xs font-medium border border-gray-200 rounded-lg hover:bg-gray-50"
+          >
+            Keywords ▾
+          </button>
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        {showKeywords && (
+          <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex flex-wrap gap-1.5 w-80">
+            {COMMON_KEYWORDS.map((kw) => (
+              <button
+                key={kw}
+                onClick={() => { setSearchQuery(kw); setShowKeywords(false); }}
+                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                  searchQuery.toLowerCase() === kw.toLowerCase()
+                    ? "bg-blue-100 border-blue-300 text-blue-700"
+                    : "border-gray-200 hover:bg-gray-50 text-gray-600"
+                }`}
+              >
+                {kw}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Create form */}
@@ -298,7 +384,7 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
                 const isExpanded = expandedId === note.id;
                 const isEditing = editingId === note.id;
                 return (
-                  <div key={note.id} className="border border-gray-200 rounded-xl bg-white overflow-hidden">
+                  <div key={note.id} className={`border rounded-xl overflow-hidden ${note.completed_at ? "border-green-300 bg-green-50" : "border-gray-200 bg-white"}`}>
                     {/* Card header — click to expand */}
                     <button
                       onClick={() => toggleExpand(note.id)}
@@ -418,6 +504,19 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
                           </div>
                         )}
 
+                        {/* Parts/tools checkbox */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={note.parts_tools_needed ?? false}
+                            onChange={() => togglePartsTools(note.id, note.parts_tools_needed ?? false)}
+                            className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                          />
+                          <span className={`text-xs ${note.parts_tools_needed ? "text-amber-700 font-medium" : "text-gray-500"}`}>
+                            Parts/tools being moved
+                          </span>
+                        </label>
+
                         {/* Action buttons */}
                         {!isEditing && (
                           <div className="flex items-center gap-2 pt-1">
@@ -436,11 +535,21 @@ export default function MxNotesPanel({ mxNotes: initialNotes = [] }: { mxNotes?:
                             >
                               Attach File
                             </button>
+                            {!note.completed_at ? (
+                              <button
+                                onClick={() => handleComplete(note.id)}
+                                className="text-xs text-green-600 hover:text-green-800 font-medium ml-auto"
+                              >
+                                ✓ Complete
+                              </button>
+                            ) : (
+                              <span className="text-xs text-green-600 font-medium ml-auto">✓ Completed</span>
+                            )}
                             <button
-                              onClick={() => handleAcknowledge(note.id)}
-                              className="text-xs text-red-500 hover:text-red-700 font-medium ml-auto"
+                              onClick={() => handleDelete(note.id)}
+                              className="text-xs text-red-500 hover:text-red-700 font-medium"
                             >
-                              Dismiss
+                              Delete
                             </button>
                           </div>
                         )}

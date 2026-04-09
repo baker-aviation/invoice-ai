@@ -126,11 +126,19 @@ export async function GET(req: NextRequest) {
 
   const supa = createServiceClient();
 
-  // Get all requests in "sent" status (waiting for replies)
-  const { data: pendingRequests } = await supa
+  // Get requests waiting for replies ("sent") or needing re-parse ("replied" + failed)
+  const { data: sentRequests } = await supa
     .from("fbo_fee_requests")
-    .select("id, conversation_id, subject, airport_code, fbo_name, fbo_email, aircraft_types, sent_at")
+    .select("id, conversation_id, subject, airport_code, fbo_name, fbo_email, aircraft_types, sent_at, status, reply_body")
     .eq("status", "sent");
+
+  const { data: failedParseRequests } = await supa
+    .from("fbo_fee_requests")
+    .select("id, conversation_id, subject, airport_code, fbo_name, fbo_email, aircraft_types, sent_at, status, reply_body")
+    .eq("status", "replied")
+    .eq("parse_confidence", "failed");
+
+  const pendingRequests = [...(sentRequests || []), ...(failedParseRequests || [])];
 
   if (!pendingRequests?.length) {
     return NextResponse.json({ ok: true, message: "No pending requests", checked: 0 });
@@ -179,6 +187,78 @@ export async function GET(req: NextRequest) {
   let matched = 0;
   let parsed = 0;
   let errors = 0;
+
+  // First: retry failed parses that already have reply_body stored
+  const retryable = pendingRequests.filter((r) => r.status === "replied" && r.reply_body);
+  for (const request of retryable) {
+    matched++;
+    try {
+      const fees = await parseFeesWithAI(request.reply_body!, request.fbo_name, request.airport_code);
+
+      if (fees.error) {
+        await supa
+          .from("fbo_fee_requests")
+          .update({ parse_confidence: "failed", parse_errors: fees.error, parsed_at: new Date().toISOString() })
+          .eq("id", request.id);
+        continue;
+      }
+
+      if (!fees.aircraft_fees) {
+        await supa
+          .from("fbo_fee_requests")
+          .update({ parse_confidence: "failed", parse_errors: "No aircraft_fees in parsed output", parsed_at: new Date().toISOString() })
+          .eq("id", request.id);
+        continue;
+      }
+
+      for (const [acType, acFees] of Object.entries(fees.aircraft_fees)) {
+        const normalizedType = acType.toLowerCase().includes("challenger") ? "Challenger 300"
+          : acType.toLowerCase().includes("citation") ? "Citation X"
+          : acType;
+
+        await supa.from("fbo_direct_fees").upsert(
+          {
+            airport_code: request.airport_code,
+            fbo_name: request.fbo_name,
+            aircraft_type: normalizedType,
+            jet_a_price: acFees.jet_a_price ?? null,
+            facility_fee: acFees.facility_fee ?? null,
+            gallons_to_waive: acFees.gallons_to_waive ?? null,
+            security_fee: acFees.security_fee ?? null,
+            overnight_fee: acFees.overnight_fee ?? null,
+            hangar_fee: acFees.hangar_fee ?? null,
+            gpu_fee: acFees.gpu_fee ?? null,
+            lavatory_fee: acFees.lavatory_fee ?? null,
+            deice_fee: acFees.deice_fee ?? null,
+            afterhours_fee: acFees.afterhours_fee ?? null,
+            callout_fee: acFees.callout_fee ?? null,
+            ramp_fee: acFees.ramp_fee ?? null,
+            parking_info: typeof acFees.parking_info === "string" ? acFees.parking_info : "",
+            landing_fee: null,
+            source_email: request.fbo_email,
+            source_date: new Date().toISOString().split("T")[0],
+            raw_response: request.reply_body!.slice(0, 50000),
+            confidence: "ai-parsed",
+          },
+          { onConflict: "airport_code,fbo_name,aircraft_type" },
+        );
+      }
+
+      await supa
+        .from("fbo_fee_requests")
+        .update({ status: "parsed", parse_confidence: "ai-parsed", parsed_at: new Date().toISOString() })
+        .eq("id", request.id);
+
+      parsed++;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await supa
+        .from("fbo_fee_requests")
+        .update({ parse_confidence: "failed", parse_errors: errMsg.slice(0, 1000), parsed_at: new Date().toISOString() })
+        .eq("id", request.id);
+      errors++;
+    }
+  }
 
   for (const msg of messages) {
     // Skip if this is our own sent message

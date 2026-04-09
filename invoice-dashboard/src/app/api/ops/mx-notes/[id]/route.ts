@@ -5,7 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 type RouteCtx = { params: Promise<{ id: string }> };
 
 /**
- * PATCH /api/ops/mx-notes/[id] — update subject/body
+ * PATCH /api/ops/mx-notes/[id] — update fields including complete/parts_tools
  */
 export async function PATCH(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAdmin(req);
@@ -17,7 +17,16 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
 
   const { id } = await params;
 
-  let input: { subject?: string; body?: string; tail_number?: string; airport_icao?: string; scheduled_date?: string | null; assigned_van?: number | null };
+  let input: {
+    subject?: string;
+    body?: string;
+    tail_number?: string;
+    airport_icao?: string;
+    scheduled_date?: string | null;
+    assigned_van?: number | null;
+    action?: "complete" | "uncomplete";
+    parts_tools_needed?: boolean;
+  };
   try {
     input = await req.json();
   } catch {
@@ -31,6 +40,16 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
   if (input.airport_icao !== undefined) updates.airport_icao = input.airport_icao.trim().toUpperCase() || null;
   if (input.scheduled_date !== undefined) updates.scheduled_date = input.scheduled_date || null;
   if (input.assigned_van !== undefined) updates.assigned_van = input.assigned_van;
+  if (input.parts_tools_needed !== undefined) updates.parts_tools_needed = input.parts_tools_needed;
+
+  // Complete / uncomplete actions
+  if (input.action === "complete") {
+    updates.completed_at = new Date().toISOString();
+    updates.completed_by = auth.userId;
+  } else if (input.action === "uncomplete") {
+    updates.completed_at = null;
+    updates.completed_by = null;
+  }
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
@@ -42,7 +61,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
     .update(updates)
     .eq("id", id)
     .eq("alert_type", "MX_NOTE")
-    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, scheduled_date, assigned_van")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, completed_at, completed_by, parts_tools_needed, scheduled_date, assigned_van")
     .single();
 
   if (error) {
@@ -54,7 +73,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
 }
 
 /**
- * DELETE /api/ops/mx-notes/[id] — acknowledge (soft delete)
+ * DELETE /api/ops/mx-notes/[id] — hard delete the MX note
  */
 export async function DELETE(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAdmin(req);
@@ -69,13 +88,13 @@ export async function DELETE(req: NextRequest, { params }: RouteCtx) {
   const supa = createServiceClient();
   const { error } = await supa
     .from("ops_alerts")
-    .update({ acknowledged_at: new Date().toISOString(), acknowledged_by: auth.userId })
+    .delete()
     .eq("id", id)
     .eq("alert_type", "MX_NOTE");
 
   if (error) {
-    console.error("[ops/mx-notes] acknowledge error:", error);
-    return NextResponse.json({ error: "Failed to acknowledge MX note" }, { status: 500 });
+    console.error("[ops/mx-notes] delete error:", error);
+    return NextResponse.json({ error: "Failed to delete MX note" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

@@ -105,10 +105,26 @@ export async function POST(
   }
 
   const mp = (alert.match_payload ?? {}) as Record<string, unknown>;
-  const vendor = (mp.vendor as string) || "Unknown FBO";
-  const airport = (mp.airport_code as string) || "";
-  const tail = (mp.tail as string) || "";
+  let vendor = (mp.vendor as string) || "";
+  let airport = (mp.airport_code as string) || "";
+  let tail = (mp.tail as string) || "";
   const feeName = ((mp.matched_line_items as Array<Record<string, unknown>>)?.[0]?.description as string) || "Fee Alert";
+
+  // Fallback to parsed_invoices for vendor/airport/tail if match_payload is sparse
+  if (!vendor || !airport || !tail) {
+    const { data: inv } = await supa
+      .from("parsed_invoices")
+      .select("vendor_name, airport_code, tail_number")
+      .eq("document_id", alert.document_id)
+      .limit(1)
+      .maybeSingle();
+    if (inv) {
+      if (!vendor) vendor = (inv.vendor_name as string) || "";
+      if (!airport) airport = (inv.airport_code as string) || "";
+      if (!tail) tail = (inv.tail_number as string) || "";
+    }
+  }
+  if (!vendor) vendor = "Unknown FBO";
 
   // Short ID for tag (first 8 chars of UUID)
   const shortId = id.slice(0, 8).toUpperCase();
@@ -149,7 +165,7 @@ export async function POST(
     }
   }
 
-  const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
+  const mailbox = process.env.OUTLOOK_OPS_MAILBOX || process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
   if (!mailbox) {
     return NextResponse.json({ error: "No handling mailbox configured" }, { status: 500 });
   }
@@ -190,40 +206,24 @@ export async function POST(
     messagePayload.conversationId = lastEmail.graph_conversation_id;
   }
 
-  // Create draft → send (to capture conversationId)
-  const createRes = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`,
+  // Use sendMail (only requires Mail.Send, not Mail.ReadWrite)
+  const finalSubject = isReply ? `Re: ${lastEmail!.subject}` : subject;
+  const sendRes = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(messagePayload),
-    },
-  );
-
-  if (!createRes.ok) {
-    const errText = await createRes.text();
-    console.error("[alert-email] Graph create failed:", createRes.status, errText);
-    return NextResponse.json({ error: `Email draft failed (HTTP ${createRes.status})` }, { status: 500 });
-  }
-
-  const draft = await createRes.json();
-
-  const sendRes = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${draft.id}/send`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        message: messagePayload,
+        saveToSentItems: true,
+      }),
     },
   );
 
   if (!sendRes.ok) {
     const errText = await sendRes.text();
-    console.error("[alert-email] Graph send failed:", sendRes.status, errText);
-    await fetch(
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${draft.id}`,
-      { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
-    ).catch(() => {});
-    return NextResponse.json({ error: `Email send failed (HTTP ${sendRes.status})` }, { status: 500 });
+    console.error("[alert-email] Graph sendMail failed:", sendRes.status, errText);
+    return NextResponse.json({ error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 500), mailbox }, { status: 500 });
   }
 
   // Store in invoice_alert_emails
@@ -233,14 +233,11 @@ export async function POST(
     from_address: mailbox,
     to_addresses: to,
     cc_addresses: cc,
-    subject: isReply ? `Re: ${lastEmail!.subject}` : subject,
+    subject: finalSubject,
     body_html: htmlBody,
     body_text: bodyText,
-    graph_message_id: draft.id,
-    graph_conversation_id: draft.conversationId,
-    graph_internet_message_id: draft.internetMessageId,
     sent_by: auth.email ?? auth.userId,
   });
 
-  return NextResponse.json({ ok: true, sent_to: to, subject: isReply ? `Re: ${lastEmail!.subject}` : subject });
+  return NextResponse.json({ ok: true, sent_to: to, subject: finalSubject });
 }

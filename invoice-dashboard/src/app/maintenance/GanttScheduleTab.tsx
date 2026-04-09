@@ -30,15 +30,16 @@ const VAN_COLORS = [
   "#f43f5e","#78716c","#0ea5e9","#84cc16",
 ];
 
+// Colors matched to JetInsight: green=positioning, yellow=MX, blue=revenue, teal=owner
 const TYPE_COLORS: Record<string, { bg: string; border: string; text: string; badge: string }> = {
-  Charter:      { bg: "bg-blue-50",    border: "border-blue-200",    text: "text-blue-900",  badge: "bg-blue-500" },
-  Revenue:      { bg: "bg-blue-50",    border: "border-blue-200",    text: "text-blue-900",  badge: "bg-blue-500" },
-  Owner:        { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", badge: "bg-emerald-500" },
-  Positioning:  { bg: "bg-purple-50",  border: "border-purple-200",  text: "text-purple-900", badge: "bg-purple-500" },
-  Ferry:        { bg: "bg-purple-50",  border: "border-purple-200",  text: "text-purple-900", badge: "bg-purple-500" },
-  Maintenance:  { bg: "bg-red-50",     border: "border-red-200",     text: "text-red-900",   badge: "bg-red-500" },
-  "Needs pos":  { bg: "bg-purple-50",  border: "border-purple-200",  text: "text-purple-900", badge: "bg-purple-500" },
-  Training:     { bg: "bg-sky-50",     border: "border-sky-200",     text: "text-sky-900",   badge: "bg-sky-500" },
+  Charter:      { bg: "bg-blue-50",    border: "border-blue-300",    text: "text-blue-900",    badge: "bg-blue-600" },
+  Revenue:      { bg: "bg-blue-50",    border: "border-blue-300",    text: "text-blue-900",    badge: "bg-blue-600" },
+  Owner:        { bg: "bg-cyan-50",    border: "border-cyan-300",    text: "text-cyan-900",    badge: "bg-cyan-600" },
+  Positioning:  { bg: "bg-green-50",   border: "border-green-300",   text: "text-green-900",   badge: "bg-green-600" },
+  Ferry:        { bg: "bg-green-50",   border: "border-green-300",   text: "text-green-900",   badge: "bg-green-600" },
+  Maintenance:  { bg: "bg-amber-50",   border: "border-amber-300",   text: "text-amber-900",   badge: "bg-amber-600" },
+  "Needs pos":  { bg: "bg-green-50",   border: "border-green-300",   text: "text-green-900",   badge: "bg-green-600" },
+  Training:     { bg: "bg-purple-50",  border: "border-purple-300",  text: "text-purple-900",  badge: "bg-purple-600" },
 };
 const DEFAULT_COLORS = { bg: "bg-gray-50", border: "border-gray-200", text: "text-gray-900", badge: "bg-gray-500" };
 
@@ -158,16 +159,22 @@ function VanPicker({ currentVanId, arrivalIcao, pos, onPick, onClose }: {
 // MX Detail Popover
 // ---------------------------------------------------------------------------
 
-function MxPopover({ note, pos, onAssignVan, onAcknowledge, onMove, onClose }: {
+function MxPopover({ note, pos, onAssignVan, onComplete, onDelete, onMove, onSave, onClose }: {
   note: MxNote;
   pos?: { top: number; left: number } | null;
   onAssignVan: (vanId: number | null) => void;
-  onAcknowledge: () => void;
+  onComplete: () => void;
+  onDelete: () => void;
   onMove: () => void;
+  onSave: (updates: { subject?: string; body?: string; airport_icao?: string }) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [showVanPicker, setShowVanPicker] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editSubject, setEditSubject] = useState(note.subject ?? "");
+  const [editBody, setEditBody] = useState(note.body ?? note.description ?? "");
+  const [editAirport, setEditAirport] = useState(note.airport_icao ?? "");
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -179,16 +186,72 @@ function MxPopover({ note, pos, onAssignVan, onAcknowledge, onMove, onClose }: {
 
   return (
     <div ref={ref}
-      className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 text-xs space-y-2"
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-80 text-xs space-y-2"
       style={pos ? { top: pos.top, left: pos.left } : {}}>
-      <div className="font-bold text-sm text-gray-800">{note.subject ?? "Maintenance"}</div>
-      {note.description && <div className="text-gray-600 whitespace-pre-wrap">{note.description}</div>}
-      {note.body && note.body !== note.description && <div className="text-gray-500 whitespace-pre-wrap">{note.body}</div>}
-      <div className="flex items-center gap-2 text-gray-500">
-        {note.airport_icao && <span className="font-mono">{fmtIcao(note.airport_icao)}</span>}
-        {note.start_time && <span>{fmtTime(note.start_time)}</span>}
-        {note.end_time && <><span>-</span><span>{fmtTime(note.end_time)}</span></>}
-      </div>
+      {editing ? (
+        <>
+          <input
+            autoFocus
+            value={editSubject}
+            onChange={(e) => setEditSubject(e.target.value)}
+            placeholder="Subject"
+            className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm font-semibold"
+          />
+          <input
+            value={editAirport}
+            onChange={(e) => setEditAirport(e.target.value.toUpperCase())}
+            placeholder="Airport ICAO"
+            className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs font-mono"
+          />
+          <textarea
+            value={editBody}
+            onChange={(e) => setEditBody(e.target.value)}
+            placeholder="Notes"
+            rows={3}
+            className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs resize-none"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                onSave({
+                  subject: editSubject.trim() || undefined,
+                  body: editBody.trim() || undefined,
+                  airport_icao: editAirport.trim() || undefined,
+                });
+                setEditing(false);
+              }}
+              className="px-3 py-1.5 rounded bg-blue-500 text-white text-[10px] font-medium hover:bg-blue-600"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="px-3 py-1.5 rounded border border-gray-200 text-[10px] hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex items-start justify-between">
+            <div className="font-bold text-sm text-gray-800">{note.subject ?? "Maintenance"}</div>
+            <button
+              onClick={() => setEditing(true)}
+              className="text-blue-500 hover:text-blue-700 text-[10px] font-medium shrink-0"
+            >
+              Edit
+            </button>
+          </div>
+          {note.description && <div className="text-gray-600 whitespace-pre-wrap">{note.description}</div>}
+          {note.body && note.body !== note.description && <div className="text-gray-500 whitespace-pre-wrap">{note.body}</div>}
+          <div className="flex items-center gap-2 text-gray-500">
+            {note.airport_icao && <span className="font-mono">{fmtIcao(note.airport_icao)}</span>}
+            {note.start_time && <span>{fmtTime(note.start_time)}</span>}
+            {note.end_time && <><span>-</span><span>{fmtTime(note.end_time)}</span></>}
+          </div>
+        </>
+      )}
       <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
         <div className="relative">
           <button
@@ -211,11 +274,21 @@ function MxPopover({ note, pos, onAssignVan, onAcknowledge, onMove, onClose }: {
         >
           Move
         </button>
+        {!note.completed_at ? (
+          <button
+            onClick={onComplete}
+            className="px-2 py-1 rounded border border-green-300 hover:bg-green-50 text-green-700 text-[10px] font-medium"
+          >
+            Complete
+          </button>
+        ) : (
+          <span className="px-2 py-1 text-green-600 text-[10px] font-medium">&#10003; Completed</span>
+        )}
         <button
-          onClick={onAcknowledge}
-          className="px-2 py-1 rounded border border-gray-200 hover:bg-green-50 text-green-700 text-[10px]"
+          onClick={onDelete}
+          className="px-2 py-1 rounded border border-red-200 hover:bg-red-50 text-red-600 text-[10px]"
         >
-          Acknowledge
+          Delete
         </button>
         <button onClick={onClose} className="ml-auto px-2 py-1 text-gray-400 hover:text-gray-600 text-[10px]">
           Close
@@ -249,47 +322,56 @@ function CreateMxForm({ tail, date, onSubmit, onCancel }: {
   }, [onCancel]);
 
   return (
-    <div ref={ref} className="absolute top-full left-0 z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 text-xs space-y-2">
-      <div className="font-bold text-sm text-gray-800">New MX — {tail}</div>
-      <div className="text-[10px] text-gray-400">{fmtDayHeader(date)}</div>
-      <input
-        autoFocus
-        placeholder="Subject (required)"
-        value={subject}
-        onChange={(e) => setSubject(e.target.value)}
-        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs"
-      />
-      <input
-        placeholder="Airport ICAO (optional)"
-        value={airport}
-        onChange={(e) => setAirport(e.target.value.toUpperCase())}
-        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs font-mono"
-      />
-      <textarea
-        placeholder="Notes (optional)"
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        rows={2}
-        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs resize-none"
-      />
-      <div className="flex gap-2">
-        <button
-          disabled={!subject.trim()}
-          onClick={() => onSubmit({
-            subject: subject.trim(),
-            body: body.trim() || undefined,
-            tail_number: tail,
-            airport_icao: airport.trim() || undefined,
-          })}
-          className="px-3 py-1.5 rounded bg-red-500 text-white text-[10px] font-medium disabled:opacity-40 hover:bg-red-600"
-        >
-          Create MX
-        </button>
-        <button onClick={onCancel} className="px-3 py-1.5 rounded border border-gray-200 text-[10px] hover:bg-gray-50">
-          Cancel
-        </button>
+    <>
+      <div className="fixed inset-0 bg-black/20 z-[9998]" onClick={onCancel} />
+      <div ref={ref} className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-2xl p-4 w-80 text-xs space-y-3"
+        style={{ top: "50%", left: "50%", transform: "translate(-50%, -50%)" }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-bold text-base text-gray-800">New MX — {tail}</div>
+            <div className="text-[11px] text-gray-400">{fmtDayHeader(date)}</div>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+        </div>
+        <input
+          autoFocus
+          placeholder="Subject (required)"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          className="w-full px-2.5 py-2 border border-gray-200 rounded text-sm"
+        />
+        <input
+          placeholder="Airport ICAO (optional)"
+          value={airport}
+          onChange={(e) => setAirport(e.target.value.toUpperCase())}
+          className="w-full px-2.5 py-2 border border-gray-200 rounded text-sm font-mono"
+        />
+        <textarea
+          placeholder="Notes (optional)"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={3}
+          className="w-full px-2.5 py-2 border border-gray-200 rounded text-sm resize-none"
+        />
+        <div className="flex gap-2 pt-1">
+          <button
+            disabled={!subject.trim()}
+            onClick={() => onSubmit({
+              subject: subject.trim(),
+              body: body.trim() || undefined,
+              tail_number: tail,
+              airport_icao: airport.trim() || undefined,
+            })}
+            className="px-4 py-2 rounded bg-amber-500 text-white text-xs font-medium disabled:opacity-40 hover:bg-amber-600"
+          >
+            Create MX
+          </button>
+          <button onClick={onCancel} className="px-4 py-2 rounded border border-gray-200 text-xs hover:bg-gray-50">
+            Cancel
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -391,7 +473,7 @@ function MxQueueCard({ note, isOverdue }: { note: MxNote; isOverdue?: boolean })
 // Tail Detail Popup
 // ---------------------------------------------------------------------------
 
-function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, onCreateMx, onAcknowledgeMx }: {
+function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, onCreateMx, onDeleteMx, onCompleteMx }: {
   tail: string;
   mxNotes: MxNote[];
   aircraftType: string;
@@ -399,7 +481,8 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
   onClose: () => void;
   onEditMx: (noteId: string, pos: { top: number; left: number }) => void;
   onCreateMx: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
-  onAcknowledgeMx: (noteId: string) => void;
+  onDeleteMx: (noteId: string) => void;
+  onCompleteMx: (noteId: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -443,10 +526,19 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
                       }}
                       className="text-blue-500 hover:text-blue-700 text-[9px] font-medium"
                     >Edit</button>
+                    {!n.completed_at ? (
+                      <button
+                        onClick={() => onCompleteMx(n.id)}
+                        className="text-green-500 hover:text-green-700 text-[9px] font-medium"
+                        title="Mark complete"
+                      >&#10003;</button>
+                    ) : (
+                      <span className="text-green-600 text-[9px]">&#10003;</span>
+                    )}
                     <button
-                      onClick={() => onAcknowledgeMx(n.id)}
+                      onClick={() => onDeleteMx(n.id)}
                       className="text-red-400 hover:text-red-600 text-[9px] font-bold leading-none"
-                      title="Acknowledge / remove"
+                      title="Delete"
                     >&times;</button>
                   </div>
                 </div>
@@ -463,11 +555,11 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
 
       {otherMx.length > 0 && (
         <div>
-          <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1">MX Notes ({otherMx.length})</div>
+          <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-1">MX Notes ({otherMx.length})</div>
           {otherMx.map((n) => (
-            <div key={n.id} className="rounded border border-red-200 bg-red-50 p-1.5 mb-1 text-[10px]">
+            <div key={n.id} className={`rounded border p-1.5 mb-1 text-[10px] ${n.completed_at ? "border-green-300 bg-green-50" : "border-amber-200 bg-amber-50"}`}>
               <div className="flex items-start justify-between">
-                <div className="font-bold text-red-800">{n.subject ?? n.description ?? "Maintenance"}</div>
+                <div className={`font-bold ${n.completed_at ? "text-green-800" : "text-amber-800"}`}>{n.subject ?? n.description ?? "Maintenance"}</div>
                 <div className="flex items-center gap-1.5 ml-1 flex-shrink-0">
                   <button
                     onClick={(e) => {
@@ -476,15 +568,24 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
                     }}
                     className="text-blue-500 hover:text-blue-700 text-[9px] font-medium"
                   >Edit</button>
+                  {!n.completed_at ? (
+                    <button
+                      onClick={() => onCompleteMx(n.id)}
+                      className="text-green-500 hover:text-green-700 text-[9px] font-medium"
+                      title="Mark complete"
+                    >&#10003;</button>
+                  ) : (
+                    <span className="text-green-600 text-[9px]">&#10003;</span>
+                  )}
                   <button
-                    onClick={() => onAcknowledgeMx(n.id)}
+                    onClick={() => onDeleteMx(n.id)}
                     className="text-red-400 hover:text-red-600 text-[9px] font-bold leading-none"
-                    title="Acknowledge / remove"
+                    title="Delete"
                   >&times;</button>
                 </div>
               </div>
-              {n.body && n.body !== n.subject && <div className="text-red-700 mt-0.5 whitespace-pre-wrap">{n.body}</div>}
-              <div className="text-red-500 mt-0.5 flex gap-2">
+              {n.body && n.body !== n.subject && <div className={`mt-0.5 whitespace-pre-wrap ${n.completed_at ? "text-green-700" : "text-amber-700"}`}>{n.body}</div>}
+              <div className={`mt-0.5 flex gap-2 ${n.completed_at ? "text-green-500" : "text-amber-500"}`}>
                 {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
                 {n.start_time && <span>{fmtTime(n.start_time)}{n.end_time ? ` - ${fmtTime(n.end_time)}` : ""}</span>}
                 {n.assigned_van && <span>V{n.assigned_van}</span>}
@@ -691,8 +792,37 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
     } catch {}
   }, []);
 
-  // MX acknowledge handler
-  const acknowledgeMx = useCallback(async (noteId: string) => {
+  // MX complete handler — marks complete, turns green
+  const completeMx = useCallback(async (noteId: string) => {
+    setLocalMxNotes((prev) => prev.map((n) =>
+      n.id === noteId ? { ...n, completed_at: new Date().toISOString() } : n
+    ));
+    setMxPopoverId(null);
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "complete" }),
+      });
+    } catch {}
+  }, []);
+
+  // MX save/edit handler — update subject/body/airport inline
+  const saveMx = useCallback(async (noteId: string, updates: { subject?: string; body?: string; airport_icao?: string }) => {
+    setLocalMxNotes((prev) => prev.map((n) =>
+      n.id === noteId ? { ...n, ...updates } : n
+    ));
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+    } catch {}
+  }, []);
+
+  // MX delete handler — permanently removes
+  const deleteMx = useCallback(async (noteId: string) => {
     setLocalMxNotes((prev) => prev.filter((n) => n.id !== noteId));
     setMxPopoverId(null);
     try {
@@ -851,10 +981,10 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
           {/* Legend */}
           <div className="flex items-center gap-2 text-[10px]">
             {[
-              { label: "Revenue", color: "bg-blue-500" },
-              { label: "Positioning", color: "bg-purple-500" },
-              { label: "Owner", color: "bg-emerald-500" },
-              { label: "MX", color: "bg-red-500" },
+              { label: "Revenue", color: "bg-blue-600" },
+              { label: "Positioning", color: "bg-green-600" },
+              { label: "Owner", color: "bg-cyan-600" },
+              { label: "MX", color: "bg-amber-600" },
             ].map((l) => (
               <div key={l.label} className="flex items-center gap-1">
                 <span className={`w-2.5 h-2.5 rounded-sm ${l.color}`} />
@@ -866,9 +996,9 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
 
         {/* Grid */}
         <div ref={scrollRef} className="overflow-x-auto border border-gray-200 rounded-xl shadow-sm">
-          <div className="min-w-[1100px]">
+          <div className="min-w-[1400px]">
             {/* Header row */}
-            <div className="grid border-b border-gray-200 bg-gray-50 sticky top-0 z-10" style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}>
+            <div className="grid border-b border-gray-200 bg-gray-50 sticky top-0 z-10" style={{ gridTemplateColumns: `110px repeat(${DAYS_TO_SHOW}, 1fr)` }}>
               <div className="px-2 py-2 text-xs font-bold text-gray-500 border-r border-gray-200 flex items-center gap-1">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-gray-400">
                   <path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 00-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
@@ -912,7 +1042,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                   {showTypeHeader && (
                     <div
                       className="grid bg-gray-100 border-b border-gray-300"
-                      style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
+                      style={{ gridTemplateColumns: `110px repeat(${DAYS_TO_SHOW}, 1fr)` }}
                     >
                       <div className="col-span-full px-3 py-1.5 text-[11px] font-bold text-gray-600 uppercase tracking-wider">
                         {thisType}
@@ -921,7 +1051,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                   )}
                   <div
                     className="grid border-b border-gray-100 hover:bg-gray-50/50 transition-colors"
-                    style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
+                    style={{ gridTemplateColumns: `110px repeat(${DAYS_TO_SHOW}, 1fr)` }}
                   >
                   {/* Tail label + MELs + unscheduled MX */}
                   <div data-tail-cell className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
@@ -1041,10 +1171,10 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                               ].filter(Boolean).join("\n")}
                             >
                               {/* Top row: route + times + badges */}
-                              <div className="flex items-center gap-0.5 text-[10px] leading-tight">
+                              <div className="flex items-center gap-0.5 text-[11px] leading-tight flex-wrap">
                                 <span className="font-bold">{depTime}</span>
                                 <span className="font-mono font-semibold">{dep}</span>
-                                <span className="text-gray-400">-</span>
+                                <span className="text-gray-400">&ndash;</span>
                                 <span className="font-mono font-semibold">{arr}</span>
                                 {arrTime && <span className="font-bold">{arrTime}</span>}
 
@@ -1085,13 +1215,16 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                 </span>
                               </div>
 
-                              {/* Pax count */}
-                              {f.pax_count != null && f.pax_count > 0 && (
-                                <div className="text-[9px] leading-tight truncate opacity-70">{f.pax_count} pax</div>
-                              )}
-                              {(f.pic || f.sic) && (
-                                <div className="hidden group-hover:block text-[9px] leading-tight text-gray-500 truncate">
-                                  {[f.pic, f.sic].filter(Boolean).join(" / ")}
+                              {/* Pax + crew */}
+                              {(f.pax_count != null && f.pax_count > 0 || f.pic || f.sic) && (
+                                <div className="text-[9px] leading-tight opacity-80">
+                                  {f.pax_count != null && f.pax_count > 0 && <span>{f.pax_count} pax</span>}
+                                  {(f.pic || f.sic) && (
+                                    <span className="text-gray-500">
+                                      {f.pax_count != null && f.pax_count > 0 ? " · " : ""}
+                                      {[f.pic, f.sic].filter(Boolean).join(" / ")}
+                                    </span>
+                                  )}
                                 </div>
                               )}
 
@@ -1117,7 +1250,9 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                               className={`relative rounded border px-1.5 py-1 cursor-grab active:cursor-grabbing transition-colors overflow-hidden ${
                                 isBeingMoved || draggingMxId === n.id
                                   ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 opacity-50"
-                                  : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
+                                  : n.completed_at
+                                    ? "bg-green-50 border-green-300 text-green-900 hover:bg-green-100"
+                                    : "bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100"
                               }`}
                               onClick={(e) => {
                                 if (movingMxId && isDropTarget) return;
@@ -1138,7 +1273,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                     V{n.assigned_van}
                                   </span>
                                 )}
-                                <span className="ml-auto w-3.5 h-3.5 rounded-sm flex items-center justify-center text-white text-[8px] font-bold bg-red-500">M</span>
+                                <span className={`ml-auto w-3.5 h-3.5 rounded-sm flex items-center justify-center text-white text-[8px] font-bold ${n.completed_at ? "bg-green-600" : "bg-amber-600"}`}>M</span>
                               </div>
                               <div className="text-[9px] leading-tight truncate opacity-70">
                                 {n.subject ?? n.description ?? "Maintenance"}
@@ -1159,15 +1294,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                           </button>
                         )}
 
-                        {/* Create MX form */}
-                        {isCreating && (
-                          <CreateMxForm
-                            tail={tail}
-                            date={d}
-                            onSubmit={createMx}
-                            onCancel={() => setCreateMxCell(null)}
-                          />
-                        )}
+                        {/* Create MX form rendered as global modal below */}
                       </div>
                     );
                   })}
@@ -1220,12 +1347,24 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             note={note}
             pos={mxPopoverPos}
             onAssignVan={(v) => assignMxVan(note.id, v)}
-            onAcknowledge={() => acknowledgeMx(note.id)}
+            onComplete={() => completeMx(note.id)}
+            onDelete={() => deleteMx(note.id)}
             onMove={() => { setMovingMxId(note.id); setMxPopoverId(null); }}
+            onSave={(updates) => saveMx(note.id, updates)}
             onClose={() => setMxPopoverId(null)}
           />
         );
       })()}
+
+      {/* Global Create MX Modal */}
+      {createMxCell && (
+        <CreateMxForm
+          tail={createMxCell.tail}
+          date={createMxCell.date}
+          onSubmit={createMx}
+          onCancel={() => setCreateMxCell(null)}
+        />
+      )}
 
       {/* Global Tail Detail Popup */}
       {tailPopup && (
@@ -1243,7 +1382,8 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             setMxPopoverId(noteId);
           }}
           onCreateMx={createMx}
-          onAcknowledgeMx={acknowledgeMx}
+          onDeleteMx={deleteMx}
+          onCompleteMx={completeMx}
         />
         </>
       )}

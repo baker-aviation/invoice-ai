@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,8 @@ type FeeRequest = {
   parsed_at: string | null;
   parse_confidence: string;
   batch_id: string;
+  reply_body: string | null;
+  reply_from: string | null;
 };
 
 type PreviewData = {
@@ -43,6 +45,7 @@ export default function FboOutreachPage() {
   const [sending, setSending] = useState(false);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [previewTarget, setPreviewTarget] = useState<FboTarget | null>(null);
+  const [expandedReply, setExpandedReply] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "has_email" | "no_direct">("no_direct");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -259,7 +262,7 @@ export default function FboOutreachPage() {
       {requests.length > 0 && (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
           <h3 className="text-sm font-semibold mb-2">Previous Requests ({requests.length})</h3>
-          <div className="max-h-48 overflow-y-auto">
+          <div className="max-h-96 overflow-y-auto">
             <table className="text-xs w-full">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
@@ -268,21 +271,46 @@ export default function FboOutreachPage() {
                   <th className="py-1 pr-3">Status</th>
                   <th className="py-1 pr-3">Sent</th>
                   <th className="py-1 pr-3">Reply</th>
+                  <th className="py-1 pr-3"></th>
                 </tr>
               </thead>
               <tbody>
                 {requests.map((r) => (
-                  <tr key={r.id} className="border-b border-gray-50">
-                    <td className="py-1.5 pr-3 font-medium">{r.airport_code}</td>
-                    <td className="py-1.5 pr-3">{r.fbo_name}</td>
-                    <td className="py-1.5 pr-3">{statusBadge(r.status)}</td>
-                    <td className="py-1.5 pr-3 text-gray-400">
-                      {r.sent_at ? new Date(r.sent_at).toLocaleDateString() : "—"}
-                    </td>
-                    <td className="py-1.5 pr-3 text-gray-400">
-                      {r.reply_received_at ? new Date(r.reply_received_at).toLocaleDateString() : "—"}
-                    </td>
-                  </tr>
+                  <Fragment key={r.id}>
+                    <tr
+                      className={`border-b border-gray-50 ${r.reply_body ? "cursor-pointer hover:bg-gray-50" : ""}`}
+                      onClick={() => r.reply_body && setExpandedReply(expandedReply === r.id ? null : r.id)}
+                    >
+                      <td className="py-1.5 pr-3 font-medium">{r.airport_code}</td>
+                      <td className="py-1.5 pr-3">{r.fbo_name}</td>
+                      <td className="py-1.5 pr-3">{statusBadge(r.status)}</td>
+                      <td className="py-1.5 pr-3 text-gray-400">
+                        {r.sent_at ? new Date(r.sent_at).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="py-1.5 pr-3 text-gray-400">
+                        {r.reply_received_at ? new Date(r.reply_received_at).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="py-1.5 pr-3">
+                        {r.reply_body && (
+                          <span className="text-[10px] text-blue-600">
+                            {expandedReply === r.id ? "▼ Hide" : "▶ View Reply"}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {expandedReply === r.id && r.reply_body && (
+                      <tr className="border-b border-gray-100">
+                        <td colSpan={6} className="px-4 py-3 bg-gray-50">
+                          <div className="text-[11px] text-gray-500 mb-1">
+                            From: {r.reply_from || r.fbo_email} &nbsp;·&nbsp; {r.reply_received_at ? new Date(r.reply_received_at).toLocaleString() : ""}
+                          </div>
+                          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans max-h-64 overflow-y-auto">
+                            {r.reply_body}
+                          </pre>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
