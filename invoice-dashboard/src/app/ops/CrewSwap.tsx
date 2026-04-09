@@ -1757,10 +1757,16 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       const isLive = tag.label === "REV" || tag.label === "OWN";
                       // All times in swap point timezone for consistency
                       const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
+                      // Show day label if leg is not on swap day
+                      const legDateStr = f.scheduled_departure?.slice(0, 10) ?? "";
+                      const swapDateStr = selectedDate?.toISOString().slice(0, 10) ?? "";
+                      const isOtherDay = legDateStr && swapDateStr && legDateStr !== swapDateStr;
+                      const dayLabel = isOtherDay ? new Date(f.scheduled_departure).toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
                       return (
-                        <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""}`}>
+                        <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""} ${isOtherDay ? "opacity-50" : ""}`}>
                           {i > 0 && <span className="text-gray-300 mx-1">|</span>}
                           {isNewLeg && <span className="text-[8px] font-bold text-yellow-700">NEW</span>}
+                          {dayLabel && <span className="text-[8px] font-bold text-indigo-500 mr-0.5">{dayLabel}</span>}
                           <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{depIata}</span>
                           <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, swapIcao)}</span>
                           <span className="text-gray-300">{"\u2192"}</span>
