@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 
 const SUB_TABS = [
   { href: "/fuel-prices", label: "Fuel Prices", exact: true },
-  { href: "/fuel-prices/fbos", label: "FBOs", exact: false },
+  { href: "/fuel-prices/fbos", label: "FBOs", exact: true },
+  { href: "/fuel-prices/fbos/outreach", label: "Outreach", exact: false },
 ];
 
 export default function FuelPricesLayout({ children }: { children: React.ReactNode }) {

@@ -65,8 +65,32 @@ export async function GET(req: NextRequest) {
   }
 
   // Fetch matching website fees and direct fees for comparison
+  // Use fuzzy matching: chain keywords + airport_code + aircraft_type
   const websiteFees: Record<string, Record<string, unknown>> = {};
   const directFees: Record<string, Record<string, unknown>> = {};
+
+  // Normalize FBO name to a chain key for fuzzy matching across sources.
+  // For chains with multiple terminals (e.g. Signature East/West/South),
+  // include a terminal suffix to avoid collapsing distinct locations.
+  function chainKey(name: string): string {
+    const n = name.toLowerCase();
+
+    // Extract direction suffix (east/west/south/north) to distinguish terminals.
+    // Normalize "TERMINAL EAST" and just "East" to the same suffix.
+    const dirMatch = n.match(/\b(east|west|south|north|central)\b/);
+    const suffix = dirMatch ? "_" + dirMatch[1] : "";
+
+    if (n.includes("signature")) return "signature" + suffix;
+    if (n.includes("atlantic")) return "atlantic" + suffix;
+    if (n.includes("jet aviation")) return "jet_aviation" + suffix;
+    if (n.includes("million air")) return "million_air" + suffix;
+    if (n.includes("sheltair")) return "sheltair" + suffix;
+    if (n.includes("modern aviation")) return "modern" + suffix;
+    if (n.includes("cutter")) return "cutter" + suffix;
+    if (n.includes("pentastar")) return "pentastar" + suffix;
+    // For independents, use normalized name (lowercase, no special chars)
+    return n.replace(/[^a-z0-9]/g, "");
+  }
 
   if (profiles && profiles.length > 0) {
     const airports = [...new Set(profiles.map((p) => p.airport_code))];
@@ -78,46 +102,69 @@ export async function GET(req: NextRequest) {
 
     if (websiteRes.data) {
       for (const w of websiteRes.data) {
+        // Store by exact key AND chain key for fuzzy matching
         websiteFees[`${w.airport_code}|${w.fbo_name}|${w.aircraft_type}`] = w;
+        websiteFees[`${w.airport_code}|${chainKey(w.fbo_name)}|${w.aircraft_type}`] = w;
       }
     }
     if (directRes.data) {
       for (const d of directRes.data) {
         directFees[`${d.airport_code}|${d.fbo_name}|${d.aircraft_type}`] = d;
+        directFees[`${d.airport_code}|${chainKey(d.fbo_name)}|${d.aircraft_type}`] = d;
       }
     }
   }
 
-  // Merge all three sources
-  const FEE_FIELDS = [
-    "facility_fee", "gallons_to_waive", "security_fee", "landing_fee",
-    "overnight_fee", "hangar_fee", "gpu_fee", "lavatory_fee", "jet_a_price",
-  ] as const;
+  // Merge all three sources — deduplicate by chain+airport+aircraft.
+  // When two rows have the same chain key (e.g. "Atlantic Aviation" and
+  // "Atlantic Aviation TEB"), keep the one from jetinsight-scrape (richer).
+  const merged: Array<Record<string, unknown>> = [];
+  const seenMap = new Map<string, { idx: number; source: string; email: string }>();
 
-  const WEBSITE_EXTRA_FIELDS = [
-    "handling_fee", "infrastructure_fee", "water_fee",
-    "jet_a_additive_price", "saf_price", "hangar_info",
-  ] as const;
+  for (const p of profiles || []) {
+    const ck = chainKey(p.fbo_name);
+    const dedup = `${p.airport_code}|${ck}|${p.aircraft_type}`;
 
-  const merged = (profiles || []).map((p) => {
-    const key = `${p.airport_code}|${p.fbo_name}|${p.aircraft_type}`;
-    const website = websiteFees[key] || null;
-    const direct = directFees[key] || null;
+    const existing = seenMap.get(dedup);
+    if (existing) {
+      // Prefer jetinsight-scrape over jetinsight seed, or prefer the one with email
+      const pIsBetter =
+        (p.source === "jetinsight-scrape" && existing.source !== "jetinsight-scrape") ||
+        (p.email && !existing.email);
+      if (pIsBetter) {
+        // Replace the existing entry
+        merged[existing.idx] = null as unknown as Record<string, unknown>; // mark for removal
+      } else {
+        continue; // skip this duplicate
+      }
+    }
+
+    const idx = merged.length;
+    seenMap.set(dedup, { idx, source: p.source || "", email: p.email || "" });
+
+    // Find website/direct fees by exact key first, then chain key
+    const exactKey = `${p.airport_code}|${p.fbo_name}|${p.aircraft_type}`;
+    const fuzzyKey = `${p.airport_code}|${ck}|${p.aircraft_type}`;
+    const website = websiteFees[exactKey] || websiteFees[fuzzyKey] || null;
+    const direct = directFees[exactKey] || directFees[fuzzyKey] || null;
 
     // Use website email/city/state as fallback if JI doesn't have it
     const email = p.email || (website as Record<string, string> | null)?.email || "";
     const city = (website as Record<string, string> | null)?.city || "";
     const state = (website as Record<string, string> | null)?.state || "";
 
-    return {
+    merged.push({
       ...p,
-      email, // merged email (prefer JI, fallback to website)
+      email,
       city,
       state,
       website_fees: website,
       direct_fees: direct,
-    };
-  });
+    });
+  }
+
+  // Remove nulled-out entries from dedup replacement
+  const deduped = merged.filter(Boolean);
 
   // Stats
   const [
@@ -131,7 +178,7 @@ export async function GET(req: NextRequest) {
   ]);
 
   return NextResponse.json({
-    profiles: merged,
+    profiles: deduped,
     total: count || 0,
     page,
     limit,
