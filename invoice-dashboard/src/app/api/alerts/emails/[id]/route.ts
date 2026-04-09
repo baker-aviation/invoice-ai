@@ -105,10 +105,26 @@ export async function POST(
   }
 
   const mp = (alert.match_payload ?? {}) as Record<string, unknown>;
-  const vendor = (mp.vendor as string) || "Unknown FBO";
-  const airport = (mp.airport_code as string) || "";
-  const tail = (mp.tail as string) || "";
+  let vendor = (mp.vendor as string) || "";
+  let airport = (mp.airport_code as string) || "";
+  let tail = (mp.tail as string) || "";
   const feeName = ((mp.matched_line_items as Array<Record<string, unknown>>)?.[0]?.description as string) || "Fee Alert";
+
+  // Fallback to parsed_invoices for vendor/airport/tail if match_payload is sparse
+  if (!vendor || !airport || !tail) {
+    const { data: inv } = await supa
+      .from("parsed_invoices")
+      .select("vendor_name, airport_code, tail_number")
+      .eq("document_id", alert.document_id)
+      .limit(1)
+      .maybeSingle();
+    if (inv) {
+      if (!vendor) vendor = (inv.vendor_name as string) || "";
+      if (!airport) airport = (inv.airport_code as string) || "";
+      if (!tail) tail = (inv.tail_number as string) || "";
+    }
+  }
+  if (!vendor) vendor = "Unknown FBO";
 
   // Short ID for tag (first 8 chars of UUID)
   const shortId = id.slice(0, 8).toUpperCase();
