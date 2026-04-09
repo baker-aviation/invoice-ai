@@ -76,8 +76,8 @@ export default async function InvoiceDetailPage({
       <div className="p-6 space-y-4">
         {/* Navigation + reparse (shared for the whole document) */}
         <div className="flex items-center gap-3">
-          <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
-            ← Back to Invoices
+          <Link href={backHref} className="rounded-md border px-3 py-2 text-sm">
+            {backLabel}
           </Link>
           <ReparseButton documentId={document_id} />
           <PinButton

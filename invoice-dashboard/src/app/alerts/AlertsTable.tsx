@@ -77,7 +77,7 @@ function DetailPanel({
   onAssign: (alertId: string, name: string | null) => void;
   onResolve: (alertId: string, resolution: AlertResolution, note: string | null) => void;
 }) {
-  const [tab, setTab] = useState<"details" | "comments" | "emails">("details");
+  const [tab, setTab] = useState<"details" | "comments" | "emails" | "pdf">("details");
   const [comments, setComments] = useState<AlertComment[]>([]);
   const [emails, setEmails] = useState<AlertEmail[]>([]);
   const [commentText, setCommentText] = useState("");
@@ -189,14 +189,16 @@ function DetailPanel({
           </button>
         ))}
         {pdfUrl && (
-          <a
-            href={pdfUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="ml-auto px-3 py-2 text-sm text-blue-600 hover:underline"
+          <button
+            onClick={() => setTab(tab === "pdf" ? "details" : "pdf" as any)}
+            className={`ml-auto px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              tab === "pdf"
+                ? "border-blue-600 text-blue-700"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
           >
-            View PDF →
-          </a>
+            PDF
+          </button>
         )}
       </div>
 
@@ -395,6 +397,26 @@ function DetailPanel({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── PDF Tab ── */}
+      {tab === "pdf" && pdfUrl && (
+        <div className="space-y-2">
+          <iframe
+            src={pdfUrl}
+            className="w-full rounded-lg border"
+            style={{ height: "70vh" }}
+            title="Invoice PDF"
+          />
+          <a
+            href={pdfUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-block text-xs text-blue-600 hover:underline"
+          >
+            Open in new tab →
+          </a>
         </div>
       )}
     </div>
