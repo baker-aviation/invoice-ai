@@ -72,6 +72,10 @@
     {
       "path": "/api/cron/airport-gap-detection",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/fbo-fee-replies",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
