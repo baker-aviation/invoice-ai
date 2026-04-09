@@ -397,7 +397,7 @@ export async function POST(req: NextRequest) {
       excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
       constraints: swapConstraints,
-      currentSwapDay: input.current_swap_day,
+      currentSwapDay: parsed.data.current_swap_day,
     });
     assignmentResult = twoPass.assignmentResult;
     swapAssignments = twoPass.assignmentResult.assignments;
