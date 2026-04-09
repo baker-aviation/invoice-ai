@@ -1233,11 +1233,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       if (f.tail_number) allTails.add(f.tail_number);
     }
 
-    // 1. Check MX_NOTE alerts with span > 3 days
+    // 1. Check MX_NOTE alerts with span > 3 days (only if MX is still ongoing)
     for (const note of mxNotes) {
       if (!note.tail_number || qualifiedTails.has(note.tail_number)) continue;
       if (note.start_time && note.end_time) {
-        const span = new Date(note.end_time).getTime() - new Date(note.start_time).getTime();
+        const endMs = new Date(note.end_time).getTime();
+        if (endMs < now) continue; // MX already ended — don't hide the tail
+        const span = endMs - new Date(note.start_time).getTime();
         if (span > THREE_DAYS_MS) {
           qualifiedTails.add(note.tail_number);
           result.push({
