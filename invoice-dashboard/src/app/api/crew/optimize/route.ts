@@ -442,7 +442,7 @@ export async function POST(req: NextRequest) {
         excludeTails: unsolvableTails,
         offgoingDeadlines: offgoingFirstResult?.deadlines,
         constraints: swapConstraints,
-        currentSwapDay: input.current_swap_day,
+        currentSwapDay: parsed.data.current_swap_day,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
