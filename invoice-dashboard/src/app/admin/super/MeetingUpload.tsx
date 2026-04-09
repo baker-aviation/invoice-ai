@@ -407,6 +407,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
 
   const processVideo = useCallback(
     async (file: File) => {
+      let createdMeetingId: number | null = null;
       try {
         setStep("loading");
         setError("");
@@ -427,6 +428,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
         if (!createRes.ok) throw new Error("Failed to create meeting record");
         const { meeting } = await createRes.json();
         const meetingId = meeting.id;
+        createdMeetingId = meetingId;
 
         let videoFile = file;
 
@@ -523,6 +525,23 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
         console.error("Meeting processing error:", e);
         setError(`${msg} (step: ${step})`);
         setStep("error");
+
+        // Update the meeting record so it doesn't stay stuck in "processing"
+        if (createdMeetingId) {
+          try {
+            await fetch("/api/admin/meetings", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id: createdMeetingId,
+                status: "error",
+                error_message: `${msg} (step: ${step})`,
+              }),
+            });
+          } catch {
+            // best-effort
+          }
+        }
       }
     },
     [

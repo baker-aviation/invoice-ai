@@ -38,7 +38,7 @@ type MeetingTicket = {
   linear_issue_id: string | null;
 };
 
-export default function MeetingDetail({ meetingId }: { meetingId: number }) {
+export default function MeetingDetail({ meetingId, onDelete }: { meetingId: number; onDelete?: () => void }) {
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [tickets, setTickets] = useState<MeetingTicket[]>([]);
@@ -86,6 +86,24 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // Poll while status is "processing" so we auto-update when transcription finishes (or fails)
+  useEffect(() => {
+    if (!meeting || (meeting.status !== "processing" && meeting.status !== "generating")) return;
+    const interval = setInterval(() => {
+      fetchAll();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [meeting?.status, fetchAll]);
+
+  // ── Delete meeting ───────────────────────────────────────────────────────
+
+  const deleteMeeting = async () => {
+    if (!confirm("Delete this meeting and all its screenshots/tickets?")) return;
+    const res = await fetch(`/api/admin/meetings?id=${meetingId}`, { method: "DELETE" });
+    if (res.ok) onDelete?.();
+    else alert("Failed to delete meeting");
+  };
 
   // ── Title editing ────────────────────────────────────────────────────────
 
@@ -279,29 +297,38 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
           </p>
         </div>
 
-        {/* Generate tickets button */}
-        {(meeting.status === "transcribed" || meeting.status === "tickets_ready") && (
+        <div className="flex items-center gap-2">
+          {/* Generate tickets button */}
+          {(meeting.status === "transcribed" || meeting.status === "tickets_ready") && (
+            <button
+              onClick={generateTickets}
+              disabled={generating}
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                generating
+                  ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
+                  : "bg-purple-600 text-white hover:bg-purple-500"
+              }`}
+            >
+              {generating ? (
+                <span className="flex items-center gap-2">
+                  <span className="animate-spin w-3 h-3 border-2 border-purple-300 border-t-transparent rounded-full" />
+                  Generating...
+                </span>
+              ) : meeting.status === "tickets_ready" ? (
+                "Regenerate Tickets"
+              ) : (
+                "Generate Tickets with AI"
+              )}
+            </button>
+          )}
+          {/* Delete button */}
           <button
-            onClick={generateTickets}
-            disabled={generating}
-            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-              generating
-                ? "bg-zinc-700 text-zinc-400 cursor-not-allowed"
-                : "bg-purple-600 text-white hover:bg-purple-500"
-            }`}
+            onClick={deleteMeeting}
+            className="px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded-lg transition-colors"
           >
-            {generating ? (
-              <span className="flex items-center gap-2">
-                <span className="animate-spin w-3 h-3 border-2 border-purple-300 border-t-transparent rounded-full" />
-                Generating...
-              </span>
-            ) : meeting.status === "tickets_ready" ? (
-              "Regenerate Tickets"
-            ) : (
-              "Generate Tickets with AI"
-            )}
+            Delete
           </button>
-        )}
+        </div>
       </div>
 
       {/* Summary */}
@@ -399,6 +426,16 @@ export default function MeetingDetail({ meetingId }: { meetingId: number }) {
         <div className="flex items-center gap-2 text-zinc-400 text-sm py-4">
           <div className="animate-spin w-4 h-4 border-2 border-zinc-500 border-t-transparent rounded-full" />
           Transcription in progress...
+        </div>
+      ) : meeting.status === "error" ? (
+        <div className="rounded-lg bg-red-900/30 border border-red-700 p-4">
+          <p className="text-red-300 font-medium text-sm">Transcription failed</p>
+          {meeting.error_message && (
+            <p className="text-red-400 text-xs mt-1">{meeting.error_message}</p>
+          )}
+          <p className="text-zinc-500 text-xs mt-2">
+            You can delete this meeting and re-upload the video to try again.
+          </p>
         </div>
       ) : null}
 
