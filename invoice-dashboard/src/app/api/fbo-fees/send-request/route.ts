@@ -139,43 +139,29 @@ export async function POST(req: NextRequest) {
       const subject = buildSubject(target);
       const htmlContent = buildFeeRequestHtml(target);
 
-      // Step 1: Create draft
-      const createRes = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages`,
+      // Send directly via /sendMail (only needs Mail.Send permission)
+      const sendRes = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/sendMail`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            subject,
-            body: { contentType: "HTML", content: htmlContent },
-            toRecipients: [{ emailAddress: { address: t.fbo_email } }],
+            message: {
+              subject,
+              body: { contentType: "HTML", content: htmlContent },
+              toRecipients: [{ emailAddress: { address: t.fbo_email } }],
+            },
+            saveToSentItems: true,
           }),
         },
       );
 
-      if (!createRes.ok) {
-        const err = await createRes.text();
-        throw new Error(`Draft failed: ${createRes.status} ${err.slice(0, 200)}`);
-      }
-
-      const draft = await createRes.json();
-
-      // Step 2: Send the draft
-      const sendRes = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages/${draft.id}/send`,
-        { method: "POST", headers: { Authorization: `Bearer ${token}` } },
-      );
-
       if (!sendRes.ok) {
-        // Clean up draft
-        await fetch(
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages/${draft.id}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
-        ).catch(() => {});
-        throw new Error(`Send failed: ${sendRes.status}`);
+        const err = await sendRes.text();
+        throw new Error(`Send failed: ${sendRes.status} ${err.slice(0, 200)}`);
       }
 
-      // Log to DB
+      // Log to DB — match replies by subject since /sendMail doesn't return message IDs
       await supa.from("fbo_fee_requests").insert({
         airport_code: t.airport_code,
         fbo_name: t.fbo_name,
@@ -184,9 +170,6 @@ export async function POST(req: NextRequest) {
         status: "sent",
         sent_at: new Date().toISOString(),
         subject,
-        graph_message_id: draft.id,
-        conversation_id: draft.conversationId,
-        internet_message_id: draft.internetMessageId,
         batch_id: batchId,
       });
 

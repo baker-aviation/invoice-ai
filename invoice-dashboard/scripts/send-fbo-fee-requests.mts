@@ -10,7 +10,7 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 import { createClient } from "@supabase/supabase-js";
-import { buildSubject, buildFeeRequestHtml } from "../src/lib/fbo-fee-request-email.js";
+import { buildSubject, buildFeeRequestHtml } from "../src/lib/fbo-fee-request-email.ts";
 
 const DELAY_MS = 1500; // 1.5s between emails — well within Graph limits
 const MAILBOX = "operations@baker-aviation.com";
@@ -99,57 +99,42 @@ async function main() {
       fbo_name: d.fbo_name,
       fbo_email: d.fbo_email,
       aircraft_types: d.aircraft_types || ["Challenger 300", "Citation X"],
+      request_id: d.id,
     };
 
     try {
       const subject = buildSubject(target);
       const htmlContent = buildFeeRequestHtml(target);
 
-      // Create draft in Graph
-      const createRes = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages`,
+      // Send directly via /sendMail (only needs Mail.Send, no Mail.ReadWrite)
+      const sendRes = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/sendMail`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            subject,
-            body: { contentType: "HTML", content: htmlContent },
-            toRecipients: [{ emailAddress: { address: d.fbo_email } }],
+            message: {
+              subject,
+              body: { contentType: "HTML", content: htmlContent },
+              toRecipients: [{ emailAddress: { address: d.fbo_email } }],
+            },
+            saveToSentItems: true,
           }),
         },
       );
 
-      if (!createRes.ok) {
-        const err = await createRes.text();
-        throw new Error(`Draft failed: ${createRes.status} ${err.slice(0, 200)}`);
-      }
-
-      const draft = await createRes.json();
-
-      // Send it
-      const sendRes = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages/${draft.id}/send`,
-        { method: "POST", headers: { Authorization: `Bearer ${token}` } },
-      );
-
       if (!sendRes.ok) {
-        await fetch(
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages/${draft.id}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
-        ).catch(() => {});
-        throw new Error(`Send failed: ${sendRes.status}`);
+        const err = await sendRes.text();
+        throw new Error(`Send failed: ${sendRes.status} ${err.slice(0, 200)}`);
       }
 
-      // Update DB
+      // Update DB — match replies by subject line since /sendMail doesn't return message IDs
       await supa
         .from("fbo_fee_requests")
         .update({
           status: "sent",
           sent_at: new Date().toISOString(),
           subject,
-          graph_message_id: draft.id,
-          conversation_id: draft.conversationId,
-          internet_message_id: draft.internetMessageId,
         })
         .eq("id", d.id);
 

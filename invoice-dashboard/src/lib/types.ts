@@ -35,6 +35,30 @@ export type InvoiceDetailResponse = {
   signed_pdf_url: string | null;
 };
 
+export const ALERT_RESOLUTIONS = [
+  "havent_started",
+  "in_progress",
+  "pending_fbo",
+  "needs_jawad",
+  "refund_received",
+  "credit_applied",
+  "disputed",
+  "no_action",
+] as const;
+
+export type AlertResolution = (typeof ALERT_RESOLUTIONS)[number];
+
+export const RESOLUTION_LABELS: Record<AlertResolution, string> = {
+  havent_started: "Haven't Started",
+  in_progress: "In Progress",
+  pending_fbo: "Pending FBO Response",
+  needs_jawad: "Needs Jawad's Attention",
+  refund_received: "Refund Received",
+  credit_applied: "Credit Applied",
+  disputed: "Disputed",
+  no_action: "No Action Needed",
+};
+
 export type AlertRow = {
   id: string;
   created_at: string;
@@ -54,6 +78,44 @@ export type AlertRow = {
   acknowledged?: boolean;
   acknowledged_by?: string | null;
   acknowledged_at?: string | null;
+  assigned_to?: string | null;
+  assigned_at?: string | null;
+  resolution?: AlertResolution | null;
+  resolution_note?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  comment_count?: number;
+  email_count?: number;
+};
+
+export type AlertComment = {
+  id: string;
+  alert_id: string;
+  author: string;
+  body: string;
+  created_at: string;
+};
+
+export type AlertEmail = {
+  id: string;
+  alert_id: string;
+  direction: "outbound" | "inbound";
+  from_address: string;
+  to_addresses: string[];
+  cc_addresses: string[];
+  subject: string;
+  body_html: string | null;
+  body_text: string | null;
+  sent_by: string | null;
+  received_at: string | null;
+  created_at: string;
+};
+
+export type AlertAssignee = {
+  id: string;
+  name: string;
+  email: string | null;
+  active: boolean;
 };
 
 export type AlertsResponse = {

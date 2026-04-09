@@ -64,6 +64,14 @@
     {
       "path": "/api/cron/tail-summary",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/alert-replies",
+      "schedule": "3,18,33,48 * * * *"
+    },
+    {
+      "path": "/api/cron/airport-gap-detection",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
