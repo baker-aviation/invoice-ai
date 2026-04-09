@@ -182,11 +182,33 @@ export default function FboOutreachPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={async () => {
+              if (!confirm("Queue ALL FBOs with email as drafts? You can then send them from the terminal script.")) return;
+              setSending(true);
+              try {
+                const res = await fetch("/api/fbo-fees/queue-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+                const data = await res.json();
+                if (data.ok) {
+                  alert(`${data.queued} FBOs queued as drafts (batch: ${data.batchId}).\nSkipped ${data.skippedAlreadySent} already sent.\n\nRun from terminal:\nnode --experimental-strip-types scripts/send-fbo-fee-requests.mts`);
+                  fetchData();
+                } else {
+                  alert(`Error: ${data.error}`);
+                }
+              } catch { alert("Failed"); }
+              finally { setSending(false); }
+            }}
+            disabled={sending}
+            className="px-3 py-1.5 text-xs font-medium rounded-md border-2 border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-40"
+          >
+            Queue All FBOs
+          </button>
+          <button
+            type="button"
             onClick={() => sendBatch(true)}
             disabled={selected.size === 0 || sending}
             className="px-3 py-1.5 text-xs font-medium rounded-md border bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40"
           >
-            Save as Drafts ({selected.size})
+            Save Selected as Drafts ({selected.size})
           </button>
           <button
             type="button"
