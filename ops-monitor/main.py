@@ -309,7 +309,9 @@ def _check_fbo_mismatch_alerts(supa, now) -> int:
     alerts: List[Dict[str, Any]] = []
 
     try:
-        cutoff = (now - timedelta(hours=6)).isoformat()
+        # 48h lookback so overnight connections aren't missed (arrival leg
+        # may be many hours before the next departure at the same airport)
+        cutoff = (now - timedelta(hours=48)).isoformat()
         lookahead = (now + timedelta(days=30)).isoformat()
         rows = supa.table(FLIGHTS_TABLE).select(
             "id, ics_uid, tail_number, departure_icao, arrival_icao, "
