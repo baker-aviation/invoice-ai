@@ -4335,6 +4335,41 @@ export function twoPassAssignAndOptimize(params: {
     finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
   }
 
+  // ── Cleanup: clear assignments where transport planner found no viable route ──
+  // The feasibility matrix may have marked crew as viable, but buildSwapPlan's
+  // stricter timing checks (swap point retry, FBO arrival buffer) rejected them.
+  // Clear these so they show as properly unassigned and the feedback loop can try.
+  const unsolvableRows = finalResult.rows.filter(
+    (r) => r.travel_type === "none" && r.direction === "oncoming" && !r.name.startsWith("[UNASSIGNED")
+  );
+  if (unsolvableRows.length > 0) {
+    for (const row of unsolvableRows) {
+      const sa = finalAssignments[row.tail_number];
+      if (!sa) continue;
+      const field = row.role === "PIC" ? "oncoming_pic" : "oncoming_sic";
+      if (sa[field] === row.name) {
+        console.log(`[Cleanup] Clearing unsolvable ${row.role} ${row.name} from ${row.tail_number} — transport planner found no viable route`);
+        sa[field] = null;
+      }
+    }
+    // Rebuild final result with cleared assignments
+    finalResult = buildSwapPlan({
+      flights, crewRoster, aliases, swapDate, commercialFlights,
+      swapAssignments: finalAssignments,
+      oncomingPool: fullPool,
+      strategy: "offgoing_first",
+    });
+    // Re-add warnings
+    for (const v of volunteersUsed) {
+      const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+      finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
+    }
+    for (const s of pass3StandbyUsed) {
+      finalResult.warnings.push(`${s.name} (${s.role}) pulled from standby for ${s.tail} [relaxed constraints]`);
+    }
+    console.log(`[Cleanup] Cleared ${unsolvableRows.length} unsolvable assignments — rebuilt plan`);
+  }
+
   // ── Pass 4: Feedback Loop — iterative reassignment for unsolved tails ────
   // If tails remain unsolved, try stealing assigned crew (especially hub crew
   // with easy Uber assignments) to solve harder tails, as long as the vacated
