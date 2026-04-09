@@ -158,7 +158,7 @@ function DetailPanel({
         const listData = await listRes.json();
         setEmails(listData.emails ?? []);
       } else {
-        window.alert(`Send failed: ${data.error || "Unknown error"}`);
+        window.alert(`Send failed: ${data.error || "Unknown error"}${data.detail ? `\n\n${data.detail}` : ""}`);
       }
     } finally {
       setEmailSending(false);

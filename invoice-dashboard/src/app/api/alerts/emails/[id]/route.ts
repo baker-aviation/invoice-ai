@@ -203,7 +203,7 @@ export async function POST(
   if (!createRes.ok) {
     const errText = await createRes.text();
     console.error("[alert-email] Graph create failed:", createRes.status, errText);
-    return NextResponse.json({ error: `Email draft failed (HTTP ${createRes.status})` }, { status: 500 });
+    return NextResponse.json({ error: `Email draft failed (HTTP ${createRes.status})`, detail: errText.slice(0, 500), mailbox }, { status: 500 });
   }
 
   const draft = await createRes.json();
