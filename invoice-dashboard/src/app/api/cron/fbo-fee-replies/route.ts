@@ -129,18 +129,21 @@ export async function GET(req: NextRequest) {
   // Get all requests in "sent" status (waiting for replies)
   const { data: pendingRequests } = await supa
     .from("fbo_fee_requests")
-    .select("id, conversation_id, airport_code, fbo_name, fbo_email, aircraft_types, sent_at")
-    .eq("status", "sent")
-    .not("conversation_id", "is", null);
+    .select("id, conversation_id, subject, airport_code, fbo_name, fbo_email, aircraft_types, sent_at")
+    .eq("status", "sent");
 
   if (!pendingRequests?.length) {
     return NextResponse.json({ ok: true, message: "No pending requests", checked: 0 });
   }
 
-  // Build conversation_id lookup
+  // Build lookup maps: by conversationId (if available) and by subject+sender email
   const convMap = new Map<string, (typeof pendingRequests)[0]>();
+  const subjectMap = new Map<string, (typeof pendingRequests)[0]>();
   for (const r of pendingRequests) {
     if (r.conversation_id) convMap.set(r.conversation_id, r);
+    if (r.subject && r.fbo_email) {
+      subjectMap.set(`${r.subject.toLowerCase()}|${r.fbo_email.toLowerCase()}`, r);
+    }
   }
 
   let token: string;
@@ -178,11 +181,28 @@ export async function GET(req: NextRequest) {
   let errors = 0;
 
   for (const msg of messages) {
-    const request = convMap.get(msg.conversationId);
-    if (!request) continue;
-
     // Skip if this is our own sent message
     if (msg.from.emailAddress.address.toLowerCase() === MAILBOX.toLowerCase()) continue;
+
+    // Match by: 1) ref ID in body, 2) conversationId, 3) subject+sender
+    let request: (typeof pendingRequests)[0] | undefined;
+
+    // Check for BA-FEE-{id} ref code in the reply body
+    const refMatch = msg.body.content.match(/BA-FEE-(\d+)/);
+    if (refMatch) {
+      const refId = parseInt(refMatch[1], 10);
+      request = pendingRequests.find((r) => r.id === refId);
+    }
+
+    if (!request) {
+      request = convMap.get(msg.conversationId);
+    }
+    if (!request) {
+      const replySubject = msg.subject.replace(/^(RE|Re|re|FW|Fw|fw):\s*/g, "").toLowerCase();
+      const senderEmail = msg.from.emailAddress.address.toLowerCase();
+      request = subjectMap.get(`${replySubject}|${senderEmail}`);
+    }
+    if (!request) continue;
 
     matched++;
 

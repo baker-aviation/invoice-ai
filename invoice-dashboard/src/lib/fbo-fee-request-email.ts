@@ -8,6 +8,7 @@ export interface FeeRequestTarget {
   fbo_name: string;
   fbo_email: string;
   aircraft_types: string[]; // e.g. ["Citation X", "Challenger 300"]
+  request_id?: number; // DB row ID for reply matching
 }
 
 /**
@@ -73,6 +74,8 @@ export function buildFeeRequestHtml(target: FeeRequestTarget): string {
     <strong>Baker Aviation Operations</strong><br>
     <a href="mailto:operations@baker-aviation.com" style="color: #1e3a5f;">operations@baker-aviation.com</a>
   </p>
+
+  <p style="font-size: 10px; color: #ccc; margin-top: 24px;">Ref: BA-FEE-${target.request_id || "0000"}</p>
 
 </div>
 `.trim();
