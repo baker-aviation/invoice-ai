@@ -30,7 +30,7 @@ async function getGraphToken(): Promise<string> {
 const TAG_RE = /\[BA-ALERT-([A-F0-9]{8})\]/i;
 
 async function pullReplies(): Promise<{ imported: number; skipped: number; total: number }> {
-  const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
+  const mailbox = process.env.OUTLOOK_OPS_MAILBOX || process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
   if (!mailbox) throw new Error("No handling mailbox configured");
 
   const token = await getGraphToken();

@@ -165,7 +165,7 @@ export async function POST(
     }
   }
 
-  const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
+  const mailbox = process.env.OUTLOOK_OPS_MAILBOX || process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
   if (!mailbox) {
     return NextResponse.json({ error: "No handling mailbox configured" }, { status: 500 });
   }
