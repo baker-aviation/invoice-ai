@@ -22,6 +22,7 @@ import {
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { AircraftPosition } from "./MapView";
 import MxBoard from "./MxBoard";
+import MxNotesPanel from "@/app/ops/MxNotesPanel";
 import type { MelItem } from "@/lib/opsApi";
 
 // Leaflet requires SSR to be disabled
@@ -7338,6 +7339,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       {/* ── MX Admin tab ── */}
       {activeTab === "mx-admin" && (
         <div className="space-y-8">
+          <MxNotesPanel mxNotes={mxNotes} />
+          <hr className="border-gray-200" />
           <MxBoard flights={initialFlights} mxNotes={mxNotes} melItems={melItems} />
           <hr className="border-gray-200" />
           <MxAdminTab />

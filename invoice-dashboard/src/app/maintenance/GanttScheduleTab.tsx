@@ -305,12 +305,14 @@ function MxPopover({ note, pos, onAssignVan, onComplete, onDelete, onMove, onSav
 function CreateMxForm({ tail, date, onSubmit, onCancel }: {
   tail: string;
   date: string;
-  onSubmit: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
+  onSubmit: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }, file?: File) => void;
   onCancel: () => void;
 }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [airport, setAirport] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -353,6 +355,29 @@ function CreateMxForm({ tail, date, onSubmit, onCancel }: {
           rows={3}
           className="w-full px-2.5 py-2 border border-gray-200 rounded text-sm resize-none"
         />
+        {/* File attach */}
+        <div>
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) setFile(e.target.files[0]); }}
+          />
+          {file ? (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded text-sm">
+              <span className="text-gray-600 truncate flex-1">📎 {file.name}</span>
+              <button onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ""; }} className="text-gray-400 hover:text-red-500 text-xs">&times;</button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="w-full px-2.5 py-1.5 border border-dashed border-gray-300 rounded text-sm text-gray-400 hover:text-blue-500 hover:border-blue-300 transition-colors"
+            >
+              📎 Attach File (optional)
+            </button>
+          )}
+        </div>
         <div className="flex gap-2 pt-1">
           <button
             disabled={!subject.trim()}
@@ -361,7 +386,7 @@ function CreateMxForm({ tail, date, onSubmit, onCancel }: {
               body: body.trim() || undefined,
               tail_number: tail,
               airport_icao: airport.trim() || undefined,
-            })}
+            }, file ?? undefined)}
             className="px-4 py-2 rounded bg-amber-500 text-white text-xs font-medium disabled:opacity-40 hover:bg-amber-600"
           >
             Create MX
@@ -830,8 +855,8 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
     } catch {}
   }, []);
 
-  // Create MX handler
-  const createMx = useCallback(async (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => {
+  // Create MX handler (with optional file attachment)
+  const createMx = useCallback(async (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }, file?: File) => {
     setCreateMxCell(null);
     try {
       const res = await fetch("/api/ops/mx-notes", {
@@ -842,6 +867,25 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
       if (res.ok) {
         const { note } = await res.json();
         setLocalMxNotes((prev) => [...prev, note]);
+
+        // Upload attachment if provided
+        if (file && note?.id) {
+          try {
+            const presignRes = await fetch(`/api/ops/mx-notes/${note.id}/attachments`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ filename: file.name }),
+            });
+            if (presignRes.ok) {
+              const { attachment, upload_url } = await presignRes.json();
+              await fetch(upload_url, {
+                method: "PUT",
+                headers: { "Content-Type": attachment.content_type },
+                body: file,
+              });
+            }
+          } catch { /* file upload failed but note was created */ }
+        }
       }
     } catch {}
   }, []);

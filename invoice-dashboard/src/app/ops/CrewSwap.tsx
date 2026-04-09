@@ -201,6 +201,10 @@ type CrewSwapRow = {
   score: number;
   /** false = tentative/standby, true = confirmed/book it */
   confirmed?: boolean;
+  /** Set when crew is positioning the day before the swap */
+  is_day_before?: boolean;
+  /** Crew rest hours between arrival and next-day duty start */
+  crew_rest_hours?: number;
 };
 
 type TwoPassStats = {
@@ -213,6 +217,9 @@ type TwoPassStats = {
   pass3_solved?: number;
   pass3_standby_used?: { name: string; role: "PIC" | "SIC"; tail: string }[];
   pass3_relaxation?: boolean;
+  feedback_loop_solved?: number;
+  feedback_loop_iterations?: number;
+  feedback_loop_swaps?: { crew_moved: string; role: "PIC" | "SIC"; from_tail: string; to_tail: string; backfilled_by: string; new_swap_point?: string }[];
   total_cost: number;
 };
 
@@ -749,22 +756,34 @@ function AirportAliasPanel({ flights, selectedDate }: { flights: Flight[]; selec
           </div>
           <div className="mt-2 pt-2 border-t flex items-center gap-2">
             <button
-              onClick={() => {
+              onClick={async () => {
                 const fbo = prompt("FBO airport code (e.g., BFI):");
                 if (!fbo) return;
                 const comm = prompt(`Commercial airport(s) near ${fbo.toUpperCase()} (comma-separated, e.g., SEA,PDX):`);
                 if (!comm) return;
                 const airports = comm.split(",").map((a) => a.trim().toUpperCase()).filter(Boolean);
                 if (airports.length === 0) return;
-                FBO_COMMERCIAL_MAP[fbo.toUpperCase()] = { airports, preferred: airports[0] };
+                const fboUpper = fbo.toUpperCase();
+                // Update in-memory map
+                FBO_COMMERCIAL_MAP[fboUpper] = { airports, preferred: airports[0] };
+                // Persist to DB
+                const icaos = airports.map((a) => a.length === 3 ? `K${a}` : a);
+                const fboIcao = fboUpper.length === 3 ? `K${fboUpper}` : fboUpper;
+                try {
+                  await fetch("/api/crew/airport-aliases", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ fbo_icao: fboIcao, commercial_icaos: icaos, preferred_icao: icaos[0] }),
+                  });
+                } catch {}
                 setShow(false);
-                setTimeout(() => setShow(true), 50); // force re-render
+                setTimeout(() => setShow(true), 50);
               }}
               className="text-[10px] px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 font-medium"
             >
               + Add FBO
             </button>
-            <span className="text-[9px] text-gray-400">Add custom FBO → commercial airport mapping</span>
+            <span className="text-[9px] text-gray-400">Add custom FBO → commercial airport mapping (supports multiple, comma-separated)</span>
           </div>
         </div>
       )}
@@ -837,7 +856,13 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
             <span className={`inline-block w-2.5 h-2.5 rounded-full ${ac.bg} border ${ac.text.replace("text-", "border-")}`} />
           )}
           <span className="font-medium text-gray-900">{row.name}</span>
-          <DutyDayTag row={row} />
+          {row.is_day_before ? (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700" title={row.crew_rest_hours != null ? `${row.crew_rest_hours}hr crew rest before swap day` : "Positioning day before swap"}>
+              DAY BEFORE{row.crew_rest_hours != null ? ` · ${row.crew_rest_hours}hr rest` : ""}
+            </span>
+          ) : (
+            <DutyDayTag row={row} />
+          )}
           {row.duration_minutes ? <span className="text-xs text-gray-400 ml-1">({Math.round(row.duration_minutes / 60 * 10) / 10}hr travel)</span> : null}
           <span className="text-gray-400 text-xs">
             ({row.home_airports.join("/") || "??"})
@@ -886,15 +911,19 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
         )}
       </td>
 
-      {/* Available / Arrival Time */}
+      {/* Available / FBO Arrival Time */}
       <td className="px-3 py-1.5 text-xs text-gray-600">
         {onArrivalOverride && (row.travel_type === "uber" || row.travel_type === "rental_car" || row.travel_type === "drive") && (row.available_time || row.arrival_time) ? (
-          <input
-            type="time"
-            className="border border-gray-300 rounded px-1 py-0.5 text-xs w-[5.5rem] focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
-            defaultValue={(() => { const d = new Date(row.available_time ?? row.arrival_time!); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })()}
-            onBlur={(e) => onArrivalOverride(row.tail_number, row.role, row.direction, e.target.value)}
-          />
+          <div className="flex flex-col gap-0.5">
+            <input
+              type="time"
+              className="border border-gray-300 rounded px-1 py-0.5 text-xs w-[5.5rem] focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+              defaultValue={(() => { const d = new Date(row.available_time ?? row.arrival_time!); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })()}
+              onBlur={(e) => onArrivalOverride(row.tail_number, row.role, row.direction, e.target.value)}
+              title="Set FBO arrival time — departure from home auto-calculated"
+            />
+            <span className="text-[9px] text-gray-400">@ FBO</span>
+          </div>
         ) : (
           row.available_time ? fmtShortTime(row.available_time)
             : row.arrival_time ? fmtShortTime(row.arrival_time)
@@ -1165,25 +1194,49 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           const poolForRole = role === "PIC" ? poolPics : poolSics;
           const available = poolForRole.filter((p) => !assignedOncoming.has(p.name) || p.name === row?.name);
 
+          // Crew assigned to OTHER unlocked tails (for cross-tail reassignment)
+          const assignedElsewhere = rows
+            .filter((r) => r.direction === "oncoming" && r.role === role && r.tail_number !== tail && !lockedTails?.has(r.tail_number))
+            .map((r) => {
+              const poolEntry = poolForRole.find((p) => p.name === r.name);
+              return { name: r.name, tail_number: r.tail_number, home_airports: poolEntry?.home_airports ?? r.home_airports ?? [], aircraft_type: poolEntry?.aircraft_type ?? "" };
+            });
+
           if (!row) return (
             <div className="flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50">
               <span className={`text-[10px] font-bold uppercase ${color} w-14`}>{label}</span>
-              {canPick && available.length > 0 ? (
+              {canPick && (available.length > 0 || assignedElsewhere.length > 0) ? (
                 <select
                   className="text-xs border rounded px-2 py-1 bg-white text-gray-700"
                   value=""
                   onChange={(e) => { if (e.target.value) onAssignCrew(tail, role, e.target.value); }}
                 >
                   <option value="">Assign crew...</option>
-                  {available.map((p) => {
-                    const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
-                    return (
-                      <option key={p.name} value={p.name}>
-                        {p.name} ({p.home_airports.join("/")}) [{typeTag}]
-                        {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
-                      </option>
-                    );
-                  })}
+                  {available.length > 0 && (
+                    <optgroup label="Available">
+                      {available.map((p) => {
+                        const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                        return (
+                          <option key={p.name} value={p.name}>
+                            {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                            {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  )}
+                  {assignedElsewhere.length > 0 && (
+                    <optgroup label="── Pull from other tail ──">
+                      {assignedElsewhere.map((a) => {
+                        const typeTag = a.aircraft_type === "citation_x" ? "CX" : a.aircraft_type === "challenger" ? "CL" : a.aircraft_type === "dual" ? "DL" : "";
+                        return (
+                          <option key={a.name} value={a.name}>
+                            {a.name} ({a.home_airports.join("/")}) [{typeTag}] ← {a.tail_number}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  )}
                 </select>
               ) : (
                 <span className="text-xs text-gray-400">— not assigned —</span>
@@ -1549,6 +1602,63 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 })()}
               </div>
             </div>
+
+            {/* Leg timeline — shows which crew flies which legs */}
+            {flights && selectedDate && (() => {
+              const wedStr = selectedDate.toISOString().slice(0, 10);
+              const tailLegs = flights
+                .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
+                .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+              if (tailLegs.length < 2) return null; // only show for multi-leg days
+              const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
+              // Find the swap point index: the leg whose departure is from the swap airport
+              // OR the last leg arriving at swap airport (for between_legs)
+              let swapIdx = -1;
+              for (let i = 0; i < tailLegs.length; i++) {
+                if (tailLegs[i].arrival_icao === swapIcao && i < tailLegs.length - 1) {
+                  swapIdx = i; // swap happens after this leg arrives
+                  break;
+                }
+              }
+              // If no between-legs match, check for before_live (swap at first departure)
+              if (swapIdx === -1 && tailLegs[0]?.departure_icao === swapIcao) swapIdx = -1; // before first leg
+              // For after_live, swap after last leg
+              if (swapIdx === -1 && tailLegs[tailLegs.length - 1]?.arrival_icao === swapIcao) swapIdx = tailLegs.length - 1;
+
+              return (
+                <div className="px-4 py-1.5 border-b bg-gray-50/50 flex items-center gap-0.5 overflow-x-auto">
+                  <span className="text-[9px] text-gray-400 mr-1 shrink-0">LEGS:</span>
+                  {tailLegs.map((leg, i) => {
+                    const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                    const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                    const depTime = leg.scheduled_departure ? new Date(leg.scheduled_departure).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+                    const isLive = ["charter", "revenue", "owner"].includes((leg.flight_type ?? "").toLowerCase());
+                    // Before swap = offgoing crew, after swap = oncoming crew
+                    const isBeforeSwap = swapIdx >= 0 ? i <= swapIdx : true;
+                    const bgColor = isBeforeSwap ? "bg-red-50 border-red-200 text-red-700" : "bg-green-50 border-green-200 text-green-700";
+                    const showSwapMarker = i === swapIdx && swapIdx < tailLegs.length - 1;
+                    return (
+                      <div key={i} className="flex items-center gap-0.5 shrink-0">
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded border font-mono ${bgColor} ${isLive ? "font-bold" : ""}`}
+                          title={`${depTime} ${dep}→${arr} (${isBeforeSwap ? "offgoing" : "oncoming"} crew)${isLive ? " [LIVE]" : ""}`}
+                        >
+                          {dep}→{arr}
+                        </span>
+                        {showSwapMarker && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-amber-200 text-amber-800 font-bold shrink-0" title={`Swap point: ${swapLoc}`}>
+                            SWAP
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <span className="text-[9px] text-gray-400 ml-1 shrink-0">
+                    {offPic?.name?.split(" ").pop() ?? "?"} → {onPic?.name?.split(" ").pop() ?? "?"}
+                  </span>
+                </div>
+              );
+            })()}
 
             {/* Bad pairing banner */}
             {(onBadPairing || offBadPairing) && (
@@ -2082,19 +2192,28 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     if (u.length === 4) return u;
     return `K${u}`;
   };
+  /** Save one or more commercial airport aliases for an FBO.
+   *  Single: handleAddAlias("KVNY", "BUR")
+   *  Multiple: handleAddAlias("KVNY", "BUR,LAX,SNA") */
   const handleAddAlias = async (fboIcao: string, commercialIata: string, commercialIcao?: string | null) => {
-    // Convert IATA to ICAO: 3-letter → prepend "K", 4-letter → use as-is
-    const commIcao = commercialIcao ?? (commercialIata.length === 3 ? `K${commercialIata.toUpperCase()}` : commercialIata.toUpperCase());
+    // Support comma-separated for multiple aliases
+    const iataList = commercialIata.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const icaoList = iataList.map((iata) => commercialIcao ?? (iata.length === 3 ? `K${iata}` : iata));
+
     setAddingAlias(fboIcao);
     try {
       const res = await fetch("/api/crew/airport-aliases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fbo_icao: fboIcao, commercial_icao: commIcao, preferred: true }),
+        body: JSON.stringify({
+          fbo_icao: fboIcao,
+          commercial_icaos: icaoList,
+          preferred_icao: icaoList[0],
+        }),
       });
       if (res.ok) {
         setAddedAliases(prev => new Set(prev).add(fboIcao));
-        addToast("success", `Alias added: ${fboIcao} → ${commIcao}`);
+        addToast("success", `Alias saved: ${fboIcao} → ${icaoList.join(", ")}`);
         setTimeout(refreshGapAlerts, 500);
       } else {
         const err = await res.json().catch(() => ({}));
@@ -2233,13 +2352,29 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       dutyOffTime = selection.arrival_time ?? null;
     }
 
+    // Calculate crew rest for day-before positioning
+    const isDayBefore = selection.is_day_before ?? false;
+    let crewRestHours: number | undefined;
+    if (isDayBefore && selection.arrival_time && selectedCrewSlot.firstLegDep) {
+      const arrMs = new Date(selection.arrival_time).getTime();
+      const depMs = new Date(selectedCrewSlot.firstLegDep).getTime();
+      crewRestHours = Math.round(((depMs - arrMs) / (1000 * 60 * 60)) * 10) / 10;
+    }
+
     setSwapPlan((prev) => {
       if (!prev) return prev;
       const newRows = prev.rows.map((r) => {
         if (r.tail_number !== tailNumber || r.role !== role || r.direction !== direction) return r;
+        const dayBeforeWarnings: string[] = [];
+        if (isDayBefore) {
+          dayBeforeWarnings.push(`Day-before positioning${crewRestHours != null ? ` — ${crewRestHours}hr crew rest` : ""}`);
+          if (crewRestHours != null && crewRestHours < 10) {
+            dayBeforeWarnings.push(`⚠ Crew rest ${crewRestHours}hr may be below minimum`);
+          }
+        }
         return {
           ...r,
-          swap_location: selectedCrewSlot.swapLocation || r.swap_location, // persist swap location from per-crew dropdown
+          swap_location: selectedCrewSlot.swapLocation || r.swap_location,
           travel_type: selection.type as CrewSwapRow["travel_type"],
           flight_number: selection.flight_number,
           departure_time: selection.departure_time,
@@ -2249,11 +2384,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           cost_estimate: selection.cost_estimate,
           duration_minutes: selection.duration_minutes,
           available_time: selection.available_time,
-          duty_on_time: selection.duty_on_time,
+          duty_on_time: isDayBefore ? null : selection.duty_on_time, // day-before: duty starts next day, not travel day
           duty_off_time: dutyOffTime,
           backup_flight: selection.backup_flight,
-          warnings: [],
-          notes: "Manually selected transport",
+          is_day_before: isDayBefore,
+          crew_rest_hours: crewRestHours,
+          warnings: dayBeforeWarnings,
+          notes: isDayBefore ? `Day before${selection.date_label ?? ""} — manually selected` : "Manually selected transport",
         };
       });
 
@@ -2262,7 +2399,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     });
 
     setSelectedCrewSlot(null);
-    addToast("success", `Transport updated for ${selectedCrewSlot.crewName} on ${tailNumber}`);
+    addToast("success", `Transport updated for ${selectedCrewSlot.crewName} on ${tailNumber}${isDayBefore ? " (day before)" : ""}`);
   }
 
   async function handleSwapPointChange(tail: string, newSwapPoint: string) {
@@ -2662,6 +2799,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         const idx = newRows.findIndex((r) => r.tail_number === tail && r.role === role && r.direction === "oncoming");
         if (idx >= 0) newRows.splice(idx, 1);
       } else {
+        // If pulling from another tail, clear that tail's assignment first
+        const prevIdx = newRows.findIndex((r) => r.name === name && r.role === role && r.direction === "oncoming" && r.tail_number !== tail);
+        if (prevIdx >= 0) {
+          const prevTail = newRows[prevIdx].tail_number;
+          newRows.splice(prevIdx, 1);
+          console.log(`[CrossTail] Pulled ${name} from ${prevTail} → ${tail}`);
+        }
+
         // Find the pool entry for context
         const poolEntry = (role === "PIC" ? oncomingPool?.pic : oncomingPool?.sic)?.find((p) => p.name === name);
         const existing = newRows.findIndex((r) => r.tail_number === tail && r.role === role && r.direction === "oncoming");
@@ -2713,11 +2858,18 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     // Auto-lock the tail when manually assigning
     if (name !== null) {
       setLockedTails((prev) => new Set(prev).add(tail));
-      addToast("success", `${name} assigned to ${tail} (locked)`);
+      // Check if this was a cross-tail pull
+      const pulledFrom = swapPlan?.rows.find((r) => r.name === name && r.role === role && r.direction === "oncoming" && r.tail_number !== tail);
+      if (pulledFrom) {
+        addToast("warning", `${name} pulled from ${pulledFrom.tail_number} → ${tail} (both tails updated)`);
+      } else {
+        addToast("success", `${name} assigned to ${tail} (locked)`);
+      }
     }
   }
 
-  /** Manual override of arrival/available time for ground transport rows */
+  /** Manual override of FBO arrival time for ground transport rows.
+   *  Auto-calculates departure-from-home = FBO arrival - travel duration - 90min buffer. */
   function handleArrivalOverride(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) {
     if (!swapPlan) return;
     setSwapPlan((prev) => {
@@ -2730,8 +2882,23 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         const d = new Date(base);
         const [hh, mm] = newTimeHHMM.split(":").map(Number);
         d.setHours(hh, mm, 0, 0);
-        const iso = d.toISOString();
-        return { ...r, available_time: iso, arrival_time: iso, notes: r.notes ? `${r.notes} (time override)` : "Manual time override" };
+        const fboArrivalIso = d.toISOString();
+
+        // Calculate departure from home: FBO arrival - travel time - 90min buffer
+        const FBO_BUFFER_MIN = 90;
+        const travelMin = r.duration_minutes ?? 60;
+        const departHome = new Date(d.getTime() - (travelMin + FBO_BUFFER_MIN) * 60000);
+        const departIso = departHome.toISOString();
+        const departHH = String(departHome.getHours()).padStart(2, "0");
+        const departMM = String(departHome.getMinutes()).padStart(2, "0");
+
+        return {
+          ...r,
+          available_time: fboArrivalIso,
+          arrival_time: fboArrivalIso,
+          departure_time: departIso,
+          notes: `FBO arrival ${newTimeHHMM} → depart home ${departHH}:${departMM} (${travelMin}min travel + 90min buffer)`,
+        };
       });
       return { ...prev, rows: newRows };
     });
@@ -3464,7 +3631,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }
 
   // Trigger route computation
-  async function computeRoutes() {
+  // Returns true on success, false on failure
+  async function computeRoutes(): Promise<boolean> {
     setComputingRoutes(true);
     try {
       const res = await fetch("/api/crew/routes", {
@@ -3475,11 +3643,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const data = await safeJson(res, "Route computation failed");
       if (res.ok) {
         await loadRouteStatus();
+        return true;
       } else {
         setOptimizeError(data.error ?? "Route computation failed");
+        return false;
       }
     } catch (e) {
       setOptimizeError(e instanceof Error ? e.message : "Route computation failed");
+      return false;
     } finally {
       setComputingRoutes(false);
     }
@@ -3509,7 +3680,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }
 
   // Auto-detect rotation from JetInsight flights
-  async function detectRotation() {
+  // Returns true on success, false on failure
+  async function detectRotation(): Promise<boolean> {
     setDetectingRotation(true);
     setOptimizeError(null);
     try {
@@ -3518,7 +3690,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       const data = await safeJson(res, "Rotation detection failed");
       if (!res.ok) {
         setOptimizeError(data.error ?? "Rotation detection failed");
-        return;
+        return false;
       }
       if (data.swap_assignments) {
         setSwapAssignments(data.swap_assignments);
@@ -3532,8 +3704,10 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       if (data.unmatched_names?.length > 0) {
         setOptimizeError(`Auto-detected rotation. ${data.unmatched_names.length} JetInsight names unmatched: ${data.unmatched_names.join(", ")}`);
       }
+      return true;
     } catch (e) {
       setOptimizeError(e instanceof Error ? e.message : "Rotation detection failed");
+      return false;
     } finally {
       setDetectingRotation(false);
     }
@@ -3925,6 +4099,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             locked_rows: lockedRows,
             required_pairings: dayPairings.length > 0 ? dayPairings : undefined,
             constraints: swapConstraints.length > 0 ? swapConstraints : undefined,
+            current_swap_day: dayLabel,
           }),
         });
         const text = await res.text();
@@ -4049,14 +4224,22 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       // Step 1: Auto-detect rotation
       // Always run to ensure oncoming pool is populated (sheet sync may not have oncoming data yet)
       setOptimizeStatus("Detecting rotation...");
-      await detectRotation();
+      const rotationOk = await detectRotation();
+      if (!rotationOk) {
+        setOptimizeStatus(null);
+        return;
+      }
 
       // Step 2: Compute routes — seeds HasData flight cache for swap day + next day
       // (covers both oncoming and offgoing Thursday morning flights in one pass)
       setOptimizeStatus("Computing routes...");
-      await computeRoutes();
+      const routesOk = await computeRoutes();
+      if (!routesOk) {
+        setOptimizeStatus(null);
+        return;
+      }
 
-      // Step 4: Run optimizer
+      // Step 3: Run optimizer
       setOptimizeStatus("Optimizing...");
       await runOptimizer();
 
@@ -5690,6 +5873,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                       {swapPlan.two_pass.pass3_standby_used?.map((s, i) => (
                         <span key={i} className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">
                           {s.name} ({s.role}) pulled from standby for {s.tail}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(swapPlan.two_pass.feedback_loop_solved ?? 0) > 0 && (
+                  <div className="mt-1">
+                    <span className="text-orange-700 text-xs font-medium">
+                      Feedback Loop: +{swapPlan.two_pass.feedback_loop_solved} tails via {swapPlan.two_pass.feedback_loop_iterations} reassignment(s)
+                    </span>
+                    <div className="mt-0.5 flex flex-wrap gap-2">
+                      {swapPlan.two_pass.feedback_loop_swaps?.map((s, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">
+                          {s.crew_moved} ({s.role}) {s.from_tail} → {s.to_tail}{s.new_swap_point ? ` @ ${s.new_swap_point}` : ""}, backfill: {s.backfilled_by}
                         </span>
                       ))}
                     </div>

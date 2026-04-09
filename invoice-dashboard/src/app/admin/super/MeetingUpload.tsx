@@ -438,8 +438,9 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
 
         let videoFile = file;
 
-        // 2. Handle large HEVC files: server-side audio, no screenshots
-        if (needsTranscode && isLarge) {
+        // 2. Handle HEVC/non-playable files: always use server-side extraction
+        //    (browser FFmpeg WASM transcode is unreliable for HEVC .mov files)
+        if (needsTranscode) {
           setStatusMsg("Video too large for browser — extracting audio server-side...");
           const gcsKeys = await extractAudioServerSide(file, meetingId);
           const transcript = await transcribeChunks(gcsKeys);

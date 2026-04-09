@@ -1,8 +1,14 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import type { Flight, MxNote } from "@/lib/opsApi";
 import type { VanZone } from "@/lib/maintenanceData";
+
+const HeatMapView = dynamic(() => import("@/app/maintenance/HeatMapView"), {
+  ssr: false,
+  loading: () => <div className="h-64 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse flex items-center justify-center text-sm text-gray-400">Loading map…</div>,
+});
 
 const DAY = 86_400_000;
 import {
@@ -354,6 +360,14 @@ function DemandAheadSection({ flights, zoneAirport }: { flights: Flight[]; zoneA
           })}
           <div className="text-[10px] text-gray-400 dark:text-gray-500 text-center pt-1">
             Arrivals in your zone over the next 48 hours
+          </div>
+
+          {/* Interactive heat map */}
+          <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700" style={{ height: 300 }}>
+            <HeatMapView
+              flights={flights}
+              liveVanPositions={new Map()}
+            />
           </div>
         </div>
       )}
