@@ -111,7 +111,7 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
         const storage = getStorage();
 
         if (storage && (screenshotIds.length > 0 || timestamps.length > 0)) {
-          const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+          const bucket = process.env.GCS_BUCKET || "invoice-ai-487621-files";
 
           // Get screenshots — by ID if available, otherwise find closest to timestamps
           let screenshotRows: { id: number; gcs_key: string; time_sec: number }[] = [];
