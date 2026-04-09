@@ -259,9 +259,16 @@ export default function FboOutreachPage() {
       </div>
 
       {/* Previously sent requests */}
-      {requests.length > 0 && (
+      {requests.length > 0 && (() => {
+        const filteredRequests = debouncedSearch
+          ? requests.filter((r) =>
+              r.airport_code.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+              r.fbo_name.toLowerCase().includes(debouncedSearch.toLowerCase())
+            )
+          : requests;
+        return (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="text-sm font-semibold mb-2">Previous Requests ({requests.length})</h3>
+          <h3 className="text-sm font-semibold mb-2">Previous Requests ({filteredRequests.length})</h3>
           <div className="max-h-96 overflow-y-auto">
             <table className="text-xs w-full">
               <thead>
@@ -275,7 +282,7 @@ export default function FboOutreachPage() {
                 </tr>
               </thead>
               <tbody>
-                {requests.map((r) => (
+                {filteredRequests.map((r) => (
                   <Fragment key={r.id}>
                     <tr
                       className={`border-b border-gray-50 ${r.reply_body ? "cursor-pointer hover:bg-gray-50" : ""}`}
@@ -316,7 +323,8 @@ export default function FboOutreachPage() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Select + send table */}
       <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">

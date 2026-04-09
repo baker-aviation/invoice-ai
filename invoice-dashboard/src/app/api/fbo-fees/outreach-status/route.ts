@@ -13,7 +13,7 @@ export async function GET() {
     .from("fbo_fee_requests")
     .select("id, airport_code, fbo_name, fbo_email, status, sent_at, reply_received_at, parsed_at, parse_confidence, batch_id, reply_body, reply_from")
     .order("sent_at", { ascending: false, nullsFirst: false })
-    .limit(500);
+    .limit(1000);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
