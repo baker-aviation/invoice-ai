@@ -67,7 +67,6 @@ const FEE_FIELDS: { key: keyof DirectFee; label: string }[] = [
   { key: "gpu_fee", label: "GPU" },
   { key: "lavatory_fee", label: "Lavatory" },
   { key: "deice_fee", label: "De-ice" },
-  { key: "ramp_fee", label: "Ramp" },
   { key: "landing_fee", label: "Landing" },
   { key: "afterhours_fee", label: "After Hours" },
   { key: "callout_fee", label: "Callout" },

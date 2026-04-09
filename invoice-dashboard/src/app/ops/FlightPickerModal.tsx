@@ -51,6 +51,10 @@ export type FlightPickerSelection = {
   available_time: string | null;
   duty_on_time: string | null;
   backup_flight: string | null;
+  /** Set when the selected flight is on an adjacent day (e.g., day before) */
+  is_day_before?: boolean;
+  /** Date label like " (Tue)" for adjacent-day flights */
+  date_label?: string;
 };
 
 export type FlightPickerProps = {
@@ -298,6 +302,8 @@ export default function FlightPickerModal({
   const ground = allOptions.filter((o) => o.type !== "commercial");
 
   function handleSelect(opt: TransportOption) {
+    // Detect if this is a day-before flight by checking if departure date < swap date
+    const isDayBefore = opt.depart_at ? opt.depart_at.slice(0, 10) < swapDate : false;
     onSelect({
       type: opt.type,
       flight_number: opt.flight_number,
@@ -310,6 +316,8 @@ export default function FlightPickerModal({
       available_time: opt.fbo_arrive_at,
       duty_on_time: opt.duty_on_at,
       backup_flight: opt.backup_flight,
+      is_day_before: isDayBefore,
+      date_label: opt._dateLabel || undefined,
     });
   }
 

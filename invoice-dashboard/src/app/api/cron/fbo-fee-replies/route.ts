@@ -42,9 +42,7 @@ Return ONLY valid JSON with this exact structure (use null for fees not mentione
     "<aircraft_type>": {
       "jet_a_price": <number or null>,
       "facility_fee": <number or null>,
-      "handling_fee": <number or null>,
       "gallons_to_waive": <number or null>,
-      "infrastructure_fee": <number or null>,
       "security_fee": <number or null>,
       "overnight_fee": <number or null>,
       "hangar_fee": <number or null>,
@@ -55,7 +53,7 @@ Return ONLY valid JSON with this exact structure (use null for fees not mentione
       "deice_fee": <number or null>,
       "afterhours_fee": <number or null>,
       "callout_fee": <number or null>,
-      "ramp_fee": <number or null>,
+      "landing_fee": <number or null>,
       "parking_info": "<string or empty>"
     }
   },
@@ -68,9 +66,13 @@ Rules:
 - If a fee is "included" or "waived", set it to 0
 - If fees are the same for all aircraft, duplicate under each type
 - If the email mentions aircraft types not in our list, map to closest: "Challenger 300" or "Citation X"
-- "Handling fee" and "facility fee" are often the same thing — use facility_fee for the main fee
+- IMPORTANT: "facility fee", "handling fee", "ramp fee", "infrastructure fee", and "service fee" are ALL the same charge — different FBOs just use different names. Always map them to facility_fee. Never put the same charge in multiple fields.
 - jet_a_price should be the RETAIL/posted rate, not contract fuel pricing
 - Hangar fees often have a flat rate + hourly: put flat in hangar_fee, hourly in hangar_hourly, full description in hangar_info
+- "lav" is short for lavatory — map to lavatory_fee
+- "call-out fee", "call out fee", "callout fee" all map to callout_fee
+- "after-hours", "after hours", "afterhours" all map to afterhours_fee
+- "de-ice", "deice", "de ice", "anti-ice" all map to deice_fee
 - parking_info is a text description of parking terms (e.g. "Complimentary first hour, then $40/hr")
 - If the response is clearly not a fee schedule (e.g. "out of office", "unsubscribe"), return: {"error": "not_a_fee_response"}`;
 
@@ -232,9 +234,9 @@ export async function GET(req: NextRequest) {
             deice_fee: acFees.deice_fee ?? null,
             afterhours_fee: acFees.afterhours_fee ?? null,
             callout_fee: acFees.callout_fee ?? null,
-            ramp_fee: acFees.ramp_fee ?? null,
+            ramp_fee: null,
+            landing_fee: acFees.landing_fee ?? null,
             parking_info: typeof acFees.parking_info === "string" ? acFees.parking_info : "",
-            landing_fee: null,
             source_email: request.fbo_email,
             source_date: new Date().toISOString().split("T")[0],
             raw_response: request.reply_body!.slice(0, 50000),
@@ -352,9 +354,9 @@ export async function GET(req: NextRequest) {
             deice_fee: acFees.deice_fee ?? null,
             afterhours_fee: acFees.afterhours_fee ?? null,
             callout_fee: acFees.callout_fee ?? null,
-            ramp_fee: acFees.ramp_fee ?? null,
+            ramp_fee: null,
+            landing_fee: acFees.landing_fee ?? null,
             parking_info: typeof acFees.parking_info === "string" ? acFees.parking_info : "",
-            landing_fee: null,
             source_email: msg.from.emailAddress.address,
             source_date: new Date(msg.receivedDateTime).toISOString().split("T")[0],
             raw_response: plainBody.slice(0, 50000),

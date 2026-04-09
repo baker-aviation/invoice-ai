@@ -264,6 +264,9 @@ export type TwoPassStats = {
   pass3_solved: number;
   pass3_standby_used: { name: string; role: "PIC" | "SIC"; tail: string }[];
   pass3_relaxation: boolean;
+  feedback_loop_solved: number;
+  feedback_loop_iterations: number;
+  feedback_loop_swaps: { crew_moved: string; role: "PIC" | "SIC"; from_tail: string; to_tail: string; backfilled_by: string; new_swap_point?: string }[];
   total_cost: number;
 };
 
@@ -3914,6 +3917,11 @@ export function assignOncomingCrew(params: {
   if (constraints && constraints.length > 0) {
     for (const c of constraints) {
       if (c.type === "force_tail") {
+        // Skip day-specific constraints that don't match the current swap day
+        if (c.day && currentSwapDay && c.day !== currentSwapDay) {
+          console.log(`[Constraint] force_tail: "${c.crew_name}" → ${c.tail} SKIPPED (day=${c.day}, current=${currentSwapDay})`);
+          continue;
+        }
         const crewMember = crewRoster.find((cr) => cr.name === c.crew_name);
         if (!crewMember) {
           console.log(`[Constraint] force_tail: crew "${c.crew_name}" not found in roster — skipping`);
@@ -3931,12 +3939,17 @@ export function assignOncomingCrew(params: {
         result[c.tail][field] = c.crew_name;
         if (crewMember.role === "PIC") forcedPicNames.add(c.crew_name);
         else forcedSicNames.add(c.crew_name);
-        const reason = `FORCED to ${c.tail}${c.reason ? ` (${c.reason})` : ""}`;
+        const reason = `FORCED to ${c.tail}${c.day ? ` (${c.day})` : ""}${c.reason ? ` (${c.reason})` : ""}`;
         details.push({ name: c.crew_name, tail: c.tail, cost: 0, reason });
-        console.log(`[Constraint] force_tail: ${crewMember.role} "${c.crew_name}" → ${c.tail}${c.reason ? ` (${c.reason})` : ""}`);
+        console.log(`[Constraint] force_tail: ${crewMember.role} "${c.crew_name}" → ${c.tail}${c.day ? ` (${c.day})` : ""}${c.reason ? ` (${c.reason})` : ""}`);
       } else if (c.type === "force_fleet") {
+        // Skip day-specific constraints that don't match the current swap day
+        if (c.day && currentSwapDay && c.day !== currentSwapDay) {
+          console.log(`[Constraint] force_fleet: "${c.crew_name}" → ${c.aircraft_type} SKIPPED (day=${c.day}, current=${currentSwapDay})`);
+          continue;
+        }
         forceFleetFilter.set(c.crew_name, c.aircraft_type);
-        console.log(`[Constraint] force_fleet: "${c.crew_name}" locked to ${c.aircraft_type}${c.reason ? ` (${c.reason})` : ""}`);
+        console.log(`[Constraint] force_fleet: "${c.crew_name}" locked to ${c.aircraft_type}${c.day ? ` (${c.day})` : ""}${c.reason ? ` (${c.reason})` : ""}`);
       } else if (c.type === "force_pair") {
         // Skip day-specific pairs that don't match the current swap day
         if (c.day && currentSwapDay && c.day !== currentSwapDay) {
@@ -4123,6 +4136,9 @@ export function twoPassAssignAndOptimize(params: {
       pass3_solved: 0,
       pass3_standby_used: [],
       pass3_relaxation: false,
+      feedback_loop_solved: 0,
+      feedback_loop_iterations: 0,
+      feedback_loop_swaps: [],
       total_cost: pass1Cost,
     };
     return {
@@ -4319,6 +4335,66 @@ export function twoPassAssignAndOptimize(params: {
     finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
   }
 
+  // ── Pass 4: Feedback Loop — iterative reassignment for unsolved tails ────
+  // If tails remain unsolved, try stealing assigned crew (especially hub crew
+  // with easy Uber assignments) to solve harder tails, as long as the vacated
+  // tail can be backfilled. Only accepts swaps that increase total solved count.
+  let feedbackLoopSolved = 0;
+  let feedbackLoopIterations = 0;
+  let feedbackLoopSwaps: TwoPassStats["feedback_loop_swaps"] = [];
+
+  const feedbackUnsolved = finalResult.rows.filter((r) => r.travel_type === "none" && r.direction === "oncoming");
+  if (feedbackUnsolved.length > 0) {
+    console.log(`[FeedbackLoop] ${feedbackUnsolved.length} oncoming slots still unsolved after Pass 3 — starting feedback loop...`);
+
+    const feedbackResult = runFeedbackLoop({
+      assignments: finalAssignments,
+      oncomingPool: fullPool,
+      crewRoster,
+      flights,
+      swapDate,
+      aliases,
+      commercialFlights,
+      preComputedRoutes,
+      preComputedOffgoing,
+      offgoingDeadlines,
+      excludeTails,
+      standby: mergedStandby,
+    });
+
+    feedbackLoopSolved = feedbackResult.solved;
+    feedbackLoopIterations = feedbackResult.iterations;
+    feedbackLoopSwaps = feedbackResult.swaps;
+
+    if (feedbackResult.solved > 0) {
+      // Rebuild the final result with updated assignments
+      finalAssignments = feedbackResult.assignments;
+      mergedStandby = feedbackResult.standby;
+
+      finalResult = buildSwapPlan({
+        flights, crewRoster, aliases, swapDate, commercialFlights,
+        swapAssignments: finalAssignments,
+        oncomingPool: fullPool,
+        strategy: "offgoing_first",
+      });
+
+      // Re-add all previous warnings
+      for (const v of volunteersUsed) {
+        const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+        finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
+      }
+      for (const s of pass3StandbyUsed) {
+        finalResult.warnings.push(`${s.name} (${s.role}) pulled from standby for ${s.tail} [relaxed constraints]`);
+      }
+      // Add feedback loop warnings
+      finalResult.warnings.push(...feedbackResult.warnings);
+
+      console.log(`[FeedbackLoop] Complete: ${feedbackLoopSolved} additional solved, ${feedbackLoopIterations} iteration(s), new solved=${finalResult.solved_count} unsolved=${finalResult.unsolved_count}`);
+    } else {
+      console.log(`[FeedbackLoop] No improvements found — all unsolved tails are genuinely stuck`);
+    }
+  }
+
   // ── Improvement 4: Missing flight pairs diagnostic ──────────────────────
   // For still-unsolved oncoming crew, identify specific flight cache gaps
   const stillUnsolved = finalResult.rows.filter((r) => r.travel_type === "none");
@@ -4510,6 +4586,9 @@ export function twoPassAssignAndOptimize(params: {
     pass3_solved: pass3Solved,
     pass3_standby_used: pass3StandbyUsed,
     pass3_relaxation: pass3Solved > 0,
+    feedback_loop_solved: feedbackLoopSolved,
+    feedback_loop_iterations: feedbackLoopIterations,
+    feedback_loop_swaps: feedbackLoopSwaps,
     total_cost: finalResult.total_cost + bonusCost,
   };
 
@@ -4517,6 +4596,256 @@ export function twoPassAssignAndOptimize(params: {
     result: { ...finalResult, two_pass: stats, diagnostics },
     assignmentResult: { assignments: finalAssignments, standby: mergedStandby, details: allDetails, rejections: allRejections },
     twoPassStats: stats,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEEDBACK LOOP — Iterative reassignment for unsolved tails
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// After all passes, unsolved tails may exist because:
+// 1. The chosen swap point is unreachable by remaining crew
+// 2. Hub crew were assigned locally (Uber) but could solve harder tails
+// 3. Kuhn's matching ran within a fixed swap-point selection
+//
+// The feedback loop tries to "steal" assigned crew to solve unsolved tails,
+// but ONLY when the vacated tail can be backfilled — net solved count must increase.
+
+function runFeedbackLoop(params: {
+  assignments: Record<string, SwapAssignment>;
+  oncomingPool: OncomingPool;
+  crewRoster: CrewMember[];
+  flights: FlightLeg[];
+  swapDate: string;
+  aliases: AirportAlias[];
+  commercialFlights?: Map<string, FlightOffer[]>;
+  preComputedRoutes?: Map<string, PilotRoute[]>;
+  preComputedOffgoing?: Map<string, PilotRoute[]>;
+  offgoingDeadlines?: OncomingDeadline[];
+  excludeTails?: Set<string>;
+  standby: { pic: string[]; sic: string[] };
+}): {
+  assignments: Record<string, SwapAssignment>;
+  solved: number;
+  iterations: number;
+  swaps: TwoPassStats["feedback_loop_swaps"];
+  standby: { pic: string[]; sic: string[] };
+  warnings: string[];
+} {
+  const { oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, excludeTails } = params;
+  let assignments = JSON.parse(JSON.stringify(params.assignments)) as Record<string, SwapAssignment>;
+  let standby = { pic: [...params.standby.pic], sic: [...params.standby.sic] };
+  const swaps: TwoPassStats["feedback_loop_swaps"] = [];
+  const warnings: string[] = [];
+  const MAX_ITERATIONS = 5;
+  let totalNewSolved = 0;
+
+  // Group flights by tail
+  const byTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+    byTail.get(f.tail_number)!.push(f);
+  }
+  for (const [, legs] of byTail) {
+    legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
+  }
+
+  // Build aircraft type map
+  const tailAircraftType = new Map<string, string>();
+  for (const tail of Object.keys(assignments)) {
+    const sa = assignments[tail];
+    const names = [sa.offgoing_pic, sa.offgoing_sic, sa.oncoming_pic, sa.oncoming_sic].filter(Boolean) as string[];
+    for (const nm of names) {
+      const crew = findCrewByName(crewRoster, nm, "PIC") ?? findCrewByName(crewRoster, nm, "SIC");
+      if (crew?.aircraft_types[0]) {
+        tailAircraftType.set(tail, crew.aircraft_types[0]);
+        break;
+      }
+    }
+  }
+
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    // Find unsolved oncoming slots
+    const unsolvedSlots: { tail: string; field: "oncoming_pic" | "oncoming_sic"; role: "PIC" | "SIC" }[] = [];
+    for (const [tail, sa] of Object.entries(assignments)) {
+      if (excludeTails?.has(tail)) continue;
+      if (!sa.oncoming_pic) unsolvedSlots.push({ tail, field: "oncoming_pic", role: "PIC" });
+      if (!sa.oncoming_sic) unsolvedSlots.push({ tail, field: "oncoming_sic", role: "SIC" });
+    }
+
+    if (unsolvedSlots.length === 0) break;
+
+    let improved = false;
+
+    for (const slot of unsolvedSlots) {
+      // Determine pool for this role
+      const pool = slot.role === "PIC" ? oncomingPool.pic : oncomingPool.sic;
+
+      // Find all currently-assigned crew for this role across all tails
+      const assignedCrewTails = new Map<string, string>(); // crewName → tail
+      for (const [tail, sa] of Object.entries(assignments)) {
+        const name = sa[slot.field];
+        if (name) assignedCrewTails.set(name, tail);
+      }
+
+      // Build feasibility for all assigned crew against the UNSOLVED tail
+      // using swapPointFallback=true so ALL swap points are tried
+      const assignedPool = pool.filter((p) => assignedCrewTails.has(p.name));
+      if (assignedPool.length === 0) continue;
+
+      const { matrix: stealMatrix } = buildFeasibilityMatrix({
+        pool: assignedPool,
+        role: slot.role,
+        tails: [slot.tail],
+        byTail,
+        swapDate,
+        aliases,
+        commercialFlights,
+        crewRoster,
+        tailAircraftType,
+        preComputedRoutes,
+        preComputedOffgoing,
+        offgoingDeadlines,
+        swapPointFallback: true, // try ALL swap points
+      });
+
+      // Get viable options sorted by rank (best first)
+      const viableStealOptions = stealMatrix
+        .filter((m) => m.viable && m.tail === slot.tail)
+        .sort((a, b) => a.rank - b.rank);
+
+      if (viableStealOptions.length === 0) continue;
+
+      // For each steal candidate, check if the vacated tail can be backfilled
+      let bestSwap: {
+        crewToSteal: string;
+        fromTail: string;
+        stealSwapIcao: string;
+        stealRank: number;
+        backfillCrew: string;
+        backfillSwapIcao: string;
+        backfillRank: number;
+      } | null = null;
+
+      for (const stealOpt of viableStealOptions) {
+        const fromTail = assignedCrewTails.get(stealOpt.crewName);
+        if (!fromTail || excludeTails?.has(fromTail)) continue;
+
+        // Build backfill pool: unassigned crew + standby (excluding the crew we're stealing)
+        const standbyForRole = slot.role === "PIC" ? standby.pic : standby.sic;
+        const assignedNames = new Set(assignedCrewTails.keys());
+        const backfillPool: OncomingPoolEntry[] = [
+          ...pool.filter((p) => !assignedNames.has(p.name)),
+          ...standbyForRole.map((name) => {
+            const crew = crewRoster.find((c) => c.name === name);
+            return {
+              name,
+              aircraft_type: crew?.aircraft_types[0] ?? "unknown",
+              home_airports: crew?.home_airports ?? [],
+              is_skillbridge: crew?.is_skillbridge ?? false,
+            } as OncomingPoolEntry;
+          }),
+        ];
+
+        if (backfillPool.length === 0) continue;
+
+        // Check feasibility of backfill candidates for the vacated tail
+        // Use swapPointFallback=true so ALL swap points are tried for backfill too
+        const { matrix: backfillMatrix } = buildFeasibilityMatrix({
+          pool: backfillPool,
+          role: slot.role,
+          tails: [fromTail],
+          byTail,
+          swapDate,
+          aliases,
+          commercialFlights,
+          crewRoster,
+          tailAircraftType,
+          preComputedRoutes,
+          preComputedOffgoing,
+          offgoingDeadlines,
+          swapPointFallback: true,
+        });
+
+        const viableBackfills = backfillMatrix
+          .filter((m) => m.viable && m.tail === fromTail)
+          .sort((a, b) => a.rank - b.rank);
+
+        if (viableBackfills.length === 0) continue;
+
+        // Found a viable swap+backfill! Pick the best backfill option.
+        const bestBackfill = viableBackfills[0];
+        const combinedRank = stealOpt.rank + bestBackfill.rank;
+
+        if (!bestSwap || combinedRank < bestSwap.stealRank + bestSwap.backfillRank) {
+          bestSwap = {
+            crewToSteal: stealOpt.crewName,
+            fromTail,
+            stealSwapIcao: stealOpt.bestSwapIcao,
+            stealRank: stealOpt.rank,
+            backfillCrew: bestBackfill.crewName,
+            backfillSwapIcao: bestBackfill.bestSwapIcao,
+            backfillRank: bestBackfill.rank,
+          };
+        }
+      }
+
+      // Execute the best swap if found
+      if (bestSwap) {
+        const { crewToSteal, fromTail, stealSwapIcao, backfillCrew, backfillSwapIcao } = bestSwap;
+        const swapField = slot.field === "oncoming_pic" ? "oncoming_pic_swap_icao" : "oncoming_sic_swap_icao";
+
+        // Move crew to unsolved tail
+        assignments[fromTail][slot.field] = null;
+        assignments[slot.tail][slot.field] = crewToSteal;
+        assignments[slot.tail][swapField] = stealSwapIcao;
+
+        // Backfill vacated tail
+        assignments[fromTail][slot.field] = backfillCrew;
+        assignments[fromTail][swapField] = backfillSwapIcao;
+
+        // Update standby lists (remove backfill crew if they came from standby)
+        standby.pic = standby.pic.filter((n) => n !== backfillCrew);
+        standby.sic = standby.sic.filter((n) => n !== backfillCrew);
+
+        totalNewSolved++;
+        improved = true;
+
+        const stealIata = toIata(stealSwapIcao);
+        swaps.push({
+          crew_moved: crewToSteal,
+          role: slot.role,
+          from_tail: fromTail,
+          to_tail: slot.tail,
+          backfilled_by: backfillCrew,
+          new_swap_point: stealIata,
+        });
+
+        console.log(`[FeedbackLoop] iter=${iter + 1}: Moved ${slot.role} ${crewToSteal} from ${fromTail} → ${slot.tail} @ ${stealIata}, backfilled by ${backfillCrew}`);
+        warnings.push(`${crewToSteal} (${slot.role}) reassigned from ${fromTail} to ${slot.tail} @ ${stealIata} [feedback loop], ${backfillCrew} backfills ${fromTail}`);
+
+        break; // restart iteration loop to re-evaluate with new state
+      }
+    }
+
+    if (!improved) {
+      console.log(`[FeedbackLoop] No more improvements found after ${iter + 1} iteration(s)`);
+      break;
+    }
+  }
+
+  if (totalNewSolved > 0) {
+    console.log(`[FeedbackLoop] Solved ${totalNewSolved} additional tail(s) via reassignment`);
+  }
+
+  return {
+    assignments,
+    solved: totalNewSolved,
+    iterations: swaps.length > 0 ? swaps.length : 0,
+    swaps,
+    standby,
+    warnings,
   };
 }
 

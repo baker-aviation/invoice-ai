@@ -284,6 +284,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // ── Mountain / West (additional) ──────────────────────────────────────────
   KAVQ: [32.4096, -111.2185],  // Tucson/Marana, AZ
   KBJC: [39.9088, -105.1172],  // Broomfield/Rocky Mtn Metro, CO
+  KDRO: [37.1515, -107.7538],  // Durango-La Plata County, CO
   KBZN: [45.7775, -111.1530],  // Bozeman, MT
   KCEZ: [37.3030, -108.6281],  // Cortez, CO
   KFCA: [48.3105, -114.2560],  // Glacier Park Intl (Kalispell), MT
@@ -324,6 +325,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
 
   // ── Midwest (more) ─────────────────────────────────────────────────────────
   KCAK: [40.9161, -81.4422],   // Akron-Canton, OH
+  KEVV: [38.0370, -87.5324],   // Evansville Regional, IN
   KLAN: [42.7787, -84.5874],   // Lansing (Capital Region), MI
   KOMA: [41.3032, -95.8941],   // Omaha (Eppley Airfield), NE
   KPTK: [42.6655, -83.4185],   // Oakland County (Pontiac), MI
@@ -335,6 +337,8 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
 
   // ── Texas (more) ───────────────────────────────────────────────────────────
   KMAF: [31.9425, -102.2019],  // Midland-Odessa, TX
+  T82:  [30.2469, -98.9099],   // Gillespie County (Fredericksburg), TX
+  KT82: [30.2469, -98.9099],   // Gillespie County (Fredericksburg), TX (K-prefix alias)
   KMFE: [26.1758, -98.2386],   // McAllen, TX
 
   // ── Mountain / West (more) ─────────────────────────────────────────────────
@@ -544,6 +548,8 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KAVP", "KBGR", "KBTV", "KBUF", "KCAK", "KFAT", "KGSP", "KJAC",
   "KLAN", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
   "KROC", "KSBA", "KSBN", "KSUN",
+  // Added 2026-04-09
+  "KDRO", "KEVV",
   // Added 2026-04-06 — gap detection misses
   "KBIS", "KOTZ", "KBRO", "KSAF", "KLWB", "KSTP", "KLEB",
   "KFDK", "KMCC", "KCRW", "KMHT", "KPWM", "KSYR", "KABE",
@@ -580,6 +586,8 @@ export function findNearbyCommercialAirports(
   if (!key) return [];
   const origin = AIRPORT_COORDS[key];
 
+  const FALLBACK_RADIUS = 100;
+
   const results: { icao: string; distanceMiles: number }[] = [];
 
   for (const code of COMMERCIAL_AIRPORTS) {
@@ -590,6 +598,20 @@ export function findNearbyCommercialAirports(
     const dist = haversineMiles(origin[0], origin[1], coords[0], coords[1]);
     if (dist <= radiusMiles) {
       results.push({ icao: code, distanceMiles: Math.round(dist) });
+    }
+  }
+
+  // If nothing within the default radius, widen to fallback to handle remote GA fields
+  if (results.length === 0 && radiusMiles < FALLBACK_RADIUS) {
+    for (const code of COMMERCIAL_AIRPORTS) {
+      if (code === icao.toUpperCase()) continue;
+      const coords = AIRPORT_COORDS[code];
+      if (!coords) continue;
+
+      const dist = haversineMiles(origin[0], origin[1], coords[0], coords[1]);
+      if (dist <= FALLBACK_RADIUS) {
+        results.push({ icao: code, distanceMiles: Math.round(dist) });
+      }
     }
   }
 

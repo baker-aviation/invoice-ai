@@ -24,10 +24,12 @@ const OptimizeRequestSchema = z.object({
     reason: z.string(),
   })).optional(),
   constraints: z.array(z.discriminatedUnion("type", [
-    z.object({ type: z.literal("force_tail"), crew_name: z.string(), tail: z.string(), reason: z.string().optional() }),
+    z.object({ type: z.literal("force_tail"), crew_name: z.string(), tail: z.string(), day: z.string().optional(), reason: z.string().optional() }),
     z.object({ type: z.literal("force_pair"), crew_a: z.string(), crew_b: z.string(), day: z.string().optional(), reason: z.string().optional() }),
-    z.object({ type: z.literal("force_fleet"), crew_name: z.string(), aircraft_type: z.string(), reason: z.string().optional() }),
+    z.object({ type: z.literal("force_fleet"), crew_name: z.string(), aircraft_type: z.string(), day: z.string().optional(), reason: z.string().optional() }),
   ])).optional(),
+  /** Current swap day label (e.g., "tuesday", "wednesday") — used to filter day-specific constraints */
+  current_swap_day: z.string().optional(),
 }).strip();
 
 export const dynamic = "force-dynamic";
@@ -395,6 +397,7 @@ export async function POST(req: NextRequest) {
       excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
       constraints: swapConstraints,
+      currentSwapDay: input.current_swap_day,
     });
     assignmentResult = twoPass.assignmentResult;
     swapAssignments = twoPass.assignmentResult.assignments;
@@ -439,6 +442,7 @@ export async function POST(req: NextRequest) {
         excludeTails: unsolvableTails,
         offgoingDeadlines: offgoingFirstResult?.deadlines,
         constraints: swapConstraints,
+        currentSwapDay: input.current_swap_day,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
