@@ -83,6 +83,7 @@ export async function POST(
   const cc = (input.cc as string[]) ?? [];
   const bodyText = typeof input.body === "string" ? input.body.trim() : "";
   const includePdf = input.include_pdf === true;
+  const extraAttachments = Array.isArray(input.extra_attachments) ? input.extra_attachments as { name: string; contentType: string; contentBytes: string }[] : [];
 
   if (!to?.length || !to.every((a: string) => a.includes("@"))) {
     return NextResponse.json({ error: "Valid 'to' addresses required" }, { status: 400 });
@@ -162,6 +163,18 @@ export async function POST(
         console.error("[alert-email] PDF download failed:", err);
         // Continue without attachment rather than failing the whole email
       }
+    }
+  }
+
+  // Add user-uploaded attachments
+  for (const ea of extraAttachments) {
+    if (ea.name && ea.contentBytes) {
+      attachments.push({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        name: ea.name,
+        contentType: ea.contentType || "application/octet-stream",
+        contentBytes: ea.contentBytes,
+      });
     }
   }
 

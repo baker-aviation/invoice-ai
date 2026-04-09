@@ -92,6 +92,7 @@ function DetailPanel({
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
   const [emailAttachPdf, setEmailAttachPdf] = useState(true);
+  const [emailExtraFiles, setEmailExtraFiles] = useState<File[]>([]);
 
   // Resolution note editing
   const [resNote, setResNote] = useState(alert.resolution_note ?? "");
@@ -142,10 +143,19 @@ function DetailPanel({
     try {
       const to = emailTo.split(",").map((s) => s.trim()).filter(Boolean);
       const cc = emailCc ? emailCc.split(",").map((s) => s.trim()).filter(Boolean) : [];
+
+      // Convert extra files to base64
+      const extra_attachments: { name: string; contentType: string; contentBytes: string }[] = [];
+      for (const f of emailExtraFiles) {
+        const buf = await f.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        extra_attachments.push({ name: f.name, contentType: f.type || "application/octet-stream", contentBytes: b64 });
+      }
+
       const res = await fetch(`/api/alerts/emails/${alert.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to, cc, body: emailBody, include_pdf: emailAttachPdf }),
+        body: JSON.stringify({ to, cc, body: emailBody, include_pdf: emailAttachPdf, extra_attachments }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -153,6 +163,7 @@ function DetailPanel({
         setEmailTo("");
         setEmailCc("");
         setEmailBody("");
+        setEmailExtraFiles([]);
         // Refresh email list
         const listRes = await fetch(`/api/alerts/emails/${alert.id}`);
         const listData = await listRes.json();
@@ -369,6 +380,16 @@ function DetailPanel({
                 placeholder="Email body…"
                 className="w-full rounded-lg border px-3 py-2 text-sm min-h-[100px]"
               />
+              {emailExtraFiles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {emailExtraFiles.map((f, i) => (
+                    <span key={i} className="inline-flex items-center gap-1 bg-gray-100 rounded px-2 py-0.5 text-xs text-gray-700">
+                      {f.name}
+                      <button onClick={() => setEmailExtraFiles((prev) => prev.filter((_, j) => j !== i))} className="text-gray-400 hover:text-red-500">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-3">
                   <button
@@ -384,6 +405,18 @@ function DetailPanel({
                   >
                     Cancel
                   </button>
+                  <label className="px-3 py-1.5 rounded-lg border text-sm text-gray-600 hover:bg-gray-50 cursor-pointer">
+                    + Attach File
+                    <input
+                      type="file"
+                      className="hidden"
+                      multiple
+                      onChange={(e) => {
+                        if (e.target.files) setEmailExtraFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
                 </div>
                 <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer ml-auto">
                   <input
@@ -443,6 +476,84 @@ export default function AlertsTable({
   const [page, setPage] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [shareStates, setShareStates] = useState<Record<string, "idle" | "loading" | "success" | "error">>({});
+
+  // Manual alert creation
+  const [showCreate, setShowCreate] = useState(false);
+  const [createFile, setCreateFile] = useState<File | null>(null);
+  const [createVendor, setCreateVendor] = useState("");
+  const [createAirport, setCreateAirport] = useState("");
+  const [createTail, setCreateTail] = useState("");
+  const [createFee, setCreateFee] = useState("");
+  const [createAmount, setCreateAmount] = useState("");
+  const [createNotes, setCreateNotes] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const handleCreateAlert = async () => {
+    if (!createFile) { window.alert("Please select a PDF file"); return; }
+    setCreating(true);
+    try {
+      // Step 1: Get presigned URL
+      const presignRes = await fetch("/api/alerts/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "presign", filename: createFile.name }),
+      });
+      const presign = await presignRes.json();
+      if (!presign.url) { window.alert("Failed to get upload URL"); return; }
+
+      // Step 2: Upload to GCS
+      const buf = await createFile.arrayBuffer();
+      const uploadRes = await fetch(presign.url, {
+        method: "PUT",
+        headers: { "Content-Type": presign.contentType },
+        body: buf,
+      });
+      if (!uploadRes.ok) { window.alert("File upload failed"); return; }
+
+      // Step 3: Create document + alert + trigger parse
+      const createRes = await fetch("/api/alerts/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          bucket: presign.bucket,
+          key: presign.key,
+          vendor: createVendor,
+          airport: createAirport,
+          tail: createTail,
+          fee_name: createFee,
+          fee_amount: parseFloat(createAmount) || 0,
+          notes: createNotes,
+        }),
+      });
+      const result = await createRes.json();
+      if (result.ok) {
+        // Add to local state
+        setAlerts((prev) => [{
+          id: result.alert_id,
+          created_at: new Date().toISOString(),
+          document_id: result.document_id,
+          rule_name: "Manual Alert",
+          status: "pending",
+          slack_status: "pending",
+          vendor: createVendor || null,
+          tail: createTail || null,
+          airport_code: createAirport || null,
+          fee_name: createFee || "Manual Alert",
+          fee_amount: parseFloat(createAmount) || 0,
+          currency: null,
+          resolution: "havent_started",
+        }, ...prev]);
+        setShowCreate(false);
+        setCreateFile(null); setCreateVendor(""); setCreateAirport(""); setCreateTail("");
+        setCreateFee(""); setCreateAmount(""); setCreateNotes("");
+      } else {
+        window.alert(`Failed: ${result.error}`);
+      }
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // Load assignees on mount
   useEffect(() => {
@@ -602,28 +713,93 @@ export default function AlertsTable({
   }, [alerts]);
 
   return (
-    <div className="p-6 space-y-4">
-      {/* Workqueue tabs */}
-      <div className="flex gap-1 bg-white rounded-xl border shadow-sm p-1">
-        {([
-          ["open", `Open (${counts.open})`],
-          ["assigned", `Assigned (${counts.assigned})`],
-          ["resolved", `Resolved (${counts.resolved})`],
-          ["all", `All (${counts.all})`],
-        ] as [WorkqueueFilter, string][]).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => { setWqFilter(key); setPage(0); }}
-            className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              wqFilter === key
-                ? "bg-slate-900 text-white"
-                : "text-gray-600 hover:bg-gray-100"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+    <div className="p-4 space-y-4 max-w-full">
+      {/* Workqueue tabs + New Alert */}
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1 bg-white rounded-xl border shadow-sm p-1 flex-1">
+          {([
+            ["open", `Open (${counts.open})`],
+            ["assigned", `Assigned (${counts.assigned})`],
+            ["resolved", `Resolved (${counts.resolved})`],
+            ["all", `All (${counts.all})`],
+          ] as [WorkqueueFilter, string][]).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => { setWqFilter(key); setPage(0); }}
+              className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                wqFilter === key
+                  ? "bg-slate-900 text-white"
+                  : "text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className={`px-4 py-2 rounded-xl text-sm font-medium border shadow-sm transition-colors whitespace-nowrap ${
+            showCreate ? "bg-slate-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+          }`}
+        >
+          + New Alert
+        </button>
       </div>
+
+      {/* Manual alert creation form */}
+      {showCreate && (
+        <div className="rounded-xl border bg-white shadow-sm p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-800">Create Manual Alert</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Invoice PDF *</label>
+              <label className={`h-9 rounded-lg border px-3 text-sm flex items-center cursor-pointer ${createFile ? "border-blue-300 text-blue-700 bg-blue-50" : "text-gray-400 hover:bg-gray-50"}`}>
+                {createFile ? createFile.name : "Choose file…"}
+                <input type="file" accept=".pdf" className="hidden" onChange={(e) => setCreateFile(e.target.files?.[0] || null)} />
+              </label>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Vendor</label>
+              <input className="h-9 rounded-lg border px-3 text-sm" placeholder="e.g. Signature Aviation" value={createVendor} onChange={(e) => setCreateVendor(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Airport</label>
+              <input className="h-9 rounded-lg border px-3 text-sm" placeholder="e.g. TEB" value={createAirport} onChange={(e) => setCreateAirport(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Tail</label>
+              <input className="h-9 rounded-lg border px-3 text-sm" placeholder="e.g. N883TR" value={createTail} onChange={(e) => setCreateTail(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Fee Name</label>
+              <input className="h-9 rounded-lg border px-3 text-sm" placeholder="e.g. Overnight Parking" value={createFee} onChange={(e) => setCreateFee(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-600">Amount ($)</label>
+              <input type="number" step="0.01" className="h-9 rounded-lg border px-3 text-sm" placeholder="0.00" value={createAmount} onChange={(e) => setCreateAmount(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1 md:col-span-2">
+              <label className="text-xs text-gray-600">Notes</label>
+              <input className="h-9 rounded-lg border px-3 text-sm" placeholder="Optional notes…" value={createNotes} onChange={(e) => setCreateNotes(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCreateAlert}
+              disabled={creating || !createFile}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-40"
+            >
+              {creating ? "Creating…" : "Create Alert & Parse PDF"}
+            </button>
+            <button
+              onClick={() => setShowCreate(false)}
+              className="px-4 py-2 rounded-lg border text-sm text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="rounded-xl border bg-white shadow-sm p-4">

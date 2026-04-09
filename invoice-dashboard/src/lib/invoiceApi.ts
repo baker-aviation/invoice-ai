@@ -246,11 +246,11 @@ export async function fetchAlerts(params: {
     const items = Array.isArray(mp.matched_line_items) ? mp.matched_line_items : [];
     const first = (items[0] ?? {}) as Record<string, unknown>;
 
-    const feeName = String(first.description ?? "").trim();
-    const feeAmount = typeof first.total === "number" ? first.total : null;
+    const feeName = String(first.description ?? mp.rule_name ?? "").trim();
+    const feeAmount = typeof first.total === "number" ? first.total : (typeof mp.total_amount === "number" ? mp.total_amount : null);
 
-    // Only include actionable alerts (has fee name + positive amount)
-    if (!feeName || !feeAmount || feeAmount <= 0) continue;
+    // Only include alerts with some identifiable info
+    if (!feeName && !feeAmount) continue;
 
     // Fallback to parsed_invoices for vendor/tail/airport
     const fallback = invoiceLookup.get(row.document_id as string);
