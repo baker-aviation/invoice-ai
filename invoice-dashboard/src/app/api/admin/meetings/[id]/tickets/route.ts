@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSuperAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { getStorage } from "@/lib/gcs";
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
@@ -88,7 +89,7 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
       return NextResponse.json({ error: adminErr.message }, { status: 500 });
     }
 
-    // Create GitHub issue
+    // Create GitHub issue with embedded screenshots
     let githubIssueNumber: number | null = null;
     const githubToken = process.env.GITHUB_TOKEN;
     if (githubToken) {
@@ -104,12 +105,101 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
           ? `\n\n**Referenced timestamps:** ${timestamps.map((t: number) => `\`${formatTime(t)}\``).join(", ")}`
           : "";
 
+        // Fetch relevant screenshots from GCS and upload to GitHub
+        let screenshotMarkdown = "";
+        const screenshotIds = (ticket.screenshot_ids || []) as number[];
+        const storage = getStorage();
+
+        if (storage && (screenshotIds.length > 0 || timestamps.length > 0)) {
+          const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+
+          // Get screenshots — by ID if available, otherwise find closest to timestamps
+          let screenshotRows: { id: number; gcs_key: string; time_sec: number }[] = [];
+
+          if (screenshotIds.length > 0) {
+            const { data } = await sb
+              .from("meeting_screenshots")
+              .select("id, gcs_key, time_sec")
+              .in("id", screenshotIds);
+            screenshotRows = data || [];
+          } else if (timestamps.length > 0) {
+            // Get all screenshots for this meeting, find closest to each timestamp
+            const { data: allScreenshots } = await sb
+              .from("meeting_screenshots")
+              .select("id, gcs_key, time_sec")
+              .eq("meeting_id", id)
+              .order("time_sec", { ascending: true });
+
+            if (allScreenshots && allScreenshots.length > 0) {
+              const seen = new Set<number>();
+              for (const ts of timestamps) {
+                const closest = allScreenshots.reduce((a, b) =>
+                  Math.abs(Number(a.time_sec) - ts) < Math.abs(Number(b.time_sec) - ts) ? a : b,
+                );
+                if (!seen.has(closest.id)) {
+                  seen.add(closest.id);
+                  screenshotRows.push(closest);
+                }
+              }
+            }
+          }
+
+          // Upload each screenshot to GitHub (max 3 to keep issues clean)
+          const toUpload = screenshotRows.slice(0, 3);
+          const ghHeaders = {
+            Authorization: `Bearer ${githubToken}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+          };
+
+          for (const ss of toUpload) {
+            try {
+              const [contents] = await storage.bucket(bucket).file(ss.gcs_key).download();
+              const b64 = contents.toString("base64");
+              const path = `docs/meeting-screenshots/meeting-${id}/ticket-${ticket_id}-${formatTime(Number(ss.time_sec)).replace(":", "m")}s.jpg`;
+
+              // Check if file already exists (for idempotency)
+              const existsRes = await fetch(
+                `https://api.github.com/repos/baker-aviation/invoice-ai/contents/${path}`,
+                { headers: ghHeaders },
+              );
+
+              let sha: string | undefined;
+              if (existsRes.ok) {
+                const existsData = await existsRes.json();
+                sha = existsData.sha;
+              }
+
+              const uploadRes = await fetch(
+                `https://api.github.com/repos/baker-aviation/invoice-ai/contents/${path}`,
+                {
+                  method: "PUT",
+                  headers: ghHeaders,
+                  body: JSON.stringify({
+                    message: `Add meeting screenshot (meeting #${id}, ${formatTime(Number(ss.time_sec))})`,
+                    content: b64,
+                    branch: "main",
+                    ...(sha ? { sha } : {}),
+                  }),
+                },
+              );
+
+              if (uploadRes.ok) {
+                const rawUrl = `https://raw.githubusercontent.com/baker-aviation/invoice-ai/main/${path}`;
+                screenshotMarkdown += `\n\n**Screenshot at ${formatTime(Number(ss.time_sec))}:**\n![${formatTime(Number(ss.time_sec))}](${rawUrl})`;
+              }
+            } catch (e) {
+              console.error(`Failed to upload screenshot ${ss.id}:`, e);
+            }
+          }
+        }
+
         const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
           ? `https://${process.env.VERCEL_URL}`
           : "https://baker-ai-gamma.vercel.app";
         const meetingUrl = `${appUrl}/admin?tab=super&subtab=meetings&meeting=${id}`;
 
-        const issueBody = `${ticket.description || "No description."}${timestampStr}
+        const issueBody = `${ticket.description || "No description."}${timestampStr}${screenshotMarkdown}
 
 ---
 **Source:** [${meetingTitle}](${meetingUrl}) — Meeting #${id}
