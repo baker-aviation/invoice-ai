@@ -148,8 +148,14 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
       body: JSON.stringify({ ticket_id: ticketId, action, ...extraBody }),
     });
     if (res.ok) {
+      const data = await res.json().catch(() => ({}));
       setTickets((prev) =>
-        prev.map((t) => (t.id === ticketId ? { ...t, status: action === "accept" ? "accepted" : action === "reject" ? "rejected" : t.status } : t)),
+        prev.map((t) => {
+          if (t.id !== ticketId) return t;
+          const updated = { ...t, status: action === "accept" ? "accepted" : action === "reject" ? "rejected" : t.status };
+          if (data.github_issue) updated.linear_issue_id = `gh${data.github_issue}`;
+          return updated;
+        }),
       );
     }
   };
@@ -516,6 +522,17 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                               </>
                             )}
                             {statusBadge(ticket.status)}
+                            {ticket.linear_issue_id?.startsWith("gh#") && (
+                              <a
+                                href={`https://github.com/baker-aviation/invoice-ai/issues/${ticket.linear_issue_id.replace("gh#", "")}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-blue-400 hover:text-blue-300 underline"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {ticket.linear_issue_id.replace("gh", "")}
+                              </a>
+                            )}
                           </div>
                         </div>
 
