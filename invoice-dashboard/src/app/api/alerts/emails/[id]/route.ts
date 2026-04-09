@@ -180,9 +180,6 @@ export async function POST(
       contentType: "HTML",
       content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}<br><br><span style="color:#999;font-size:11px;">Ref: ${tag}</span></div>`,
     },
-    from: {
-      emailAddress: { name: "Evan - Baker Aviation", address: mailbox },
-    },
     toRecipients: to.map((addr) => ({ emailAddress: { address: addr } })),
     ccRecipients: cc.map((addr) => ({ emailAddress: { address: addr } })),
     ...(attachments.length > 0 ? { attachments } : {}),
