@@ -703,6 +703,9 @@ export type MxNote = {
   end_time: string | null;
   created_at: string;
   acknowledged_at: string | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
+  parts_tools_needed?: boolean;
   attachment_count?: number;
   scheduled_date?: string | null;
   assigned_van?: number | null;
@@ -712,7 +715,7 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("ops_alerts")
-    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data, scheduled_date, assigned_van")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, completed_at, completed_by, parts_tools_needed, raw_data, scheduled_date, assigned_van")
     .eq("alert_type", "MX_NOTE")
     .is("acknowledged_at", null)
     .order("created_at", { ascending: false })
@@ -743,6 +746,9 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
       acknowledged_at: row.acknowledged_at as string | null,
       scheduled_date: (row as Record<string, unknown>).scheduled_date as string | null ?? null,
       assigned_van: (row as Record<string, unknown>).assigned_van as number | null ?? null,
+      completed_at: (row as Record<string, unknown>).completed_at as string | null ?? null,
+      completed_by: (row as Record<string, unknown>).completed_by as string | null ?? null,
+      parts_tools_needed: (row as Record<string, unknown>).parts_tools_needed as boolean ?? false,
     };
   });
 }

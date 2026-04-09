@@ -269,6 +269,99 @@ function turnBadgeClass(label: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Demand Ahead — simplified heat map for van drivers
+// ---------------------------------------------------------------------------
+
+function DemandAheadSection({ flights, zoneAirport }: { flights: Flight[]; zoneAirport: string }) {
+  const [open, setOpen] = useState(false);
+
+  // Compute arrivals in the next 48h grouped by airport
+  const demandByAirport = useMemo(() => {
+    const now = Date.now();
+    const cutoff = now + 48 * 3600_000;
+    const counts = new Map<string, { count: number; tails: string[]; earliest: string }>();
+
+    for (const f of flights) {
+      if (!f.arrival_icao || !f.scheduled_arrival) continue;
+      const arrTime = new Date(f.scheduled_arrival).getTime();
+      if (arrTime < now || arrTime > cutoff) continue;
+      const airport = f.arrival_icao.replace(/^K/, "");
+      const existing = counts.get(airport);
+      if (existing) {
+        existing.count++;
+        if (f.tail_number && !existing.tails.includes(f.tail_number)) existing.tails.push(f.tail_number);
+        if (f.scheduled_arrival < existing.earliest) existing.earliest = f.scheduled_arrival;
+      } else {
+        counts.set(airport, {
+          count: 1,
+          tails: f.tail_number ? [f.tail_number] : [],
+          earliest: f.scheduled_arrival,
+        });
+      }
+    }
+
+    return [...counts.entries()]
+      .sort(([, a], [, b]) => b.count - a.count)
+      .slice(0, 10);
+  }, [flights]);
+
+  if (demandByAirport.length === 0) return null;
+
+  const homeNorm = zoneAirport.replace(/^K/, "");
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 mb-4 shadow-sm overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full text-left px-4 py-3 flex items-center justify-between min-h-[48px]"
+      >
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          📍 Demand Ahead (48h)
+        </span>
+        <span className="text-xs text-gray-400">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-3 space-y-1.5 border-t border-gray-100 dark:border-gray-700 pt-2">
+          {demandByAirport.map(([airport, data]) => {
+            const isHome = airport === homeNorm;
+            return (
+              <div
+                key={airport}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+                  isHome
+                    ? "bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800"
+                    : "bg-gray-50 dark:bg-gray-700/50"
+                }`}
+              >
+                <span className={`font-mono font-bold text-sm ${isHome ? "text-blue-700 dark:text-blue-300" : "text-gray-700 dark:text-gray-300"}`}>
+                  {airport}
+                </span>
+                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
+                  data.count >= 3 ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                    : data.count >= 2 ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                    : "bg-gray-200 text-gray-600 dark:bg-gray-600 dark:text-gray-300"
+                }`}>
+                  {data.count}
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 truncate">
+                  {data.tails.slice(0, 3).join(", ")}{data.tails.length > 3 ? `+${data.tails.length - 3}` : ""}
+                </span>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0">
+                  {new Date(data.earliest).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/New_York" })}
+                </span>
+              </div>
+            );
+          })}
+          <div className="text-[10px] text-gray-400 dark:text-gray-500 text-center pt-1">
+            Arrivals in your zone over the next 48 hours
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -672,6 +765,9 @@ export default function VanDriverClient({
         </div>
       )}
 
+      {/* Demand ahead — where aircraft are heading in the next 48h */}
+      <DemandAheadSection flights={flights} zoneAirport={zone.homeAirport} />
+
       {/* Stop list */}
       {stops.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 px-6 py-12 text-center shadow-sm">
@@ -707,28 +803,56 @@ export default function VanDriverClient({
 // Individual stop card
 // ---------------------------------------------------------------------------
 
-/** MX note card with expandable description */
+type MxAttachment = { id: number; filename: string; content_type: string; url: string };
+
+/** MX note card with expandable description and attachments */
 function MxNoteCard({ note, isMel, now, DAY, onDismiss }: {
   note: MxNote; isMel: boolean; now: number; DAY: number; onDismiss: (id: string) => void;
 }) {
   const [descOpen, setDescOpen] = useState(false);
+  const [attachments, setAttachments] = useState<MxAttachment[] | null>(null);
+  const [loadingAtt, setLoadingAtt] = useState(false);
+
+  // Load attachments when expanding
+  useEffect(() => {
+    if (descOpen && attachments === null && !loadingAtt) {
+      setLoadingAtt(true);
+      fetch(`/api/ops/mx-notes/${note.id}/attachments`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data) setAttachments(data.attachments ?? []); })
+        .catch(() => {})
+        .finally(() => setLoadingAtt(false));
+    }
+  }, [descOpen, attachments, loadingAtt, note.id]);
+
+  const isCompleted = !!note.completed_at;
+  const baseColor = isCompleted ? "green" : isMel ? "yellow" : "orange";
+
   return (
-    <div className={isMel
-      ? "bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2"
-      : "bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2"
+    <div className={
+      isCompleted
+        ? "bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-800 rounded-lg px-3 py-2"
+        : isMel
+          ? "bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2"
+          : "bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2"
     }>
       <div className="flex items-center gap-2 flex-wrap">
-        <span className={`font-bold text-xs shrink-0 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}>
-          {isMel ? "MEL" : "MX"}
+        <span className={`font-bold text-xs shrink-0 text-${baseColor}-600 dark:text-${baseColor}-400`}>
+          {isCompleted ? "✓" : isMel ? "MEL" : "MX"}
         </span>
-        <span className={`text-xs font-medium ${isMel ? "text-yellow-700 dark:text-yellow-300" : "text-orange-700 dark:text-orange-300"}`}>{note.airport_icao}</span>
+        <span className={`text-xs font-medium text-${baseColor}-700 dark:text-${baseColor}-300`}>{note.airport_icao}</span>
         <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{note.body}</span>
-        {note.description && (
+        {note.parts_tools_needed && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 font-medium shrink-0">
+            🔧 Parts
+          </span>
+        )}
+        {(note.description || (note.attachment_count ?? 0) > 0) && (
           <button
             onClick={(e) => { e.stopPropagation(); setDescOpen((v) => !v); }}
-            className={`text-xs font-medium min-h-[44px] px-2 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}
+            className={`text-xs font-medium min-h-[44px] px-2 text-${baseColor}-600 dark:text-${baseColor}-400`}
           >
-            {descOpen ? "hide" : "notes"} &#9662;
+            {descOpen ? "hide" : (note.attachment_count ?? 0) > 0 ? `${note.attachment_count} file${(note.attachment_count ?? 0) !== 1 ? "s" : ""}` : "notes"} &#9662;
           </button>
         )}
         {isMel && note.end_time && (() => {
@@ -747,9 +871,36 @@ function MxNoteCard({ note, isMel, now, DAY, onDismiss }: {
           </svg>
         </button>
       </div>
-      {descOpen && note.description && (
-        <div className="mt-1.5 text-sm text-gray-600 dark:text-gray-300 bg-white/60 dark:bg-gray-700/60 rounded px-2.5 py-1.5 whitespace-pre-wrap">
-          {note.description}
+      {descOpen && (
+        <div className="mt-1.5 space-y-2">
+          {note.description && (
+            <div className="text-sm text-gray-600 dark:text-gray-300 bg-white/60 dark:bg-gray-700/60 rounded px-2.5 py-1.5 whitespace-pre-wrap">
+              {note.description}
+            </div>
+          )}
+          {/* Attachments */}
+          {loadingAtt && <div className="text-xs text-gray-400">Loading files…</div>}
+          {attachments && attachments.length > 0 && (
+            <div className="space-y-1">
+              {attachments.map((att) => (
+                <a
+                  key={att.id}
+                  href={att.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 hover:underline bg-white/60 dark:bg-gray-700/60 rounded px-2.5 py-1.5"
+                >
+                  {att.content_type.startsWith("image/") ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={att.url} alt={att.filename} className="w-8 h-8 object-cover rounded" />
+                  ) : (
+                    <span>📎</span>
+                  )}
+                  <span className="truncate">{att.filename}</span>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {note.end_time && (

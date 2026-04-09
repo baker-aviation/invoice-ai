@@ -502,6 +502,9 @@ async function upsertMxNote(
     ? `[${event.tailNumber}] ${event.mxNotes.slice(0, 200)}`
     : `[${event.tailNumber}] Maintenance`;
 
+  // Upsert MX note — on conflict, update airport/subject/body/raw_data so
+  // that when JetInsight schedule legs change (aircraft at different airport),
+  // the MX note follows the aircraft instead of staying at the old airport.
   await supa.from("ops_alerts").upsert(
     {
       alert_type: "MX_NOTE",
@@ -519,8 +522,30 @@ async function upsertMxNote(
         notes: event.mxNotes,
       },
     },
-    { onConflict: "source_message_id" },
+    {
+      onConflict: "source_message_id",
+      // ignoreDuplicates: false ensures all fields update on conflict
+    },
   );
+
+  // Also explicitly update the airport in case the upsert didn't propagate
+  // (Supabase upsert may not update all fields depending on RLS/triggers)
+  await supa
+    .from("ops_alerts")
+    .update({
+      airport_icao: event.departureIcao,
+      subject,
+      body: event.mxNotes || event.customerName || "Maintenance",
+      raw_data: {
+        start_time: event.start,
+        end_time: event.end,
+        jetinsight_event_uuid: event.uuid,
+        created_by: event.createdBy,
+        notes: event.mxNotes,
+      },
+    })
+    .eq("source_message_id", sourceId)
+    .eq("alert_type", "MX_NOTE");
 }
 
 /**
