@@ -35,6 +35,191 @@ type PreviewData = {
   plainText: string;
 };
 
+type DirectFee = {
+  id: number;
+  airport_code: string;
+  fbo_name: string;
+  aircraft_type: string;
+  jet_a_price: number | null;
+  facility_fee: number | null;
+  gallons_to_waive: number | null;
+  security_fee: number | null;
+  overnight_fee: number | null;
+  hangar_fee: number | null;
+  gpu_fee: number | null;
+  lavatory_fee: number | null;
+  deice_fee: number | null;
+  afterhours_fee: number | null;
+  callout_fee: number | null;
+  ramp_fee: number | null;
+  landing_fee: number | null;
+  parking_info: string | null;
+  confidence: string | null;
+};
+
+const FEE_FIELDS: { key: keyof DirectFee; label: string }[] = [
+  { key: "jet_a_price", label: "Jet-A Price" },
+  { key: "facility_fee", label: "Facility Fee" },
+  { key: "gallons_to_waive", label: "Gal. to Waive" },
+  { key: "security_fee", label: "Security" },
+  { key: "overnight_fee", label: "Overnight" },
+  { key: "hangar_fee", label: "Hangar" },
+  { key: "gpu_fee", label: "GPU" },
+  { key: "lavatory_fee", label: "Lavatory" },
+  { key: "deice_fee", label: "De-ice" },
+  { key: "landing_fee", label: "Landing" },
+  { key: "afterhours_fee", label: "After Hours" },
+  { key: "callout_fee", label: "Callout" },
+];
+
+function FeeEditor({ requestId, airportCode, fboName, replyBody, replyFrom, replyDate }: {
+  requestId: number;
+  airportCode: string;
+  fboName: string;
+  replyBody: string;
+  replyFrom: string;
+  replyDate: string;
+}) {
+  const [fees, setFees] = useState<DirectFee[]>([]);
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [loadingFees, setLoadingFees] = useState(true);
+
+  useEffect(() => {
+    setLoadingFees(true);
+    fetch(`/api/fbo-fees/direct-fees?airport_code=${airportCode}&fbo_name=${encodeURIComponent(fboName)}`)
+      .then((r) => r.json())
+      .then((d) => { setFees(d.fees || []); setLoadingFees(false); })
+      .catch(() => setLoadingFees(false));
+  }, [airportCode, fboName]);
+
+  const updateField = (acType: string, field: string, value: string) => {
+    setEdits((prev) => ({
+      ...prev,
+      [acType]: { ...prev[acType], [field]: value },
+    }));
+  };
+
+  const saveFees = async (acType: string) => {
+    const changed = edits[acType];
+    if (!changed || Object.keys(changed).length === 0) return;
+
+    setSaving(acType);
+    const feeUpdates: Record<string, number | null> = {};
+    for (const [k, v] of Object.entries(changed)) {
+      feeUpdates[k] = v === "" ? null : Number(v);
+    }
+
+    try {
+      const res = await fetch("/api/fbo-fees/direct-fees", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          airport_code: airportCode,
+          fbo_name: fboName,
+          aircraft_type: acType,
+          fees: feeUpdates,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFees((prev) => prev.map((f) => (f.aircraft_type === acType ? data.updated : f)));
+        setEdits((prev) => { const n = { ...prev }; delete n[acType]; return n; });
+      }
+    } catch { /* */ }
+    finally { setSaving(null); }
+  };
+
+  // Format email body into readable paragraphs
+  const formatEmail = (text: string) => {
+    return text
+      .replace(/\s{2,}/g, "\n")
+      .replace(/([.!?])\s+/g, "$1\n")
+      .split("\n")
+      .filter((l) => l.trim())
+      .join("\n\n");
+  };
+
+  return (
+    <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50">
+      {/* Left: Email */}
+      <div className="rounded-lg border border-gray-200 bg-white p-4 max-h-[400px] overflow-y-auto">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Email Reply</span>
+          <span className="text-[10px] text-gray-400">
+            {replyFrom} &middot; {new Date(replyDate).toLocaleDateString()}
+          </span>
+        </div>
+        <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">
+          {formatEmail(replyBody)}
+        </div>
+      </div>
+
+      {/* Right: Fee fields */}
+      <div className="rounded-lg border border-gray-200 bg-white p-4 max-h-[400px] overflow-y-auto">
+        <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Parsed Fees</span>
+        {loadingFees ? (
+          <div className="text-xs text-gray-400 mt-3">Loading fees...</div>
+        ) : fees.length === 0 ? (
+          <div className="text-xs text-gray-400 mt-3">No parsed fees yet. Run the cron to parse this reply.</div>
+        ) : (
+          fees.map((fee) => (
+            <div key={fee.aircraft_type} className="mt-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold text-gray-800">{fee.aircraft_type}</span>
+                <div className="flex items-center gap-2">
+                  {fee.confidence && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                      fee.confidence === "confirmed" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                    }`}>
+                      {fee.confidence}
+                    </span>
+                  )}
+                  {edits[fee.aircraft_type] && Object.keys(edits[fee.aircraft_type]).length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => saveFees(fee.aircraft_type)}
+                      disabled={saving === fee.aircraft_type}
+                      className="text-[10px] px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {saving === fee.aircraft_type ? "Saving..." : "Save"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+                {FEE_FIELDS.map(({ key, label }) => {
+                  const editVal = edits[fee.aircraft_type]?.[key];
+                  const currentVal = editVal !== undefined ? editVal : (fee[key] != null ? String(fee[key]) : "");
+                  const isEdited = editVal !== undefined && editVal !== (fee[key] != null ? String(fee[key]) : "");
+                  return (
+                    <div key={key}>
+                      <label className="text-[9px] text-gray-400 block">{label}</label>
+                      <input
+                        type="text"
+                        value={currentVal}
+                        onChange={(e) => updateField(fee.aircraft_type, key, e.target.value)}
+                        className={`w-full text-xs px-1.5 py-1 rounded border ${
+                          isEdited ? "border-blue-400 bg-blue-50" : "border-gray-200"
+                        } focus:outline-none focus:border-blue-500`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              {fee.parking_info && (
+                <div className="mt-2 text-[10px] text-gray-500">
+                  <span className="font-medium">Parking:</span> {fee.parking_info}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function FboOutreachPage() {
@@ -259,9 +444,16 @@ export default function FboOutreachPage() {
       </div>
 
       {/* Previously sent requests */}
-      {requests.length > 0 && (
+      {requests.length > 0 && (() => {
+        const filteredRequests = debouncedSearch
+          ? requests.filter((r) =>
+              r.airport_code.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+              r.fbo_name.toLowerCase().includes(debouncedSearch.toLowerCase())
+            )
+          : requests;
+        return (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="text-sm font-semibold mb-2">Previous Requests ({requests.length})</h3>
+          <h3 className="text-sm font-semibold mb-2">Previous Requests ({filteredRequests.length})</h3>
           <div className="max-h-96 overflow-y-auto">
             <table className="text-xs w-full">
               <thead>
@@ -275,7 +467,7 @@ export default function FboOutreachPage() {
                 </tr>
               </thead>
               <tbody>
-                {requests.map((r) => (
+                {filteredRequests.map((r) => (
                   <Fragment key={r.id}>
                     <tr
                       className={`border-b border-gray-50 ${r.reply_body ? "cursor-pointer hover:bg-gray-50" : ""}`}
@@ -300,13 +492,15 @@ export default function FboOutreachPage() {
                     </tr>
                     {expandedReply === r.id && r.reply_body && (
                       <tr className="border-b border-gray-100">
-                        <td colSpan={6} className="px-4 py-3 bg-gray-50">
-                          <div className="text-[11px] text-gray-500 mb-1">
-                            From: {r.reply_from || r.fbo_email} &nbsp;·&nbsp; {r.reply_received_at ? new Date(r.reply_received_at).toLocaleString() : ""}
-                          </div>
-                          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans max-h-64 overflow-y-auto">
-                            {r.reply_body}
-                          </pre>
+                        <td colSpan={6} className="p-0">
+                          <FeeEditor
+                            requestId={r.id}
+                            airportCode={r.airport_code}
+                            fboName={r.fbo_name}
+                            replyBody={r.reply_body}
+                            replyFrom={r.reply_from || r.fbo_email}
+                            replyDate={r.reply_received_at || ""}
+                          />
                         </td>
                       </tr>
                     )}
@@ -316,7 +510,8 @@ export default function FboOutreachPage() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Select + send table */}
       <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
