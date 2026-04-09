@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { getGcsStorage } from "@/lib/gcs-upload";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,6 +82,7 @@ export async function POST(
   const to = input.to as string[];
   const cc = (input.cc as string[]) ?? [];
   const bodyText = typeof input.body === "string" ? input.body.trim() : "";
+  const includePdf = input.include_pdf === true;
 
   if (!to?.length || !to.every((a: string) => a.includes("@"))) {
     return NextResponse.json({ error: "Valid 'to' addresses required" }, { status: 400 });
@@ -120,6 +122,33 @@ export async function POST(
     .replace(/>/g, "&gt;")
     .replace(/\n/g, "<br>");
 
+  // Optionally attach the invoice PDF from GCS
+  const attachments: Array<Record<string, string>> = [];
+  if (includePdf && alert.document_id) {
+    const { data: doc } = await supa
+      .from("documents")
+      .select("id, gcs_bucket, gcs_path")
+      .eq("id", alert.document_id)
+      .single();
+
+    if (doc?.gcs_bucket && doc?.gcs_path) {
+      try {
+        const storage = getGcsStorage();
+        const [buffer] = await storage.bucket(doc.gcs_bucket as string).file(doc.gcs_path as string).download();
+        const filename = (doc.gcs_path as string).split("/").pop() || "invoice.pdf";
+        attachments.push({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          name: filename,
+          contentType: "application/pdf",
+          contentBytes: buffer.toString("base64"),
+        });
+      } catch (err) {
+        console.error("[alert-email] PDF download failed:", err);
+        // Continue without attachment rather than failing the whole email
+      }
+    }
+  }
+
   const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
   if (!mailbox) {
     return NextResponse.json({ error: "No handling mailbox configured" }, { status: 500 });
@@ -151,11 +180,9 @@ export async function POST(
       contentType: "HTML",
       content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}<br><br><span style="color:#999;font-size:11px;">Ref: ${tag}</span></div>`,
     },
-    from: {
-      emailAddress: { name: "Evan - Baker Aviation", address: mailbox },
-    },
     toRecipients: to.map((addr) => ({ emailAddress: { address: addr } })),
     ccRecipients: cc.map((addr) => ({ emailAddress: { address: addr } })),
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
 
   // If replying to existing thread, set conversationId

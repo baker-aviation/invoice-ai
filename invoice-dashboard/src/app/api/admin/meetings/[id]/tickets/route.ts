@@ -47,19 +47,20 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
 
   const sb = createServiceClient();
 
-  // Special action: accept and push to admin_tickets
+  // Special action: accept and push to admin_tickets + GitHub issue
   if (action === "accept") {
-    // Fetch the meeting ticket
-    const { data: ticket, error: ticketErr } = await sb
-      .from("meeting_tickets")
-      .select("*")
-      .eq("id", ticket_id)
-      .eq("meeting_id", id)
-      .single();
+    // Fetch the meeting ticket + meeting title
+    const [ticketResult, meetingResult] = await Promise.all([
+      sb.from("meeting_tickets").select("*").eq("id", ticket_id).eq("meeting_id", id).single(),
+      sb.from("meetings").select("id, title").eq("id", id).single(),
+    ]);
 
-    if (ticketErr || !ticket) {
+    if (ticketResult.error || !ticketResult.data) {
       return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
     }
+
+    const ticket = ticketResult.data;
+    const meetingTitle = meetingResult.data?.title || "Meeting";
 
     // Create an admin_ticket from it
     const priorityMap: Record<string, number> = {
@@ -87,13 +88,90 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx) {
       return NextResponse.json({ error: adminErr.message }, { status: 500 });
     }
 
+    // Create GitHub issue
+    let githubIssueNumber: number | null = null;
+    const githubToken = process.env.GITHUB_TOKEN;
+    if (githubToken) {
+      try {
+        const formatTime = (s: number) => {
+          const m = Math.floor(s / 60);
+          const sec = Math.floor(s % 60);
+          return `${m}:${String(sec).padStart(2, "0")}`;
+        };
+
+        const timestamps = (ticket.timestamp_secs || []) as number[];
+        const timestampStr = timestamps.length > 0
+          ? `\n\n**Referenced timestamps:** ${timestamps.map((t: number) => `\`${formatTime(t)}\``).join(", ")}`
+          : "";
+
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : "https://baker-ai-gamma.vercel.app";
+        const meetingUrl = `${appUrl}/admin?tab=super&subtab=meetings&meeting=${id}`;
+
+        const issueBody = `${ticket.description || "No description."}${timestampStr}
+
+---
+**Source:** [${meetingTitle}](${meetingUrl}) — Meeting #${id}
+**Priority:** ${ticket.priority} | **Type:** ${ticket.ticket_type.replace("_", " ")}`;
+
+        const labelMap: Record<string, string> = {
+          bug: "bug",
+          feature: "enhancement",
+          task: "enhancement",
+          action_item: "enhancement",
+          follow_up: "enhancement",
+        };
+
+        const labels = [labelMap[ticket.ticket_type] || "enhancement", "from-meeting"];
+        if (ticket.priority === "critical" || ticket.priority === "high") {
+          labels.push("priority: high");
+        }
+
+        const ghRes = await fetch("https://api.github.com/repos/baker-aviation/invoice-ai/issues", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${githubToken}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: ticket.title,
+            body: issueBody,
+            labels,
+          }),
+        });
+
+        if (ghRes.ok) {
+          const ghData = await ghRes.json();
+          githubIssueNumber = ghData.number;
+        } else {
+          console.error("GitHub issue creation failed:", ghRes.status, await ghRes.text());
+        }
+      } catch (e) {
+        console.error("GitHub issue creation error:", e);
+      }
+    }
+
     // Update meeting ticket status
+    const ticketUpdate: Record<string, unknown> = {
+      status: "accepted",
+      admin_ticket_id: adminTicket.id,
+    };
+    if (githubIssueNumber) {
+      ticketUpdate.linear_issue_id = `gh#${githubIssueNumber}`;
+    }
+
     await sb
       .from("meeting_tickets")
-      .update({ status: "accepted", admin_ticket_id: adminTicket.id })
+      .update(ticketUpdate)
       .eq("id", ticket_id);
 
-    return NextResponse.json({ ok: true, admin_ticket: adminTicket });
+    return NextResponse.json({
+      ok: true,
+      admin_ticket: adminTicket,
+      github_issue: githubIssueNumber ? `#${githubIssueNumber}` : null,
+    });
   }
 
   // Special action: reject

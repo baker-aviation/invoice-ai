@@ -96,9 +96,15 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
   const [title, setTitle] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const stepRef = useRef<Step>("idle");
+
+  const updateStep = (s: Step) => {
+    stepRef.current = s;
+    setStep(s);
+  };
 
   const reset = () => {
-    setStep("idle");
+    updateStep("idle");
     setStatusMsg("");
     setError("");
     setProgress(0);
@@ -273,7 +279,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
   // ── Server-side audio extraction ─────────────────────────────────────────
 
   const extractAudioServerSide = useCallback(async (file: File, meetingId: number): Promise<string[]> => {
-    setStep("uploading-video");
+    updateStep("uploading-video");
     setStatusMsg(`Uploading video (${(file.size / 1024 / 1024).toFixed(0)}MB)...`);
     setProgress(0);
 
@@ -305,7 +311,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
     });
 
     // Server-side FFmpeg extraction
-    setStep("extracting-server");
+    updateStep("extracting-server");
     setStatusMsg("Server is extracting audio with FFmpeg...");
     setProgress(0);
 
@@ -328,7 +334,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
 
   const uploadScreenshots = useCallback(
     async (meetingId: number, frames: Screenshot[]): Promise<void> => {
-      setStep("uploading-screenshots");
+      updateStep("uploading-screenshots");
       setStatusMsg(`Uploading ${frames.length} screenshots...`);
       setProgress(0);
 
@@ -384,7 +390,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
   // ── Transcribe audio chunks via Whisper ──────────────────────────────────
 
   const transcribeChunks = useCallback(async (gcsKeys: string[]): Promise<string> => {
-    setStep("transcribing");
+    updateStep("transcribing");
     setStatusMsg("Transcribing with Whisper...");
     setProgress(0);
 
@@ -407,8 +413,9 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
 
   const processVideo = useCallback(
     async (file: File) => {
+      let createdMeetingId: number | null = null;
       try {
-        setStep("loading");
+        updateStep("loading");
         setError("");
         setStatusMsg("Preparing...");
 
@@ -427,6 +434,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
         if (!createRes.ok) throw new Error("Failed to create meeting record");
         const { meeting } = await createRes.json();
         const meetingId = meeting.id;
+        createdMeetingId = meetingId;
 
         let videoFile = file;
 
@@ -442,7 +450,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
             body: JSON.stringify({ id: meetingId, transcript, status: "transcribed" }),
           });
 
-          setStep("done");
+          updateStep("done");
           setStatusMsg("Done! (Screenshots skipped — file too large for browser transcode)");
           onComplete(meetingId);
           return;
@@ -450,19 +458,19 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
 
         // 3. Transcode if needed
         if (needsTranscode) {
-          setStep("transcoding");
+          updateStep("transcoding");
           setProgress(0);
           videoFile = await transcodeToH264(file);
         }
 
         // 4. Extract screenshots
-        setStep("screenshots");
+        updateStep("screenshots");
         setStatusMsg(`Extracting screenshots every ${SCREENSHOT_INTERVAL} seconds...`);
         setProgress(0);
         const frames = await extractScreenshots(videoFile, SCREENSHOT_INTERVAL);
 
         // 5. Upload video to GCS
-        setStep("uploading-video");
+        updateStep("uploading-video");
         setStatusMsg("Uploading video...");
         setProgress(0);
 
@@ -496,13 +504,13 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
         await uploadScreenshots(meetingId, frames);
 
         // 7. Extract and upload audio
-        setStep("audio");
+        updateStep("audio");
         setProgress(0);
         const audioBuffer = await extractAudioClientSide(videoFile);
         setStatusMsg(`Audio decoded: ${Math.round(audioBuffer.duration)}s at ${audioBuffer.sampleRate}Hz`);
 
         const chunks = splitAudioBuffer(audioBuffer);
-        setStep("uploading");
+        updateStep("uploading");
         const gcsKeys = await uploadAudioChunksToGcs(chunks);
 
         // 8. Transcribe
@@ -515,14 +523,32 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
           body: JSON.stringify({ id: meetingId, transcript, status: "transcribed" }),
         });
 
-        setStep("done");
+        updateStep("done");
         setStatusMsg(`Done! ${frames.length} screenshots, ${gcsKeys.length} audio chunk(s) transcribed.`);
         onComplete(meetingId);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Something went wrong";
+        const failedStep = stepRef.current;
         console.error("Meeting processing error:", e);
-        setError(`${msg} (step: ${step})`);
-        setStep("error");
+        setError(`${msg} (step: ${failedStep})`);
+        updateStep("error");
+
+        // Update the meeting record so it doesn't stay stuck in "processing"
+        if (createdMeetingId) {
+          try {
+            await fetch("/api/admin/meetings", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id: createdMeetingId,
+                status: "error",
+                error_message: `${msg} (step: ${failedStep})`,
+              }),
+            });
+          } catch {
+            // best-effort
+          }
+        }
       }
     },
     [
@@ -545,7 +571,7 @@ export default function MeetingUpload({ onComplete }: { onComplete: (meetingId: 
   const handleFile = (file: File) => {
     if (!file.type.startsWith("video/")) {
       setError("Please drop a video file (.mov, .mp4, .webm)");
-      setStep("error");
+      updateStep("error");
       return;
     }
     processVideo(file);

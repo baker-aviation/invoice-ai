@@ -91,6 +91,7 @@ function DetailPanel({
   const [emailCc, setEmailCc] = useState("");
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
+  const [emailAttachPdf, setEmailAttachPdf] = useState(true);
 
   // Resolution note editing
   const [resNote, setResNote] = useState(alert.resolution_note ?? "");
@@ -144,7 +145,7 @@ function DetailPanel({
       const res = await fetch(`/api/alerts/emails/${alert.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to, cc, body: emailBody }),
+        body: JSON.stringify({ to, cc, body: emailBody, include_pdf: emailAttachPdf }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -366,20 +367,31 @@ function DetailPanel({
                 placeholder="Email body…"
                 className="w-full rounded-lg border px-3 py-2 text-sm min-h-[100px]"
               />
-              <div className="flex gap-2">
-                <button
-                  onClick={sendEmail}
-                  disabled={emailSending || !emailTo.trim() || !emailBody.trim()}
-                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-40"
-                >
-                  {emailSending ? "Sending…" : "Send Email"}
-                </button>
-                <button
-                  onClick={() => setShowEmailCompose(false)}
-                  className="px-3 py-1.5 rounded-lg border text-sm text-gray-600 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={sendEmail}
+                    disabled={emailSending || !emailTo.trim() || !emailBody.trim()}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-40"
+                  >
+                    {emailSending ? "Sending…" : "Send Email"}
+                  </button>
+                  <button
+                    onClick={() => setShowEmailCompose(false)}
+                    className="px-3 py-1.5 rounded-lg border text-sm text-gray-600 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer ml-auto">
+                  <input
+                    type="checkbox"
+                    checked={emailAttachPdf}
+                    onChange={(e) => setEmailAttachPdf(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Attach invoice PDF
+                </label>
               </div>
             </div>
           )}

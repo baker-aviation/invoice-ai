@@ -85,7 +85,7 @@ export default function MeetingsTab() {
         >
           <span>&larr;</span> Back to Meetings
         </button>
-        <MeetingDetail meetingId={selectedId} />
+        <MeetingDetail meetingId={selectedId} onDelete={() => { setView("list"); fetchMeetings(); }} />
       </div>
     );
   }
@@ -139,6 +139,7 @@ export default function MeetingsTab() {
                 <th className="px-4 py-3 font-medium">Screenshots</th>
                 <th className="px-4 py-3 font-medium">Tickets</th>
                 <th className="px-4 py-3 font-medium">Date</th>
+                <th className="px-4 py-3 font-medium"></th>
               </tr>
             </thead>
             <tbody>
@@ -155,6 +156,20 @@ export default function MeetingsTab() {
                   <td className="px-4 py-3 text-zinc-400">{m.ticket_count}</td>
                   <td className="px-4 py-3 text-zinc-500">
                     {new Date(m.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Delete "${m.title}"?`)) return;
+                        fetch(`/api/admin/meetings?id=${m.id}`, { method: "DELETE" }).then((res) => {
+                          if (res.ok) fetchMeetings();
+                        });
+                      }}
+                      className="text-xs text-red-400 hover:text-red-300 hover:bg-red-900/30 px-2 py-1 rounded transition-colors"
+                    >
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
