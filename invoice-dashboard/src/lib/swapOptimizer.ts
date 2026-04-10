@@ -4726,6 +4726,8 @@ function runFeedbackLoop(params: {
   const swaps: TwoPassStats["feedback_loop_swaps"] = [];
   const warnings: string[] = [];
   const MAX_ITERATIONS = 5;
+  const MAX_FEEDBACK_MS = 30_000; // 30 second hard cap to avoid timeout
+  const feedbackStart = Date.now();
   let totalNewSolved = 0;
 
   // Group flights by tail
@@ -4754,6 +4756,12 @@ function runFeedbackLoop(params: {
   }
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    // Time guard — don't let feedback loop eat into the 5-min API timeout
+    if (Date.now() - feedbackStart > MAX_FEEDBACK_MS) {
+      console.log(`[FeedbackLoop] Time limit reached (${MAX_FEEDBACK_MS}ms) after ${iter} iteration(s) — stopping`);
+      break;
+    }
+
     // Find unsolved oncoming slots
     const unsolvedSlots: { tail: string; field: "oncoming_pic" | "oncoming_sic"; role: "PIC" | "SIC" }[] = [];
     for (const [tail, sa] of Object.entries(assignments)) {

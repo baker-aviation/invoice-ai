@@ -66,6 +66,11 @@ function fmtTime(iso: string): string {
   return m === "00" ? `${h}${ampm}` : `${h}:${m}${ampm}`;
 }
 
+function fmtShortDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: DISPLAY_TZ });
+}
+
 function fmtDayHeader(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
@@ -568,8 +573,9 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
                   </div>
                 </div>
                 {n.description && <div className="text-orange-700 mt-0.5">{n.description}</div>}
-                <div className="text-orange-500 mt-0.5 flex gap-2">
+                <div className="text-orange-500 mt-0.5 flex gap-2 flex-wrap">
                   {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
+                  {n.start_time && <span>{fmtShortDate(n.start_time)} {fmtTime(n.start_time)}{n.end_time ? ` - ${fmtTime(n.end_time)}` : ""}</span>}
                   {daysLeft !== null && <span className={daysLeft <= 3 ? "text-red-600 font-bold" : ""}>{daysLeft}d left</span>}
                 </div>
               </div>
@@ -610,9 +616,10 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, 
                 </div>
               </div>
               {n.body && n.body !== n.subject && <div className={`mt-0.5 whitespace-pre-wrap ${n.completed_at ? "text-green-700" : "text-amber-700"}`}>{n.body}</div>}
-              <div className={`mt-0.5 flex gap-2 ${n.completed_at ? "text-green-500" : "text-amber-500"}`}>
+              <div className={`mt-0.5 flex gap-2 flex-wrap ${n.completed_at ? "text-green-500" : "text-amber-500"}`}>
                 {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
-                {n.start_time && <span>{fmtTime(n.start_time)}{n.end_time ? ` - ${fmtTime(n.end_time)}` : ""}</span>}
+                {n.start_time && <span>{fmtShortDate(n.start_time)} {fmtTime(n.start_time)}{n.end_time ? ` - ${fmtTime(n.end_time)}` : ""}</span>}
+                {!n.start_time && n.created_at && <span>{fmtShortDate(n.created_at)}</span>}
                 {n.assigned_van && <span>V{n.assigned_van}</span>}
               </div>
             </div>
@@ -635,26 +642,104 @@ function InlineCreateMx({ tail, onSubmit }: {
   onSubmit: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"mx" | "mel">("mx");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [airport, setAirport] = useState("");
+  const [melCategory, setMelCategory] = useState<"A" | "B" | "C" | "D">("B");
+  const [melRef, setMelRef] = useState("");
+  const [melCreating, setMelCreating] = useState(false);
+
+  const reset = () => {
+    setSubject(""); setBody(""); setAirport(""); setMelRef(""); setMelCategory("B"); setOpen(false); setMode("mx");
+  };
+
+  const createMel = async () => {
+    if (!subject.trim()) return;
+    setMelCreating(true);
+    try {
+      const res = await fetch("/api/ops/mel-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tail_number: tail,
+          category: melCategory,
+          mel_reference: melRef.trim() || undefined,
+          description: subject.trim() + (body.trim() ? `\n${body.trim()}` : ""),
+        }),
+      });
+      if (res.ok) {
+        // Also create an MX note so it shows on the Gantt
+        onSubmit({
+          subject: `MEL ${melCategory} — ${subject.trim()}`,
+          body: `${melRef.trim() ? `Ref: ${melRef.trim()}\n` : ""}${body.trim()}`.trim() || undefined,
+          tail_number: tail,
+          airport_icao: airport.trim() || undefined,
+        });
+        reset();
+      }
+    } finally {
+      setMelCreating(false);
+    }
+  };
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="w-full mt-2 py-1.5 rounded border border-dashed border-gray-300 text-gray-400 hover:border-red-300 hover:text-red-500 text-[10px] font-medium transition-colors"
-      >
-        + Add MX Note
-      </button>
+      <div className="flex gap-2 mt-2">
+        <button
+          onClick={() => { setOpen(true); setMode("mx"); }}
+          className="flex-1 py-1.5 rounded border border-dashed border-gray-300 text-gray-400 hover:border-red-300 hover:text-red-500 text-[10px] font-medium transition-colors"
+        >
+          + Add MX Note
+        </button>
+        <button
+          onClick={() => { setOpen(true); setMode("mel"); }}
+          className="flex-1 py-1.5 rounded border border-dashed border-gray-300 text-gray-400 hover:border-orange-300 hover:text-orange-500 text-[10px] font-medium transition-colors"
+        >
+          + Add MEL
+        </button>
+      </div>
     );
   }
 
+  const isMel = mode === "mel";
+  const accent = isMel ? "orange" : "red";
+
   return (
-    <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 space-y-1.5">
+    <div className={`mt-2 rounded border border-${accent}-200 bg-${accent}-50 p-2 space-y-1.5`}>
+      {/* Mode toggle */}
+      <div className="flex gap-1 mb-1">
+        <button onClick={() => setMode("mx")} className={`px-2 py-0.5 rounded text-[10px] font-medium ${!isMel ? "bg-red-500 text-white" : "bg-white text-gray-500 border border-gray-200"}`}>MX Note</button>
+        <button onClick={() => setMode("mel")} className={`px-2 py-0.5 rounded text-[10px] font-medium ${isMel ? "bg-orange-500 text-white" : "bg-white text-gray-500 border border-gray-200"}`}>MEL</button>
+      </div>
+
+      {isMel && (
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <label className="text-[9px] text-gray-500 font-medium">Category</label>
+            <div className="flex gap-1 mt-0.5">
+              {(["A", "B", "C", "D"] as const).map((c) => (
+                <button key={c} onClick={() => setMelCategory(c)}
+                  className={`px-2 py-1 rounded text-[10px] font-bold ${melCategory === c ? "bg-orange-500 text-white" : "bg-white border border-gray-200 text-gray-600"}`}
+                >{c}</button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1">
+            <label className="text-[9px] text-gray-500 font-medium">MEL Reference</label>
+            <input
+              placeholder="e.g. 34-1-1"
+              value={melRef}
+              onChange={(e) => setMelRef(e.target.value)}
+              className="w-full mt-0.5 px-2 py-1 border border-gray-200 rounded text-xs font-mono bg-white"
+            />
+          </div>
+        </div>
+      )}
+
       <input
         autoFocus
-        placeholder="Subject (required)"
+        placeholder={isMel ? "Description (required)" : "Subject (required)"}
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
         className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs bg-white"
@@ -674,21 +759,25 @@ function InlineCreateMx({ tail, onSubmit }: {
       />
       <div className="flex gap-2">
         <button
-          disabled={!subject.trim()}
+          disabled={!subject.trim() || melCreating}
           onClick={() => {
-            onSubmit({
-              subject: subject.trim(),
-              body: body.trim() || undefined,
-              tail_number: tail,
-              airport_icao: airport.trim() || undefined,
-            });
-            setSubject(""); setBody(""); setAirport(""); setOpen(false);
+            if (isMel) {
+              createMel();
+            } else {
+              onSubmit({
+                subject: subject.trim(),
+                body: body.trim() || undefined,
+                tail_number: tail,
+                airport_icao: airport.trim() || undefined,
+              });
+              reset();
+            }
           }}
-          className="px-3 py-1.5 rounded bg-red-500 text-white text-[10px] font-medium disabled:opacity-40 hover:bg-red-600"
+          className={`px-3 py-1.5 rounded bg-${accent}-500 text-white text-[10px] font-medium disabled:opacity-40 hover:bg-${accent}-600`}
         >
-          Create
+          {melCreating ? "Creating..." : isMel ? "Create MEL" : "Create"}
         </button>
-        <button onClick={() => setOpen(false)} className="px-3 py-1.5 rounded border border-gray-200 text-[10px] hover:bg-gray-50 bg-white">
+        <button onClick={reset} className="px-3 py-1.5 rounded border border-gray-200 text-[10px] hover:bg-gray-50 bg-white">
           Cancel
         </button>
       </div>
