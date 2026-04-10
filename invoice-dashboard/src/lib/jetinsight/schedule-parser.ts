@@ -3,6 +3,9 @@
  * Extracts structured data from the FullCalendar event format.
  */
 
+import { toIcao } from "@/lib/iataToIcao";
+import { isInternationalIcao } from "@/lib/intlUtils";
+
 export interface ScheduleEvent {
   uuid: string;
   eventType: "flight" | "maintenance" | "other";
@@ -73,6 +76,17 @@ export function parseScheduleJson(
     const depIcao = normalizeIcao(ep.origin_short as string | undefined);
     const arrIcao = normalizeIcao(ep.destination_short as string | undefined);
     if (!depIcao || !arrIcao) continue;
+
+    // Cross-check: if JetInsight flags this as international but our ICAO
+    // mapping thinks both airports are domestic, log a warning so we can
+    // add the missing mapping. This catches gaps in the IATA→ICAO table.
+    const jiSaysIntl = (ep.international_leg as boolean) ?? false;
+    if (jiSaysIntl && !isInternationalIcao(depIcao) && !isInternationalIcao(arrIcao)) {
+      console.warn(
+        `[schedule-parser] ICAO mapping gap: JetInsight says international but both airports look domestic: ` +
+        `${ep.origin_short}→${depIcao}, ${ep.destination_short}→${arrIcao} (tail=${tailNumber})`,
+      );
+    }
 
     // Parse crew
     const crewArr = (ep.crew ?? []) as Array<{
@@ -171,26 +185,10 @@ function extractTailNumber(aircraft: string | undefined): string | null {
 
 /**
  * Normalize airport code to ICAO format.
- * JetInsight uses FAA codes (TEB) for US airports and ICAO (CYYZ) for international.
- * We add the K prefix for US airports.
+ * Uses the comprehensive IATA→ICAO lookup table which handles international
+ * airports (NAS→MYNN, CUN→MMUN, etc.) instead of blindly prepending K.
  */
 function normalizeIcao(code: string | undefined): string | null {
   if (!code) return null;
-  const upper = code.trim().toUpperCase();
-  if (!upper) return null;
-
-  // Already ICAO format (4 chars starting with known prefixes)
-  if (
-    upper.length === 4 &&
-    /^[BCDEFGHKLMNOPRSTUVWYZ]/.test(upper)
-  ) {
-    return upper;
-  }
-
-  // 3-letter US FAA code → add K prefix
-  if (upper.length === 3 && /^[A-Z]{3}$/.test(upper)) {
-    return `K${upper}`;
-  }
-
-  return upper;
+  return toIcao(code);
 }
