@@ -278,42 +278,8 @@ function turnBadgeClass(label: string): string {
 // Demand Ahead — simplified heat map for van drivers
 // ---------------------------------------------------------------------------
 
-function DemandAheadSection({ flights, zoneAirport }: { flights: Flight[]; zoneAirport: string }) {
+function DemandAheadSection({ flights, zoneLat, zoneLon }: { flights: Flight[]; zoneLat: number; zoneLon: number }) {
   const [open, setOpen] = useState(false);
-
-  // Compute arrivals in the next 48h grouped by airport
-  const demandByAirport = useMemo(() => {
-    const now = Date.now();
-    const cutoff = now + 48 * 3600_000;
-    const counts = new Map<string, { count: number; tails: string[]; earliest: string }>();
-
-    for (const f of flights) {
-      if (!f.arrival_icao || !f.scheduled_arrival) continue;
-      const arrTime = new Date(f.scheduled_arrival).getTime();
-      if (arrTime < now || arrTime > cutoff) continue;
-      const airport = f.arrival_icao.replace(/^K/, "");
-      const existing = counts.get(airport);
-      if (existing) {
-        existing.count++;
-        if (f.tail_number && !existing.tails.includes(f.tail_number)) existing.tails.push(f.tail_number);
-        if (f.scheduled_arrival < existing.earliest) existing.earliest = f.scheduled_arrival;
-      } else {
-        counts.set(airport, {
-          count: 1,
-          tails: f.tail_number ? [f.tail_number] : [],
-          earliest: f.scheduled_arrival,
-        });
-      }
-    }
-
-    return [...counts.entries()]
-      .sort(([, a], [, b]) => b.count - a.count)
-      .slice(0, 10);
-  }, [flights]);
-
-  if (demandByAirport.length === 0) return null;
-
-  const homeNorm = zoneAirport.replace(/^K/, "");
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 mb-4 shadow-sm overflow-hidden">
@@ -322,53 +288,18 @@ function DemandAheadSection({ flights, zoneAirport }: { flights: Flight[]; zoneA
         className="w-full text-left px-4 py-3 flex items-center justify-between min-h-[48px]"
       >
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          📍 Demand Ahead (48h)
+          Demand Map
         </span>
         <span className="text-xs text-gray-400">{open ? "▲" : "▼"}</span>
       </button>
       {open && (
-        <div className="px-4 pb-3 space-y-1.5 border-t border-gray-100 dark:border-gray-700 pt-2">
-          {demandByAirport.map(([airport, data]) => {
-            const isHome = airport === homeNorm;
-            return (
-              <div
-                key={airport}
-                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
-                  isHome
-                    ? "bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800"
-                    : "bg-gray-50 dark:bg-gray-700/50"
-                }`}
-              >
-                <span className={`font-mono font-bold text-sm ${isHome ? "text-blue-700 dark:text-blue-300" : "text-gray-700 dark:text-gray-300"}`}>
-                  {airport}
-                </span>
-                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-                  data.count >= 3 ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
-                    : data.count >= 2 ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
-                    : "bg-gray-200 text-gray-600 dark:bg-gray-600 dark:text-gray-300"
-                }`}>
-                  {data.count}
-                </span>
-                <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 truncate">
-                  {data.tails.slice(0, 3).join(", ")}{data.tails.length > 3 ? `+${data.tails.length - 3}` : ""}
-                </span>
-                <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0">
-                  {new Date(data.earliest).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/New_York" })}
-                </span>
-              </div>
-            );
-          })}
-          <div className="text-[10px] text-gray-400 dark:text-gray-500 text-center pt-1">
-            Arrivals in your zone over the next 48 hours
-          </div>
-
-          {/* Interactive heat map */}
-          <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700" style={{ height: 300 }}>
-            <HeatMapView
-              flights={flights}
-              liveVanPositions={new Map()}
-            />
-          </div>
+        <div className="border-t border-gray-100 dark:border-gray-700" style={{ height: 400 }}>
+          <HeatMapView
+            flights={flights}
+            liveVanPositions={new Map()}
+            initialCenter={[zoneLat, zoneLon]}
+            initialZoom={7}
+          />
         </div>
       )}
     </div>
@@ -388,7 +319,6 @@ export default function VanDriverClient({
   syntheticFlights,
   mxNotes,
   fboMap,
-  fboHoursMap,
   airportOverrides,
   flightOverrides,
   removals,
@@ -402,7 +332,6 @@ export default function VanDriverClient({
   syntheticFlights?: { id: string; tail: string; airport: string | null }[];
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
-  fboHoursMap?: Record<string, { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null }>;
   airportOverrides?: [string, string][];
   flightOverrides?: [string, number][];
   removals?: string[];
@@ -413,12 +342,6 @@ export default function VanDriverClient({
     if (!fboMap || !f.tail_number || !f.arrival_icao) return null;
     return fboMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
   }, [fboMap]);
-
-  /** Look up FBO hours info for a flight */
-  const lookupFboHours = useCallback((f: Flight): { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null } | null => {
-    if (!fboHoursMap || !f.tail_number || !f.arrival_icao) return null;
-    return fboHoursMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
-  }, [fboHoursMap]);
 
   const date = todayEtDate();
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
@@ -780,7 +703,7 @@ export default function VanDriverClient({
       )}
 
       {/* Demand ahead — where aircraft are heading in the next 48h */}
-      <DemandAheadSection flights={flights} zoneAirport={zone.homeAirport} />
+      <DemandAheadSection flights={flights} zoneLat={zone.lat} zoneLon={zone.lon} />
 
       {/* Stop list */}
       {stops.length === 0 ? (
@@ -804,7 +727,6 @@ export default function VanDriverClient({
               dismissedMxIds={dismissedMxIds}
               onDismissMx={dismissMxNote}
               fbo={lookupFbo(item.arrFlight)}
-              fboHours={lookupFboHours(item.arrFlight)}
             />
           ))}
         </div>
@@ -1015,7 +937,6 @@ function StopCard({
   dismissedMxIds,
   onDismissMx,
   fbo,
-  fboHours,
 }: {
   item: VanFlightItem;
   index: number;
@@ -1026,7 +947,6 @@ function StopCard({
   dismissedMxIds: Set<string>;
   onDismissMx: (id: string) => void;
   fbo: string | null;
-  fboHours: { hours: string; is24hr: boolean; phone: string; openMinutes: number | null; closeMinutes: number | null } | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const tail = item.arrFlight.tail_number ?? "TBD";
@@ -1052,27 +972,6 @@ function StopCard({
     if (isNext && !prevIsNext.current) setExpanded(true);
     prevIsNext.current = isNext;
   }, [isNext]);
-
-  // FBO open/closed detection at arrival time (with 1hr buffer)
-  const FBO_BUFFER = 60;
-  const fboClosedAtArrival = (() => {
-    if (!fboHours || fboHours.is24hr) return false;
-    if (fboHours.openMinutes == null || fboHours.closeMinutes == null) return false;
-    const arrIso = effectiveArr ?? item.arrFlight.scheduled_arrival;
-    if (!arrIso) return false;
-    const arrDate = new Date(arrIso);
-    const tz = "America/New_York"; // FBO hours are typically in local time; ET as safe default
-    const localStr = arrDate.toLocaleString("en-US", { hour: "numeric", minute: "numeric", hour12: false, timeZone: tz });
-    const [h, m] = localStr.split(":").map(Number);
-    const minuteOfDay = h * 60 + m;
-    const bufferedOpen = fboHours.openMinutes + FBO_BUFFER;
-    const bufferedClose = fboHours.closeMinutes - FBO_BUFFER;
-    // Handle overnight hours (e.g. open=360, close=30 means 6AM-12:30AM)
-    if (fboHours.closeMinutes <= fboHours.openMinutes) {
-      return !(minuteOfDay >= bufferedOpen || minuteOfDay < bufferedClose);
-    }
-    return minuteOfDay < bufferedOpen || minuteOfDay >= bufferedClose;
-  })();
 
   const navUrl = fbo && item.airportInfo
     ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(fbo + " " + (item.airportInfo.name ?? item.airport))}`
@@ -1148,26 +1047,11 @@ function StopCard({
                 &middot; {fbo}
               </span>
             )}
-            {fboHours && !fboHours.is24hr && (
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                ({fboHours.hours})
-              </span>
-            )}
-            {fboClosedAtArrival && (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                FBO CLOSED
-              </span>
-            )}
           </div>
           {item.airportInfo && (
             <span className="text-xs text-gray-400 dark:text-gray-500">
               {item.airportInfo.name}
             </span>
-          )}
-          {fboHours?.phone && fboClosedAtArrival && (
-            <a href={`tel:${fboHours.phone}`} className="text-xs text-blue-600 dark:text-blue-400 underline">
-              Call FBO: {fboHours.phone}
-            </a>
           )}
         </div>
 
@@ -1227,7 +1111,7 @@ function StopCard({
             if (n.scheduled_date === todayStr) return true;
             const startDate = n.start_time ? toEtDate(n.start_time) : null;
             const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
-            if (!startDate && !endDate) return false; // no dates = skip (stale)
+            if (!startDate && !endDate) return true;
             if (startDate && startDate > todayStr) return false; // future
             if (endDate && endDate < todayStr) return false; // past
             return true;

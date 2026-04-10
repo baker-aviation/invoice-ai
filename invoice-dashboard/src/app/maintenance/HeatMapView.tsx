@@ -228,15 +228,17 @@ type Props = {
   flights: Flight[];
   liveVanPositions: Map<number, LivePos>;
   liveVanIsLive?: Map<number, boolean>;
+  initialCenter?: [number, number];
+  initialZoom?: number;
 };
 
-export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }: Props) {
+export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive, initialCenter, initialZoom }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
   const [windowHours, setWindowHours] = useState<number>(24);
 
   const [eodOnly, setEodOnly] = useState(false);
-  const [includeRepo, setIncludeRepo] = useState(false);
+  const [includeRepo, setIncludeRepo] = useState(!!initialCenter);
 
   const { prefs, toggle: togglePref } = useMapPreferences("heatmap", {
     dark: false,
@@ -404,8 +406,8 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
       {/* Map */}
       <div className="rounded-xl overflow-hidden shadow-md border border-gray-200" style={{ height: isFs ? "100vh" : 600 }}>
         <MapContainer
-          center={[37.5, -96]}
-          zoom={4}
+          center={initialCenter ?? [37.5, -96]}
+          zoom={initialZoom ?? 4}
           style={{ height: "100%", width: "100%" }}
           zoomControl={true}
         >
