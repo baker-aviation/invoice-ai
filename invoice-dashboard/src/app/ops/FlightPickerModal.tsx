@@ -460,7 +460,7 @@ export default function FlightPickerModal({
                 Commercial Flights ({flights.length})
               </div>
               {flights.map((opt, i) => (
-                <OptionRow key={`f-${i}`} opt={opt} onSelect={handleSelect} direction={direction} />
+                <OptionRow key={`f-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
               ))}
             </div>
           )}
@@ -471,7 +471,7 @@ export default function FlightPickerModal({
                 Ground Transport ({ground.length})
               </div>
               {ground.map((opt, i) => (
-                <OptionRow key={`g-${i}`} opt={opt} onSelect={handleSelect} direction={direction} />
+                <OptionRow key={`g-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
               ))}
             </div>
           )}
@@ -542,13 +542,20 @@ function OptionRow({
   opt,
   onSelect,
   direction,
+  swapDate,
 }: {
   opt: TransportOption;
   onSelect: (opt: TransportOption) => void;
   direction: "oncoming" | "offgoing";
+  swapDate?: string;
 }) {
   const f = opt.feasibility;
   const allOk = f.duty_ok && f.fbo_buffer_ok && f.midnight_ok;
+
+  // Detect if this flight departs on a different day than the swap date
+  const depDateStr = opt.depart_at?.slice(0, 10) ?? "";
+  const isOtherDay = swapDate && depDateStr && depDateStr !== swapDate;
+  const dayBadge = opt._dateLabel?.trim() || (isOtherDay ? fmtDateShort(depDateStr) : null);
 
   return (
     <button
@@ -578,9 +585,15 @@ function OptionRow({
               {opt.origin_iata}&rarr;{opt.destination_iata}
             </span>
           )}
+          {/* Day badge — show prominently when flight is NOT on swap day */}
+          {dayBadge && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-indigo-100 text-indigo-700">
+              {dayBadge}
+            </span>
+          )}
           {opt._isLive && (
             <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 font-bold">
-              LIVE{opt._dateLabel ?? ""}
+              LIVE
             </span>
           )}
           {opt.has_backup && opt.backup_flight && (
