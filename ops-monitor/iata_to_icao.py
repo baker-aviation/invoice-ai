@@ -1026,7 +1026,13 @@ def to_icao(code: str | None) -> str | None:
         return None
     upper = code.strip().upper()
     if len(upper) == 4:
-        return upper  # Already ICAO
+        # Check for mis-K-prefixed international airports (e.g. KSJU should be TJSJ).
+        # JetInsight sometimes sends K+IATA for non-US airports.
+        if upper.startswith("K"):
+            iata3 = upper[1:]
+            if iata3 in IATA_TO_ICAO:
+                return IATA_TO_ICAO[iata3]
+        return upper
     if upper in IATA_TO_ICAO:
         return IATA_TO_ICAO[upper]
     # US domestic: 3-letter IATA → K + IATA

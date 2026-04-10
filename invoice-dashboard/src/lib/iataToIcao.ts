@@ -282,7 +282,15 @@ const IATA_TO_ICAO: Record<string, string> = {
 export function toIcao(code: string | null | undefined): string | null {
   if (!code) return null;
   const upper = code.toUpperCase().trim();
-  if (upper.length === 4) return upper; // Already ICAO
+  if (upper.length === 4) {
+    // Check for mis-K-prefixed international airports (e.g. KSJU should be TJSJ).
+    // JetInsight sometimes sends K+IATA for non-US airports.
+    if (upper.startsWith("K")) {
+      const iata3 = upper.slice(1);
+      if (IATA_TO_ICAO[iata3]) return IATA_TO_ICAO[iata3];
+    }
+    return upper;
+  }
   if (IATA_TO_ICAO[upper]) return IATA_TO_ICAO[upper];
   // US domestic: 3-letter IATA → "K" + IATA
   if (upper.length === 3 && /^[A-Z]{3}$/.test(upper)) return `K${upper}`;
