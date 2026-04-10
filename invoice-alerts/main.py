@@ -624,8 +624,19 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
         # from each creating a separate alert for the same line item.
         claimed_line_items: Set[str] = set()
 
+        # The "Fee Overcharge" rule is evaluated exclusively by the
+        # TypeScript check-overcharges route (compares charged vs published
+        # FBO rates).  Skip it here so the Python runner doesn't match every
+        # invoice with zero filter criteria.
+        TS_ONLY_RULE_IDS = {
+            "3ed2d1a9-7fb1-4a5a-9fba-5b4e7ae41dd8",  # Fee Overcharge
+        }
+
         for rule in rules:
             if not _is_rule_enabled(rule):
+                continue
+
+            if rule.get("id") in TS_ONLY_RULE_IDS:
                 continue
 
             evaluated += 1
