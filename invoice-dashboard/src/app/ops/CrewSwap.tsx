@@ -1082,8 +1082,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   return (
     <div className="space-y-3 p-3">
       {tails.map(([tail, tailRows]) => {
-        const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
-        const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+        // Hide oncoming crew with NO TRANSPORT whose warnings say UNSOLVABLE —
+        // they were assigned by the optimizer but transport planner confirmed no viable route.
+        // Show them as unassigned so user knows to manually handle.
+        const isUnsolvable = (r: CrewSwapRow | undefined) =>
+          r && r.travel_type === "none" && !r.name.startsWith("[UNASSIGNED") && r.warnings.some((w) => w.includes("UNSOLVABLE"));
+        const onPicRaw = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+        const onSicRaw = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+        const onPic = isUnsolvable(onPicRaw) ? undefined : onPicRaw;
+        const onSic = isUnsolvable(onSicRaw) ? undefined : onSicRaw;
         const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
         const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
         // Use actual aircraft type from ics_sources (tail → type), fall back to crew type
@@ -1263,11 +1270,17 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                   {crewIsConfirmed ? "\u2713" : ""}
                 </button>
               )}
-              <span className={`text-[10px] font-bold uppercase ${color} w-14 shrink-0`}>{label}</span>
+              <span className={`text-[10px] font-bold uppercase ${color} w-10 shrink-0`}>{label}</span>
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium text-gray-900 whitespace-nowrap">{row.name}</span>
-                  <DutyDayTag row={row} />
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-sm font-semibold text-gray-900">{row.name}</span>
+                  {row.is_day_before ? (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700" title={row.crew_rest_hours != null ? `${row.crew_rest_hours}hr crew rest` : ""}>
+                      DAY BEFORE{row.crew_rest_hours != null ? ` · ${row.crew_rest_hours}hr rest` : ""}
+                    </span>
+                  ) : (
+                    <DutyDayTag row={row} />
+                  )}
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
                   {/* Per-crew swap point — show if different from tail swap point or if multiple available */}
                   {row.swap_location && (() => {
@@ -1397,44 +1410,48 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     );
                   })()}
                 </div>
-                <div className="flex items-center gap-3 mt-0.5">
+                <div className="flex items-center gap-2 mt-1 text-xs">
+                  {/* Transport type badge */}
                   {row.travel_type === "commercial" && row.flight_number ? (
-                    <span className="font-mono text-[11px] text-blue-700 font-medium">{row.flight_number}</span>
+                    <span className="font-mono text-blue-700 font-semibold">{row.flight_number}</span>
                   ) : row.travel_type === "uber" ? (
-                    <span className="font-mono text-[11px] text-violet-700 font-medium">UBER</span>
+                    <span className="font-mono text-violet-700 font-semibold">UBER</span>
                   ) : row.travel_type === "rental_car" ? (
-                    <span className="font-mono text-[11px] text-orange-700 font-medium">RENTAL</span>
+                    <span className="font-mono text-orange-700 font-semibold">RENTAL</span>
                   ) : row.travel_type === "drive" ? (
-                    <span className="font-mono text-[11px] text-amber-700 font-medium">DRIVE</span>
+                    <span className="font-mono text-amber-700 font-semibold">DRIVE</span>
                   ) : (
-                    <span className="text-[11px] text-red-500 font-medium">NO TRANSPORT</span>
+                    <span className="text-red-500 font-semibold">NO TRANSPORT</span>
                   )}
+                  {/* Departure → Arrival times */}
                   {row.departure_time && (
-                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.swap_location)}</span>
+                    <span className="text-gray-500">dep {fmtShortTime(row.departure_time, row.swap_location)}</span>
                   )}
                   {(row.available_time ?? row.arrival_time) && (
                     onArrivalOverride && (row.travel_type === "uber" || row.travel_type === "rental_car" || row.travel_type === "drive") ? (
-                      <span className="text-[11px] text-gray-500 flex items-center gap-1">
-                        {row.direction === "oncoming" ? "avail" : "arr"}
+                      <span className="text-gray-500 flex items-center gap-1">
+                        avail
                         <input
                           type="time"
-                          className={`border border-gray-300 rounded px-0.5 py-0 text-[11px] w-[4.8rem] focus:ring-1 focus:ring-blue-400 focus:border-blue-400 ${rowLocked ? "opacity-50 cursor-not-allowed bg-gray-100" : ""}`}
+                          className={`border border-gray-300 rounded px-1 py-0.5 text-xs w-20 focus:ring-1 focus:ring-blue-400 ${rowLocked ? "opacity-50 cursor-not-allowed bg-gray-100" : ""}`}
                           defaultValue={(() => { const d = new Date((row.available_time ?? row.arrival_time)!); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })()}
                           disabled={rowLocked}
                           onBlur={(e) => onArrivalOverride(row.tail_number, row.role, row.direction, e.target.value)}
                         />
                       </span>
                     ) : (
-                    <span className="text-[11px] text-gray-500">
-                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.swap_location)}
-                    </span>
+                      <span className="text-gray-500">
+                        {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.swap_location)}
+                      </span>
                     )
                   )}
+                  {/* Cost */}
                   {row.cost_estimate != null && (
-                    <span className="text-[11px] text-gray-400">${row.cost_estimate}</span>
+                    <span className="text-gray-400 font-medium">${row.cost_estimate}</span>
                   )}
+                  {/* Backup flight */}
                   {row.backup_flight && (
-                    <span className="text-[10px] text-blue-400">backup: {row.backup_flight}</span>
+                    <span className="text-blue-400 text-[10px]">backup: {row.backup_flight}</span>
                   )}
                 </div>
               </div>
@@ -1757,10 +1774,19 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       const isLive = tag.label === "REV" || tag.label === "OWN";
                       // All times in swap point timezone for consistency
                       const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
+                      // Show day label when the local display time is on a different calendar day
+                      // (catches overnight legs stored as UTC that appear as prior-day local time)
+                      const depDate = f.scheduled_departure ? new Date(f.scheduled_departure) : null;
+                      const swapDateStr = selectedDate?.toISOString().slice(0, 10) ?? "";
+                      const localDepDay = depDate ? depDate.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
+                      const swapDay = selectedDate ? selectedDate.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() : null;
+                      const isOtherDay = localDepDay && swapDay && localDepDay !== swapDay;
+                      const dayLabel = isOtherDay ? localDepDay : null;
                       return (
-                        <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""}`}>
+                        <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""} ${isOtherDay ? "opacity-50" : ""}`}>
                           {i > 0 && <span className="text-gray-300 mx-1">|</span>}
                           {isNewLeg && <span className="text-[8px] font-bold text-yellow-700">NEW</span>}
+                          {dayLabel && <span className="text-[8px] font-bold text-indigo-500 mr-0.5">{dayLabel}</span>}
                           <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{depIata}</span>
                           <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, swapIcao)}</span>
                           <span className="text-gray-300">{"\u2192"}</span>

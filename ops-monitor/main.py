@@ -300,11 +300,18 @@ def _check_fbo_mismatch_alerts(supa, now) -> int:
     Check for FBO mismatches between consecutive legs on the same tail at the same airport.
     (Arrival FBO != next departure FBO at the connecting airport.)
     Returns count of alerts created/updated.
+
+    Full rebuild each run: deletes all existing FBO_MISMATCH alerts first, then
+    creates only currently-valid ones.  This prevents stale alerts from persisting
+    when schedules change (e.g. a tail's leg is removed but the old alert remains
+    attached to a different flight's ID).
     """
     alerts: List[Dict[str, Any]] = []
 
     try:
-        cutoff = (now - timedelta(hours=6)).isoformat()
+        # 48h lookback so overnight connections aren't missed (arrival leg
+        # may be many hours before the next departure at the same airport)
+        cutoff = (now - timedelta(hours=48)).isoformat()
         lookahead = (now + timedelta(days=30)).isoformat()
         rows = supa.table(FLIGHTS_TABLE).select(
             "id, ics_uid, tail_number, departure_icao, arrival_icao, "
@@ -315,11 +322,18 @@ def _check_fbo_mismatch_alerts(supa, now) -> int:
         print(f"fbo_mismatch: fetch error: {repr(e)}", flush=True)
         return 0
 
-    # Group by tail, sort by departure
+    # Group by tail, sort by departure — skip dummy/placeholder rows
+    # (owner holds, FBO notes, etc.) that have NULL on BOTH FBO fields,
+    # so they don't break the consecutive-leg chain.
     by_tail: Dict[str, list] = {}
     for f in flights:
         tail = (f.get("tail_number") or "").upper()
         if not tail:
+            continue
+        # Skip rows where both FBOs are empty — these are placeholders that
+        # would break consecutive-leg comparison (e.g. "Non preferred FBO" notes
+        # encoded as fake flight rows in JetInsight)
+        if not (f.get("origin_fbo") or "").strip() and not (f.get("destination_fbo") or "").strip():
             continue
         by_tail.setdefault(tail, []).append(f)
 
@@ -352,6 +366,17 @@ def _check_fbo_mismatch_alerts(supa, now) -> int:
                 "source_message_id": source_id,
                 "created_at": _utc_now(),
             })
+
+    # ── Full rebuild: wipe stale alerts, then insert fresh ones ──
+    try:
+        del_res = supa.table(OPS_ALERTS_TABLE).delete().eq(
+            "alert_type", "FBO_MISMATCH"
+        ).execute()
+        deleted = len(del_res.data or [])
+        if deleted:
+            print(f"fbo_mismatch: cleared {deleted} stale alerts", flush=True)
+    except Exception as e:
+        print(f"fbo_mismatch: delete error (non-fatal): {repr(e)}", flush=True)
 
     if not alerts:
         return 0

@@ -4335,6 +4335,71 @@ export function twoPassAssignAndOptimize(params: {
     finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
   }
 
+  // ── Cleanup: clear assignments where transport planner found no viable route,
+  // OR where crew arrives after the aircraft departs their swap airport ──────
+  // The feasibility matrix may have marked crew as viable, but buildSwapPlan's
+  // stricter timing checks (swap point retry, FBO arrival buffer) rejected them.
+  // Also catches after_live assignments where crew arrives too late for subsequent legs.
+  // Clear these so they show as properly unassigned and the feedback loop can try.
+
+  // Build a map of earliest departure from each swap airport per tail
+  const byTailForCleanup = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!byTailForCleanup.has(f.tail_number)) byTailForCleanup.set(f.tail_number, []);
+    byTailForCleanup.get(f.tail_number)!.push(f);
+  }
+
+  const unsolvableRows = finalResult.rows.filter((r) => {
+    if (r.direction !== "oncoming" || r.name.startsWith("[UNASSIGNED")) return false;
+    // Case 1: no transport found
+    if (r.travel_type === "none") return true;
+    // Case 2: crew arrives after the aircraft departs their swap airport
+    const availTime = r.available_time ?? r.arrival_time;
+    if (!availTime || !r.swap_location) return false;
+    const availMs = new Date(availTime).getTime();
+    const swapIcao = r.swap_location.length === 3 ? `K${r.swap_location}` : r.swap_location;
+    const tailLegs = byTailForCleanup.get(r.tail_number) ?? [];
+    const wedStr = swapDate;
+    // Find earliest departure from swap airport on swap day (skip overnight legs before 6am)
+    const depsFromSwap = tailLegs
+      .filter((f) => f.departure_icao === swapIcao && f.scheduled_departure?.startsWith(wedStr))
+      .map((f) => new Date(f.scheduled_departure).getTime())
+      .filter((t) => new Date(t).getUTCHours() >= 6 || new Date(t).getHours() >= 6)
+      .sort((a, b) => a - b);
+    if (depsFromSwap.length > 0 && availMs > depsFromSwap[0]) {
+      return true; // crew arrives after aircraft departs
+    }
+    return false;
+  });
+  if (unsolvableRows.length > 0) {
+    for (const row of unsolvableRows) {
+      const sa = finalAssignments[row.tail_number];
+      if (!sa) continue;
+      const field = row.role === "PIC" ? "oncoming_pic" : "oncoming_sic";
+      if (sa[field] === row.name) {
+        console.log(`[Cleanup] Clearing unsolvable ${row.role} ${row.name} from ${row.tail_number} — transport planner found no viable route`);
+        sa[field] = null;
+      }
+    }
+    // Rebuild final result with cleared assignments
+    finalResult = buildSwapPlan({
+      flights, crewRoster, aliases, swapDate, commercialFlights,
+      swapAssignments: finalAssignments,
+      oncomingPool: fullPool,
+      strategy: "offgoing_first",
+    });
+    // Re-add warnings
+    for (const v of volunteersUsed) {
+      const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+      finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
+    }
+    for (const s of pass3StandbyUsed) {
+      finalResult.warnings.push(`${s.name} (${s.role}) pulled from standby for ${s.tail} [relaxed constraints]`);
+    }
+    console.log(`[Cleanup] Cleared ${unsolvableRows.length} unsolvable assignments — rebuilt plan`);
+  }
+
   // ── Pass 4: Feedback Loop — iterative reassignment for unsolved tails ────
   // If tails remain unsolved, try stealing assigned crew (especially hub crew
   // with easy Uber assignments) to solve harder tails, as long as the vacated
@@ -5310,16 +5375,29 @@ export function solveOffgoingFirst(params: {
       for (const c of task.candidates) {
         c.score = scoreCandidate(c, task, null);
       }
-      // Pick the candidate with the LATEST fboLeaveTime — maximizes the oncoming window.
-      // Previously we picked the best-scored (earliest departure), creating impossibly
-      // tight deadlines like 8:45am that no oncoming crew can meet. The offgoing crew
-      // takes a later flight home, giving oncoming all day to arrive.
       const viableCandidates = task.candidates.filter((c) => c.type !== "none");
-      viableCandidates.sort((a, b) => {
-        const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? 0;
-        const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? 0;
-        return bLeave - aLeave; // latest first
-      });
+
+      // Offgoing departure strategy depends on whether the aircraft is LEAVING or STAYING:
+      // - before_live / between_legs: aircraft departs, offgoing doesn't need to stay.
+      //   Pick earliest reasonable flight AFTER the aircraft departs (crew gets home sooner).
+      // - after_live / idle: aircraft stays at swap point, someone must be there.
+      //   Pick latest viable flight to maximize oncoming handoff window.
+      const aircraftLeaving = swapPoint.position === "before_live" || swapPoint.position === "between_legs";
+      if (aircraftLeaving) {
+        // Sort by earliest departure — get offgoing home ASAP after aircraft leaves
+        viableCandidates.sort((a, b) => {
+          const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? Infinity;
+          const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? Infinity;
+          return aLeave - bLeave; // earliest first
+        });
+      } else {
+        // Sort by latest departure — maximize oncoming arrival window
+        viableCandidates.sort((a, b) => {
+          const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? 0;
+          const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? 0;
+          return bLeave - aLeave; // latest first
+        });
+      }
       task.best = viableCandidates[0] ?? task.candidates[0] ?? null;
 
       const best = task.best;

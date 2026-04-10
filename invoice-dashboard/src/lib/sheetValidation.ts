@@ -169,10 +169,10 @@ export function validateRawSheetData(rows: unknown[][], sheetName: string): Vali
       // Check if it looks like it's trying to be a crew entry (has content in other columns)
       const hasOtherData = row.slice(3, 11).some((v) => v != null && String(v).trim() !== "");
       if (hasOtherData) {
-        errors.push({
-          severity: "error",
+        warnings.push({
+          severity: "warning",
           field: "crew_cell",
-          message: `Row ${rowNum}: crew cell "${col2.slice(0, 50)}" is not parseable — expected format: "Name (Airport/Airport)"`,
+          message: `Row ${rowNum}: crew cell "${col2.slice(0, 50)}" is not parseable — expected "Name (Airport/Airport)" — row skipped`,
           row: rowNum,
           subject: col2.slice(0, 30),
         });
