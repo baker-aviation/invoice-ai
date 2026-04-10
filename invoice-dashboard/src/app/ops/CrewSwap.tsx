@@ -4895,7 +4895,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {(() => {
         const totalNeeded = (gapAlerts as { totalNeeded?: number } | null)?.totalNeeded ?? 0;
         const alreadyCached = (gapAlerts as { alreadyCached?: number } | null)?.alreadyCached ?? 0;
-        const coveragePct = totalNeeded > 0 ? Math.round((alreadyCached / totalNeeded) * 100) : (routeStatus && routeStatus.total_routes > 0 ? 100 : 0);
+        const coveragePct = totalNeeded > 0 ? Math.min(100, Math.round((alreadyCached / totalNeeded) * 100)) : (routeStatus && routeStatus.total_routes > 0 ? 100 : 0);
         const hasGaps = gapAlerts && (gapAlerts.newAirports.length > 0 || gapAlerts.missingPairs > 0);
         const lastSeeded = routeStatus?.last_computed;
         const seededAgo = lastSeeded ? Math.round((Date.now() - new Date(lastSeeded).getTime()) / 60000) : null;
@@ -5670,7 +5670,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             {routeStatus && routeStatus.total_routes > 0 && (() => {
               const totalNeeded = (gapAlerts as { totalNeeded?: number } | null)?.totalNeeded ?? 0;
               const alreadyCached = (gapAlerts as { alreadyCached?: number } | null)?.alreadyCached ?? 0;
-              const pct = totalNeeded > 0 ? Math.round((alreadyCached / totalNeeded) * 100) : 100;
+              const pct = totalNeeded > 0 ? Math.min(100, Math.round((alreadyCached / totalNeeded) * 100)) : 100;
               const pctColor = pct >= 90 ? "text-green-600 bg-green-50" : pct >= 50 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
               const timeStr = routeStatus.last_computed
                 ? new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })

@@ -387,6 +387,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   TBPB: [13.0746, -59.4925],   // Barbados
   TVSA: [13.1444, -61.2110],   // St. Vincent
   TVSM: [12.5884, -61.1502],   // Mustique (St. Vincent & Grenadines)
+  TXKF: [32.3640, -64.6787],   // L.F. Wade Intl, Bermuda
   MROC: [9.9939, -84.2088],    // San Jose, Costa Rica
   MRLB: [10.5933, -85.5444],   // Liberia, Costa Rica
   MPTO: [9.0714, -79.3835],    // Panama City (Tocumen)
@@ -569,6 +570,7 @@ const COMMERCIAL_AIRPORTS = new Set([
   "CYQA", // Muskoka
   "TIST", // St. Thomas, USVI
   "TJSJ", // San Juan, PR
+  "TXKF", // Bermuda
   // Caribbean / Latin America
   "TLPL", // St Lucia Hewanorra
   "MMSL", // Mazatlán
