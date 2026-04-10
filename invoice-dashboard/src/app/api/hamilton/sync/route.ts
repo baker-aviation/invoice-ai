@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { syncDeclines } from "@/lib/hamilton/scraper";
 
+export const maxDuration = 120;
+
 /**
  * POST /api/hamilton/sync — Manually trigger a Hamilton decline sync
  *
- * Body: { dateFrom?: string } — YYYY-MM-DD, defaults to 30 days ago
+ * Body: { dateFrom?: string } — YYYY-MM-DD, defaults to 7 days ago
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -16,11 +18,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     dateFrom =
       body.dateFrom ??
-      new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
         .toISOString()
         .split("T")[0];
   } catch {
-    dateFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    dateFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
       .toISOString()
       .split("T")[0];
   }
