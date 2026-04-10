@@ -6222,10 +6222,49 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         {/* Unacknowledged alerts */}
         {swapAlerts.filter((a) => !a.acknowledged).length > 0 ? (
           <div className="divide-y">
-            {swapAlerts.filter((a) => !a.acknowledged).map((a) => (
+            {swapAlerts.filter((a) => !a.acknowledged).map((a) => {
+              // Parse the stored JSON values for human-readable display
+              const parseVal = (v: unknown): Record<string, string> | null => {
+                if (!v) return null;
+                try { return typeof v === "string" ? JSON.parse(v) : v as Record<string, string>; } catch { return null; }
+              };
+              const oldVal = parseVal(a.old_value);
+              const newVal = parseVal(a.new_value);
+              const icaoToIata = (icao: string) => icao?.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+              const fmtDt = (iso: string) => {
+                if (!iso) return "";
+                const d = new Date(iso);
+                return d.toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+              };
+
+              let description = "";
+              if (a.change_type === "added" && newVal) {
+                const dep = icaoToIata(newVal.departure_icao ?? "");
+                const arr = icaoToIata(newVal.arrival_icao ?? "");
+                const time = fmtDt(newVal.scheduled_departure ?? "");
+                description = `${dep} → ${arr}  ${time}`;
+              } else if (a.change_type === "cancelled" && oldVal) {
+                const dep = icaoToIata(oldVal.departure_icao ?? "");
+                const arr = icaoToIata(oldVal.arrival_icao ?? "");
+                description = `${dep} → ${arr} removed`;
+              } else if (a.change_type === "time_change" && oldVal && newVal) {
+                const dep = icaoToIata(newVal.departure_icao ?? oldVal.departure_icao ?? "");
+                const arr = icaoToIata(newVal.arrival_icao ?? oldVal.arrival_icao ?? "");
+                const oldTime = fmtDt(oldVal.scheduled_departure ?? "");
+                const newTime = fmtDt(newVal.scheduled_departure ?? "");
+                description = `${dep} → ${arr}  ${oldTime} → ${newTime}`;
+              } else if (a.change_type === "airport_change" && oldVal && newVal) {
+                const oldDep = icaoToIata(oldVal.departure_icao ?? "");
+                const newDep = icaoToIata(newVal.departure_icao ?? "");
+                const oldArr = icaoToIata(oldVal.arrival_icao ?? "");
+                const newArr = icaoToIata(newVal.arrival_icao ?? "");
+                description = oldDep !== newDep ? `dep ${oldDep} → ${newDep}` : `arr ${oldArr} → ${newArr}`;
+              }
+
+              return (
               <div key={a.id} className="px-4 py-3 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold shrink-0 ${
                     a.change_type === "cancelled" ? "bg-red-100 text-red-700"
                     : a.change_type === "time_change" ? "bg-amber-100 text-amber-700"
                     : a.change_type === "airport_change" ? "bg-red-100 text-red-700"
@@ -6234,21 +6273,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     {a.change_type.replace("_", " ")}
                   </span>
                   <span className="font-mono font-bold text-sm text-gray-900">{a.tail_number}</span>
-                  <span className="text-xs text-gray-500">
-                    {a.new_value && typeof a.new_value === "object" && JSON.stringify(a.new_value).slice(0, 100)}
-                  </span>
-                  <span className="text-[10px] text-gray-400">
-                    {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
+                  <span className="text-xs text-gray-700">{description}</span>
+                  <span className="text-[10px] text-gray-400 shrink-0">
+                    detected {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                   </span>
                 </div>
                 <button
                   onClick={() => acknowledgeAlert(a.id)}
-                  className="px-2.5 py-1 text-xs rounded bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  className="px-2.5 py-1 text-xs rounded bg-gray-100 text-gray-600 hover:bg-gray-200 shrink-0"
                 >
                   Acknowledge
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="px-4 py-8 text-center text-sm text-gray-400">
@@ -6311,14 +6349,18 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     </button>
                   </div>
                 </div>
-                <div className="space-y-0.5 ml-16">
-                  {imp.affected_crew.map((c, ci) => (
-                    <div key={ci} className="text-xs text-gray-700">
-                      <span className="font-medium">{c.name}</span>
-                      <span className="text-gray-400 mx-1">({c.role} {c.direction})</span>
-                      <span>{c.detail}</span>
-                    </div>
-                  ))}
+                <div className="ml-16">
+                  {/* Show the detail once (it's usually the same for all crew on a tail) */}
+                  {(() => {
+                    const uniqueDetails = [...new Set(imp.affected_crew.map((c) => c.detail))];
+                    const crewNames = imp.affected_crew.map((c) => `${c.name} (${c.role} ${c.direction})`);
+                    return (
+                      <>
+                        <div className="text-xs text-gray-700 mb-1">{uniqueDetails.join(" | ")}</div>
+                        <div className="text-[10px] text-gray-400">Affects: {crewNames.join(", ")}</div>
+                      </>
+                    );
+                  })()}
                 </div>
                 {/* Suggestions */}
                 {imp.suggestions && imp.suggestions.length > 0 && (
