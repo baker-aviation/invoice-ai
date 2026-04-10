@@ -136,11 +136,13 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
   const inserts: Array<Record<string, unknown>> = [];
   const matchedFlightIds = new Set<string>(); // Track which existing flights are still in JSON feed
+  const seenMxSourceIds = new Set<string>(); // Track MX notes still in JSON feed
 
   for (const event of events) {
     if (event.eventType === "maintenance") {
       try {
         await upsertMxNote(supa, event);
+        seenMxSourceIds.add(`mx-json-${event.uuid}`);
         result.mxNotesUpserted++;
       } catch (err) {
         result.errors.push(
@@ -289,6 +291,44 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
       result.errors.push(`Cancel cleanup: ${delErr.message}`);
     } else {
       result.flightsCancelled = staleIds.length;
+    }
+  }
+
+  // Clean up stale MX notes: JetInsight-created MX notes whose events no longer
+  // appear in the feed. Only remove notes with "mx-json-" source IDs (not manually
+  // created ones). Also clean up old-format duplicates ("mx-" without "json-").
+  if (seenMxSourceIds.size > 0) {
+    const { data: existingMxNotes } = await supa
+      .from("ops_alerts")
+      .select("id, source_message_id")
+      .eq("alert_type", "MX_NOTE")
+      .like("source_message_id", "mx-json-%")
+      .is("acknowledged_at", null);
+
+    if (existingMxNotes) {
+      const staleMxIds = existingMxNotes
+        .filter((n) => n.source_message_id && !seenMxSourceIds.has(n.source_message_id))
+        .map((n) => n.id);
+
+      if (staleMxIds.length > 0) {
+        await supa.from("ops_alerts").delete().in("id", staleMxIds);
+        result.errors.push(`Cleaned ${staleMxIds.length} stale JI MX notes`);
+      }
+    }
+
+    // Also clean up old-format duplicates (mx-{uuid-no-hyphens} that overlap with mx-json-{uuid})
+    const { data: oldFormatNotes } = await supa
+      .from("ops_alerts")
+      .select("id, source_message_id")
+      .eq("alert_type", "MX_NOTE")
+      .like("source_message_id", "mx-%")
+      .not("source_message_id", "like", "mx-json-%")
+      .is("acknowledged_at", null);
+
+    if (oldFormatNotes && oldFormatNotes.length > 0) {
+      const oldIds = oldFormatNotes.map((n) => n.id);
+      await supa.from("ops_alerts").delete().in("id", oldIds);
+      result.errors.push(`Cleaned ${oldIds.length} old-format MX duplicates`);
     }
   }
 
