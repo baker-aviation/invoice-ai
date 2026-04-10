@@ -500,7 +500,7 @@ export default function FlightPickerModal({
                         isSwapDay ? "bg-blue-50/50 text-blue-600" : "bg-indigo-50/50 text-indigo-600"
                       }`}>
                         <span>{dayLabel} — {dayFlights.length} flight{dayFlights.length !== 1 ? "s" : ""}</span>
-                        {!isSwapDay && <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">{isSwapDay ? "SWAP DAY" : "DAY BEFORE"}</span>}
+                        {!isSwapDay && <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">{dateKey < swapDate ? "DAY BEFORE" : "DAY AFTER"}</span>}
                       </summary>
                       {dayFlights.map((opt, i) => (
                         <OptionRow key={`f-${dateKey}-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
