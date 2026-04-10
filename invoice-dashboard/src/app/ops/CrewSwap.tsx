@@ -5667,15 +5667,22 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             )}
           </div>
           <div className="flex items-center gap-2">
-            {routeStatus && routeStatus.total_routes > 0 && (
-              <span className={`text-[10px] px-2 py-0.5 rounded ${
-                routeStatus.is_stale ? "bg-amber-50 text-amber-600" : "bg-green-50 text-green-600"
-              }`}>
-                {routeStatus.total_routes} routes cached
-                {routeStatus.last_computed && ` (${new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })})`}
-                {routeStatus.is_stale && " — stale"}
-              </span>
-            )}
+            {routeStatus && routeStatus.total_routes > 0 && (() => {
+              const totalNeeded = (gapAlerts as { totalNeeded?: number } | null)?.totalNeeded ?? 0;
+              const alreadyCached = (gapAlerts as { alreadyCached?: number } | null)?.alreadyCached ?? 0;
+              const pct = totalNeeded > 0 ? Math.round((alreadyCached / totalNeeded) * 100) : 100;
+              const pctColor = pct >= 90 ? "text-green-600 bg-green-50" : pct >= 50 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
+              const timeStr = routeStatus.last_computed
+                ? new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
+                : "";
+              return (
+                <span className={`text-[10px] px-2 py-0.5 rounded ${pctColor} inline-flex items-center gap-1.5`}>
+                  <span className="font-bold">{totalNeeded > 0 ? `${pct}%` : routeStatus.total_routes.toLocaleString()}</span>
+                  <span>cached{timeStr ? ` (${timeStr})` : ""}</span>
+                  {routeStatus.is_stale && <span className="font-bold">· stale</span>}
+                </span>
+              );
+            })()}
             {/* Load FREEZE button (also on Plan tab for visibility) */}
             {freezeTabs.length > 0 && (
               <div className="relative">
