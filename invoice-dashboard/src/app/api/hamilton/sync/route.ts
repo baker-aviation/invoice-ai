@@ -27,7 +27,27 @@ export async function POST(req: NextRequest) {
       .split("T")[0];
   }
 
+  const test = new URL(req.url).searchParams.get("test");
+
   try {
+    if (test) {
+      const { fetchDeclinedTrips } = await import("@/lib/hamilton/scraper");
+      const { trips, total, sessionExpired } = await fetchDeclinedTrips(dateFrom, 1);
+      return NextResponse.json({
+        test: true,
+        sessionExpired,
+        total,
+        firstTrip: trips[0]
+          ? {
+              id: trips[0].id,
+              displayCode: trips[0].displayCode,
+              salesAgentId: trips[0].salesAgentId,
+              lowestPrice: trips[0].lowestPrice,
+            }
+          : null,
+      });
+    }
+
     const result = await syncDeclines(dateFrom);
     return NextResponse.json(result);
   } catch (err: unknown) {

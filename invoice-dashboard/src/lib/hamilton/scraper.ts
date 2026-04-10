@@ -121,7 +121,7 @@ function buildDeclineUrl(
 
 export async function fetchDeclinedTrips(
   departureDateFrom?: string,
-  maxPages: number = 5,
+  maxPages: number = 1,
 ): Promise<{ trips: HamiltonTrip[]; total: number; sessionExpired: boolean }> {
   const cookie = await getSessionCookie();
   if (!cookie) {
