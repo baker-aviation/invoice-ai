@@ -59,7 +59,7 @@
     },
     {
       "path": "/api/cron/hiring-sheet-sync",
-      "schedule": "0 */6 * * *"
+      "schedule": "*/30 * * * *"
     },
     {
       "path": "/api/cron/tail-summary",
