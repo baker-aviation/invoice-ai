@@ -3352,7 +3352,16 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       if (res.ok) {
         const data = await res.json();
         setSavedPlanMeta({ id: data.id, version: data.version, created_at: data.created_at });
-        addToast("success", `Plan saved (v${data.version})`);
+        // Auto-acknowledge all existing alerts — the plan was built with these flights,
+        // so they're already accounted for. Only NEW alerts after this point matter.
+        const dateStr = selectedDate.toISOString().slice(0, 10);
+        await fetch("/api/crew/swap-alerts", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ swap_date: dateStr, acknowledge_all: true }),
+        });
+        await loadAlerts();
+        addToast("success", `Plan saved (v${data.version}) — existing alerts acknowledged`);
       } else {
         addToast("error", "Failed to save plan");
       }
