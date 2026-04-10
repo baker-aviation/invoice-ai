@@ -6219,10 +6219,48 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </button>
         </div>
 
-        {/* Unacknowledged alerts */}
+        {/* Unacknowledged alerts — grouped by tail + change_type + route to deduplicate */}
         {swapAlerts.filter((a) => !a.acknowledged).length > 0 ? (
           <div className="divide-y">
-            {swapAlerts.filter((a) => !a.acknowledged).map((a) => {
+            {/* Acknowledge All button */}
+            <div className="px-4 py-2 bg-gray-50/50 flex justify-end">
+              <button
+                onClick={async () => {
+                  const dateStr = selectedDate.toISOString().slice(0, 10);
+                  await fetch("/api/crew/swap-alerts", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ swap_date: dateStr, acknowledge_all: true }),
+                  });
+                  await loadAlerts();
+                  addToast("success", "All alerts acknowledged");
+                }}
+                className="px-3 py-1 text-[10px] rounded bg-gray-200 text-gray-600 hover:bg-gray-300 font-medium"
+              >
+                Acknowledge All ({swapAlerts.filter((a) => !a.acknowledged).length})
+              </button>
+            </div>
+            {/* Group alerts: same tail + change_type + route → show once with count */}
+            {(() => {
+              const unacked = swapAlerts.filter((a) => !a.acknowledged);
+              const groups = new Map<string, typeof unacked>();
+              for (const a of unacked) {
+                const parseVal = (v: unknown): Record<string, string> | null => {
+                  if (!v) return null;
+                  try { return typeof v === "string" ? JSON.parse(v) : v as Record<string, string>; } catch { return null; }
+                };
+                const nv = parseVal(a.new_value);
+                const route = nv ? `${nv.departure_icao ?? ""}-${nv.arrival_icao ?? ""}` : "";
+                const key = `${a.tail_number}|${a.change_type}|${route}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key)!.push(a);
+              }
+              return Array.from(groups.values()).map((group) => {
+                const a = group[0]; // most recent (already sorted desc)
+                const count = group.length;
+                return { ...a, _count: count, _groupIds: group.map((g) => g.id) };
+              });
+            })().map((a) => {
               // Parse the stored JSON values for human-readable display
               const parseVal = (v: unknown): Record<string, string> | null => {
                 if (!v) return null;
@@ -6274,15 +6312,23 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   </span>
                   <span className="font-mono font-bold text-sm text-gray-900">{a.tail_number}</span>
                   <span className="text-xs text-gray-700">{description}</span>
+                  {(a as unknown as { _count: number })._count > 1 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-500 font-medium">
+                      {(a as unknown as { _count: number })._count}x
+                    </span>
+                  )}
                   <span className="text-[10px] text-gray-400 shrink-0">
                     detected {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                   </span>
                 </div>
                 <button
-                  onClick={() => acknowledgeAlert(a.id)}
+                  onClick={async () => {
+                    const ids = (a as unknown as { _groupIds: string[] })._groupIds ?? [a.id];
+                    for (const id of ids) await acknowledgeAlert(id);
+                  }}
                   className="px-2.5 py-1 text-xs rounded bg-gray-100 text-gray-600 hover:bg-gray-200 shrink-0"
                 >
-                  Acknowledge
+                  Acknowledge{(a as unknown as { _count: number })._count > 1 ? ` (${(a as unknown as { _count: number })._count})` : ""}
                 </button>
               </div>
               );
