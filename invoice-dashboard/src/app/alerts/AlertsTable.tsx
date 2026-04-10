@@ -941,27 +941,12 @@ export default function AlertsTable({
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Badge variant={slackBadgeVariant(a.slack_status)}>
-                            {String(a.slack_status ?? "pending")}
-                          </Badge>
-                          {shareState !== "success" && (
-                            <button
-                              onClick={() => shareOne(a.id)}
-                              disabled={shareState === "loading"}
-                              title="Send to Slack"
-                              className="text-xs px-1.5 py-1 rounded border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40"
-                            >
-                              {shareState === "loading" ? "…" : "→ Slack"}
-                            </button>
-                          )}
-                          <Link
-                            className="text-xs text-blue-600 hover:underline"
-                            href={`/invoices/${a.document_id}?from=alerts`}
-                          >
-                            Invoice
-                          </Link>
-                        </div>
+                        <Link
+                          className="text-xs text-blue-600 hover:underline"
+                          href={`/invoices/${a.document_id}?from=alerts`}
+                        >
+                          Invoice
+                        </Link>
                       </td>
                     </tr>
 
