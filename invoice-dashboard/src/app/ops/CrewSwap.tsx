@@ -77,6 +77,9 @@ type RosterUploadResult = {
 type RouteStatus = {
   swap_date: string;
   total_routes: number;
+  total_offers?: number;
+  pairs_with_flights?: number;
+  pairs_with_direct?: number;
   crew_count: number;
   destination_count: number;
   last_computed: string | null;
@@ -2208,7 +2211,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
           icao: a.icao as string, iata: a.iata as string, suggested: (a.suggested_alias_iata as string) ?? null, suggestedIcao: (a.suggested_alias as string) ?? null, distance: (a.distance_miles as number) ?? null, flights: a.appears_in_flights as number,
         }));
-        setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
+        setGapAlerts({
+          newAirports,
+          missingPairs: d.cache?.missing_pairs?.length ?? 0,
+          totalNeeded: d.cache?.total_needed ?? 0,
+          alreadyCached: d.cache?.already_cached ?? 0,
+        });
       })
       .catch(() => {});
   }, [selectedDate]);
@@ -4883,75 +4891,125 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         )}
       </div>
 
-      {/* Gap Detection Alerts */}
-      {gapAlerts && (gapAlerts.newAirports.length > 0 || gapAlerts.missingPairs > 0) && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">Coverage Gaps Detected</span>
-          </div>
-          {gapAlerts.newAirports.length > 0 && (
-            <div className="text-xs text-amber-700 space-y-1">
-              <div className="font-medium">New airports with no commercial alias ({gapAlerts.newAirports.length}):</div>
-              {gapAlerts.newAirports.map(a => (
-                <div key={a.icao} className="flex items-center gap-2 ml-2">
-                  <span className="font-mono font-bold">{a.iata}</span>
-                  <span className="text-amber-500">({a.flights} flights)</span>
-                  {addedAliases.has(a.icao) ? (
-                    <span className="text-green-600 font-medium">&#10003; Added</span>
-                  ) : a.suggested ? (
-                    <>
-                      <span className="text-amber-600">suggested: <span className="font-mono font-bold">{a.suggested}</span> ({a.distance}mi)</span>
-                      <button
-                        onClick={() => handleAddAlias(a.icao, a.suggested!, a.suggestedIcao)}
-                        disabled={addingAlias === a.icao}
-                        className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
-                      >
-                        {addingAlias === a.icao ? "..." : "Add"}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="text-red-600">no nearby commercial airport found</span>
-                      <input
-                        type="text"
-                        placeholder="IATA"
-                        maxLength={4}
-                        className="w-12 text-[9px] px-1 py-0.5 border rounded font-mono uppercase"
-                        value={manualAliasInputs[a.icao] ?? ""}
-                        onChange={e => setManualAliasInputs(prev => ({ ...prev, [a.icao]: e.target.value.toUpperCase() }))}
-                      />
-                      <button
-                        onClick={() => {
-                          const val = (manualAliasInputs[a.icao] ?? "").trim();
-                          if (val.length >= 2) handleAddAlias(a.icao, val);
-                        }}
-                        disabled={addingAlias === a.icao || !(manualAliasInputs[a.icao]?.trim()?.length >= 2)}
-                        className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
-                      >
-                        {addingAlias === a.icao ? "..." : "Add"}
-                      </button>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {gapAlerts.missingPairs > 0 && (
-            <div className="flex items-center gap-3 text-xs text-amber-700">
-              <span><span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedDate.toISOString().slice(0, 10)}.</span>
+      {/* Flight Cache Status */}
+      {(() => {
+        const totalNeeded = (gapAlerts as { totalNeeded?: number } | null)?.totalNeeded ?? 0;
+        const alreadyCached = (gapAlerts as { alreadyCached?: number } | null)?.alreadyCached ?? 0;
+        const coveragePct = totalNeeded > 0 ? Math.round((alreadyCached / totalNeeded) * 100) : (routeStatus && routeStatus.total_routes > 0 ? 100 : 0);
+        const hasGaps = gapAlerts && (gapAlerts.newAirports.length > 0 || gapAlerts.missingPairs > 0);
+        const lastSeeded = routeStatus?.last_computed;
+        const seededAgo = lastSeeded ? Math.round((Date.now() - new Date(lastSeeded).getTime()) / 60000) : null;
+        const seededAgoStr = seededAgo != null ? (seededAgo < 60 ? `${seededAgo}min ago` : `${Math.round(seededAgo / 60)}h ago`) : "never";
+        const barColor = coveragePct >= 90 ? "bg-green-500" : coveragePct >= 50 ? "bg-amber-500" : "bg-red-500";
+        const borderColor = coveragePct >= 90 ? "border-green-200" : coveragePct >= 50 ? "border-amber-200" : "border-red-200";
+
+        return (
+          <div className={`rounded-lg border ${borderColor} bg-white shadow-sm overflow-hidden`}>
+            <div className="px-4 py-3 flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">Flight Cache</span>
               <button
                 onClick={computeRoutes}
                 disabled={computingRoutes || seedingFlights}
-                className={`px-3 py-1 rounded-md font-medium whitespace-nowrap ${
-                  computingRoutes || seedingFlights ? "bg-gray-200 text-gray-400" : "bg-amber-600 text-white hover:bg-amber-700"
+                className={`px-3 py-1 text-xs rounded font-medium ${
+                  computingRoutes || seedingFlights ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200"
                 }`}
               >
-                {computingRoutes || seedingFlights ? "Computing..." : "Compute Routes Now"}
+                {computingRoutes || seedingFlights ? "Seeding..." : "Seed Routes"}
               </button>
             </div>
-          )}
-        </div>
-      )}
+
+            <div className="px-4 pb-3 space-y-2">
+              {/* Progress bar */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={`h-full ${barColor} rounded-full transition-all`} style={{ width: `${Math.min(coveragePct, 100)}%` }} />
+                </div>
+                <span className={`text-sm font-bold ${coveragePct >= 90 ? "text-green-700" : coveragePct >= 50 ? "text-amber-700" : "text-red-700"}`}>
+                  {coveragePct}%
+                </span>
+              </div>
+
+              {/* Summary */}
+              <div className="text-xs text-gray-500">
+                {totalNeeded > 0 ? (
+                  <span>{alreadyCached.toLocaleString()}/{totalNeeded.toLocaleString()} pairs cached</span>
+                ) : routeStatus ? (
+                  <span>{routeStatus.total_routes.toLocaleString()} pairs cached</span>
+                ) : (
+                  <span>Checking cache...</span>
+                )}
+                {routeStatus?.pairs_with_flights != null && (
+                  <span className="mx-1">·</span>
+                )}
+                {routeStatus?.pairs_with_flights != null && (
+                  <span>{routeStatus.pairs_with_flights.toLocaleString()} with flights</span>
+                )}
+                <span className="mx-1">·</span>
+                <span>Seeded {seededAgoStr}</span>
+              </div>
+
+              {/* Decision helper */}
+              <div className={`text-xs font-medium ${
+                coveragePct >= 95 ? "text-green-700" : coveragePct >= 80 ? "text-amber-700" : "text-red-700"
+              }`}>
+                {coveragePct >= 95 ? "Cache complete — ready to optimize"
+                  : coveragePct >= 80 ? `Good enough to optimize, ${gapAlerts?.missingPairs ?? 0} routes missing`
+                  : coveragePct > 0 ? "Seed routes before optimizing for best results"
+                  : "No routes cached — click Seed Routes"}
+              </div>
+            </div>
+
+            {/* Airport gaps */}
+            {gapAlerts && gapAlerts.newAirports.length > 0 && (
+              <div className="px-4 py-2 border-t bg-amber-50/50 text-xs text-amber-700 space-y-1">
+                <div className="font-medium">Unaliased airports ({gapAlerts.newAirports.length}):</div>
+                {gapAlerts.newAirports.map(a => (
+                  <div key={a.icao} className="flex items-center gap-2 ml-2">
+                    <span className="font-mono font-bold">{a.iata}</span>
+                    <span className="text-amber-500">({a.flights} flights)</span>
+                    {addedAliases.has(a.icao) ? (
+                      <span className="text-green-600 font-medium">&#10003; Added</span>
+                    ) : a.suggested ? (
+                      <>
+                        <span>→ <span className="font-mono font-bold">{a.suggested}</span> ({a.distance}mi)</span>
+                        <button
+                          onClick={() => handleAddAlias(a.icao, a.suggested!, a.suggestedIcao)}
+                          disabled={addingAlias === a.icao}
+                          className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
+                        >
+                          {addingAlias === a.icao ? "..." : "Add"}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-red-600">no nearby commercial</span>
+                        <input
+                          type="text"
+                          placeholder="IATA"
+                          maxLength={4}
+                          className="w-12 text-[9px] px-1 py-0.5 border rounded font-mono uppercase"
+                          value={manualAliasInputs[a.icao] ?? ""}
+                          onChange={e => setManualAliasInputs(prev => ({ ...prev, [a.icao]: e.target.value.toUpperCase() }))}
+                        />
+                        <button
+                          onClick={() => {
+                            const val = (manualAliasInputs[a.icao] ?? "").trim();
+                            if (val.length >= 2) handleAddAlias(a.icao, val);
+                          }}
+                          disabled={addingAlias === a.icao || !(manualAliasInputs[a.icao]?.trim()?.length >= 2)}
+                          className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 hover:bg-green-200 rounded font-medium disabled:opacity-50"
+                        >
+                          {addingAlias === a.icao ? "..." : "Add"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Phase 3: Swap Points Preview */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
