@@ -289,11 +289,18 @@ export default function FlightPickerModal({
   const tuesdayDate = adjacentDate(-1);
   const thursdayDate = adjacentDate(1);
 
-  // Merge cached + live results
+  // Merge cached + live results — dedup by flight number + departure date (not just flight number,
+  // since Tuesday flights share flight numbers with Wednesday flights)
   const allOptions = (() => {
     if (!data) return liveResults;
-    const cachedFlightNums = new Set(data.options.filter((o) => o.flight_number).map((o) => o.flight_number));
-    const newLive = liveResults.filter((o) => !o.flight_number || !cachedFlightNums.has(o.flight_number));
+    const cachedKeys = new Set(data.options
+      .filter((o) => o.flight_number)
+      .map((o) => `${o.flight_number}|${o.depart_at?.slice(0, 10) ?? ""}`));
+    const newLive = liveResults.filter((o) => {
+      if (!o.flight_number) return true;
+      const key = `${o.flight_number}|${o.depart_at?.slice(0, 10) ?? ""}`;
+      return !cachedKeys.has(key);
+    });
     return [...data.options, ...newLive];
   })();
 
