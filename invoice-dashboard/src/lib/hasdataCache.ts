@@ -216,6 +216,13 @@ export async function computeCityPairMatrix(swapDate: string): Promise<CityPair[
     }
   }
 
+  // Shuffle pairs so that if the seeder times out, different routes get cached
+  // each run instead of always missing the same tail end of the alphabetical list.
+  for (let i = pairs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pairs[i], pairs[j]] = [pairs[j], pairs[i]];
+  }
+
   console.log(`[HasdataCache] City-pair matrix: ${resolvedHomeAirports.size} home airports × ${resolvedSwapLocations.size} swap locations → ${pairs.length} unique pairs`);
   return pairs;
 }

@@ -289,11 +289,18 @@ export default function FlightPickerModal({
   const tuesdayDate = adjacentDate(-1);
   const thursdayDate = adjacentDate(1);
 
-  // Merge cached + live results
+  // Merge cached + live results — dedup by flight number + departure date (not just flight number,
+  // since Tuesday flights share flight numbers with Wednesday flights)
   const allOptions = (() => {
     if (!data) return liveResults;
-    const cachedFlightNums = new Set(data.options.filter((o) => o.flight_number).map((o) => o.flight_number));
-    const newLive = liveResults.filter((o) => !o.flight_number || !cachedFlightNums.has(o.flight_number));
+    const cachedKeys = new Set(data.options
+      .filter((o) => o.flight_number)
+      .map((o) => `${o.flight_number}|${o.depart_at?.slice(0, 10) ?? ""}`));
+    const newLive = liveResults.filter((o) => {
+      if (!o.flight_number) return true;
+      const key = `${o.flight_number}|${o.depart_at?.slice(0, 10) ?? ""}`;
+      return !cachedKeys.has(key);
+    });
     return [...data.options, ...newLive];
   })();
 
@@ -460,7 +467,7 @@ export default function FlightPickerModal({
                 Commercial Flights ({flights.length})
               </div>
               {flights.map((opt, i) => (
-                <OptionRow key={`f-${i}`} opt={opt} onSelect={handleSelect} direction={direction} />
+                <OptionRow key={`f-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
               ))}
             </div>
           )}
@@ -471,7 +478,7 @@ export default function FlightPickerModal({
                 Ground Transport ({ground.length})
               </div>
               {ground.map((opt, i) => (
-                <OptionRow key={`g-${i}`} opt={opt} onSelect={handleSelect} direction={direction} />
+                <OptionRow key={`g-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
               ))}
             </div>
           )}
@@ -542,13 +549,20 @@ function OptionRow({
   opt,
   onSelect,
   direction,
+  swapDate,
 }: {
   opt: TransportOption;
   onSelect: (opt: TransportOption) => void;
   direction: "oncoming" | "offgoing";
+  swapDate?: string;
 }) {
   const f = opt.feasibility;
   const allOk = f.duty_ok && f.fbo_buffer_ok && f.midnight_ok;
+
+  // Detect if this flight departs on a different day than the swap date
+  const depDateStr = opt.depart_at?.slice(0, 10) ?? "";
+  const isOtherDay = swapDate && depDateStr && depDateStr !== swapDate;
+  const dayBadge = opt._dateLabel?.trim() || (isOtherDay ? fmtDateShort(depDateStr) : null);
 
   return (
     <button
@@ -578,9 +592,15 @@ function OptionRow({
               {opt.origin_iata}&rarr;{opt.destination_iata}
             </span>
           )}
+          {/* Day badge — show prominently when flight is NOT on swap day */}
+          {dayBadge && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-indigo-100 text-indigo-700">
+              {dayBadge}
+            </span>
+          )}
           {opt._isLive && (
             <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 font-bold">
-              LIVE{opt._dateLabel ?? ""}
+              LIVE
             </span>
           )}
           {opt.has_backup && opt.backup_flight && (

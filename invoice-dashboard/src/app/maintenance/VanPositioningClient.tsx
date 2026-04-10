@@ -6173,11 +6173,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       if (f.tail_number) allTails.add(f.tail_number);
     }
 
-    // 1. MX_NOTE alerts with span > 3 days
+    // 1. MX_NOTE alerts with span > 3 days (only if end_time is in the future)
     for (const note of mxNotes ?? []) {
       if (!note.tail_number || qualifiedTails.has(note.tail_number)) continue;
       if (note.start_time && note.end_time) {
-        const span = new Date(note.end_time).getTime() - new Date(note.start_time).getTime();
+        const endMs = new Date(note.end_time).getTime();
+        if (endMs < now) continue; // MX event already ended
+        const span = endMs - new Date(note.start_time).getTime();
         if (span > THREE_DAYS_MS) {
           qualifiedTails.add(note.tail_number);
           result.push({ tail: note.tail_number, reason: "MX event >3 days", airport: note.airport_icao, mxDescription: note.subject || note.body, startDate: note.start_time, endDate: note.end_time });

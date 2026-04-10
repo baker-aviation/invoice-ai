@@ -250,9 +250,9 @@ export type SwapPlanResult = {
 
 /** Pre-optimizer constraints set by coordinator (forced crew→tail, pair, fleet) */
 export type SwapConstraint =
-  | { type: "force_tail"; crew_name: string; tail: string; reason?: string }
+  | { type: "force_tail"; crew_name: string; tail: string; day?: string; reason?: string }
   | { type: "force_pair"; crew_a: string; crew_b: string; day?: string; reason?: string }
-  | { type: "force_fleet"; crew_name: string; aircraft_type: string; reason?: string };
+  | { type: "force_fleet"; crew_name: string; aircraft_type: string; day?: string; reason?: string };
 
 export type TwoPassStats = {
   pass1_solved: number;
@@ -1319,6 +1319,29 @@ function buildCandidates(
       score: 0,
       backups: [],
     });
+  }
+
+  // Debug: log when offgoing crew has zero viable candidates (helps trace "NO WAY HOME" issues)
+  if (task.direction === "offgoing" && candidates.filter((c) => c.type !== "none").length === 0) {
+    const commIatas = commAirports.map((c) => toIata(c));
+    const homeIatas = task.homeAirports.map((h) => toIata(toIcao(h)));
+    const nextDay = new Date(swapDate); nextDay.setDate(nextDay.getDate() + 1);
+    const searchDates = [swapDate, nextDay.toISOString().slice(0, 10)];
+    const cacheKeys = commIatas.flatMap((o: string) => homeIatas.flatMap((d: string) => searchDates.map((dt: string) => `${o}-${d}-${dt}`)));
+    const cacheHits = commercialFlights ? cacheKeys.filter((k: string) => commercialFlights.has(k)).length : 0;
+    console.warn(
+      `[OffgoingDebug] ${task.name} (${task.role}) on ${task.tail}: 0 viable candidates from ${toIata(swapIcao)} → ${homeIatas.join("/")}` +
+      ` | commAirports=[${commIatas.join(",")}] dates=[${searchDates.join(",")}]` +
+      ` | cacheKeysChecked=${cacheKeys.length} cacheHits=${cacheHits}` +
+      ` | hasCommercialFlights=${!!commercialFlights} mapSize=${commercialFlights?.size ?? 0}` +
+      ` | groundCandidates=${candidates.length} (all type=none)` +
+      ` | homeFlightAirports checked: ${task.homeAirports.map((h) => { const ic = toIcao(h); return `${toIata(ic)}(commercial=${isCommercialAirport(ic)})`; }).join(", ")}`
+    );
+    // Also log what the cache actually has for this origin
+    if (commercialFlights) {
+      const matchingKeys = Array.from(commercialFlights.keys()).filter((k: string) => commIatas.some((o: string) => k.startsWith(`${o}-`)));
+      console.warn(`[OffgoingDebug] Cache keys starting with ${commIatas.join("/")}: ${matchingKeys.length} (first 5: ${matchingKeys.slice(0, 5).join(", ")})`);
+    }
   }
 
   return candidates;
