@@ -336,6 +336,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KMYR: [33.6797, -78.9283],   // Myrtle Beach, SC
 
   // ── Texas (more) ───────────────────────────────────────────────────────────
+  KLRD: [27.5438, -99.4616],   // Laredo Intl, TX
   KMAF: [31.9425, -102.2019],  // Midland-Odessa, TX
   T82:  [30.2469, -98.9099],   // Gillespie County (Fredericksburg), TX
   KT82: [30.2469, -98.9099],   // Gillespie County (Fredericksburg), TX (K-prefix alias)
@@ -546,7 +547,7 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KLGB", "KSDF", "KLEX", "KXNA", "KCID", "KATW",
   // Added 2026-03-22 — next-30-day flight coverage
   "KAVP", "KBGR", "KBTV", "KBUF", "KCAK", "KFAT", "KGSP", "KJAC",
-  "KLAN", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
+  "KLAN", "KLRD", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
   "KROC", "KSBA", "KSBN", "KSUN",
   // Added 2026-04-09
   "KDRO", "KEVV",
