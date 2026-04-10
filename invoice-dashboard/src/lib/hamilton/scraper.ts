@@ -64,6 +64,8 @@ async function fetchApi(
   cookie: string,
 ): Promise<HamiltonOperatorTripsResponse> {
   const url = `${BASE_URL}${path}`;
+  console.log(`[hamilton] Fetching: ${url.substring(0, 120)}...`);
+  const start = Date.now();
   const res = await fetch(url, {
     method: "GET",
     headers: {
@@ -74,8 +76,9 @@ async function fetchApi(
       Referer: `${BASE_URL}/sales/leads`,
     },
     redirect: "manual",
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(90_000),
   });
+  console.log(`[hamilton] Response: ${res.status} in ${Date.now() - start}ms`);
 
   // Hamilton clears the wos-session cookie and returns 302 when session expires
   if (res.status === 302) {
@@ -118,7 +121,7 @@ function buildDeclineUrl(
 
 export async function fetchDeclinedTrips(
   departureDateFrom?: string,
-  maxPages: number = 50,
+  maxPages: number = 5,
 ): Promise<{ trips: HamiltonTrip[]; total: number; sessionExpired: boolean }> {
   const cookie = await getSessionCookie();
   if (!cookie) {
