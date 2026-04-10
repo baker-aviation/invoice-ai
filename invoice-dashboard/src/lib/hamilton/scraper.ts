@@ -122,19 +122,20 @@ function buildDeclineUrl(
 export async function fetchDeclinedTrips(
   departureDateFrom?: string,
   maxPages: number = 1,
-): Promise<{ trips: HamiltonTrip[]; total: number; sessionExpired: boolean }> {
+  startPage: number = 0,
+): Promise<{ trips: HamiltonTrip[]; total: number; sessionExpired: boolean; nextPage: number }> {
   const cookie = await getSessionCookie();
   if (!cookie) {
-    return { trips: [], total: 0, sessionExpired: true };
+    return { trips: [], total: 0, sessionExpired: true, nextPage: 0 };
   }
 
   const allTrips: HamiltonTrip[] = [];
-  let page = 0;
+  let page = startPage;
   let total = Infinity;
 
   try {
     while (allTrips.length < total) {
-      if (maxPages && page >= maxPages) break;
+      if (maxPages && (page - startPage) >= maxPages) break;
 
       const data = await fetchApi(
         buildDeclineUrl(page, departureDateFrom),
@@ -157,12 +158,12 @@ export async function fetchDeclinedTrips(
         channel: CHARLIE_SLACK_ID,
         text: "🔑 Hamilton session expired — update the cookie in the dashboard settings.",
       });
-      return { trips: allTrips, total, sessionExpired: true };
+      return { trips: allTrips, total, sessionExpired: true, nextPage: page };
     }
     throw err;
   }
 
-  return { trips: allTrips, total, sessionExpired: false };
+  return { trips: allTrips, total, sessionExpired: false, nextPage: page };
 }
 
 // ---------------------------------------------------------------------------
@@ -171,17 +172,23 @@ export async function fetchDeclinedTrips(
 
 export async function syncDeclines(
   departureDateFrom?: string,
-): Promise<DeclineSyncResult> {
-  const result: DeclineSyncResult = {
+  startPage: number = 0,
+): Promise<DeclineSyncResult & { nextPage: number }> {
+  const result: DeclineSyncResult & { nextPage: number } = {
     totalDeclines: 0,
     tripsUpserted: 0,
     agentSummary: [],
     errors: [],
     sessionExpired: false,
+    nextPage: 0,
   };
 
-  const { trips, total, sessionExpired } =
-    await fetchDeclinedTrips(departureDateFrom);
+  const { trips, total, sessionExpired, nextPage } =
+    await fetchDeclinedTrips(departureDateFrom, 1, startPage);
+
+  result.totalDeclines = total;
+  result.sessionExpired = sessionExpired;
+  result.nextPage = nextPage;
 
   result.totalDeclines = total;
   result.sessionExpired = sessionExpired;

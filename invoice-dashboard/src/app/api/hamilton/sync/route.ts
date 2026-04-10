@@ -1,19 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { syncDeclines } from "@/lib/hamilton/scraper";
+import { syncDeclines, fetchDeclinedTrips } from "@/lib/hamilton/scraper";
 
 export const maxDuration = 120;
 
 /**
  * POST /api/hamilton/sync — Manually trigger a Hamilton decline sync
  *
- * Body: { dateFrom?: string } — YYYY-MM-DD, defaults to 7 days ago
+ * Body: { dateFrom?: string, page?: number }
+ * Returns: { ..., nextPage } so caller can loop until done.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
+  const params = new URL(req.url).searchParams;
+  const test = params.get("test");
+
   let dateFrom: string;
+  let page: number;
   try {
     const body = await req.json().catch(() => ({}));
     dateFrom =
@@ -21,18 +26,20 @@ export async function POST(req: NextRequest) {
       new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
         .toISOString()
         .split("T")[0];
+    page = body.page ?? 0;
   } catch {
     dateFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
       .toISOString()
       .split("T")[0];
+    page = 0;
   }
-
-  const test = new URL(req.url).searchParams.get("test");
 
   try {
     if (test) {
-      const { fetchDeclinedTrips } = await import("@/lib/hamilton/scraper");
-      const { trips, total, sessionExpired } = await fetchDeclinedTrips(dateFrom, 1);
+      const { trips, total, sessionExpired } = await fetchDeclinedTrips(
+        dateFrom,
+        1,
+      );
       return NextResponse.json({
         test: true,
         sessionExpired,
@@ -48,7 +55,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const result = await syncDeclines(dateFrom);
+    const result = await syncDeclines(dateFrom, page);
     return NextResponse.json(result);
   } catch (err: unknown) {
     console.error("[hamilton/sync] error:", err);
