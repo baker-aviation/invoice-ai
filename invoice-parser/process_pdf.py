@@ -700,6 +700,22 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "fuel_contract"
 
+    # ── Fuel-only invoices from FBOs ────────────────────────────────
+    # FBOs like Signature sell both handling AND fuel.  If the invoice
+    # is *only* fuel (Jet A / avgas / 100LL) with no handling/facility
+    # fees, classify as fuel rather than fbo_fee.
+    _fuel_only_kws = ["jet a", "jet-a", "jeta", "avgas", "100ll", "fueling", "defueling", "fuel surcharge", "gallons"]
+    _handling_kws = [
+        "facility fee", "handling fee", "ramp fee", "ramp handling",
+        "security fee", "landing fee", "overnight fee", "parking",
+        "hangar", "gpu", "ground power", "lav", "de-ice", "catering",
+        "into-plane", "into plane",
+    ]
+    has_fuel = any(k in text for k in _fuel_only_kws)
+    has_handling = any(k in text for k in _handling_kws)
+    if has_fuel and not has_handling:
+        return "fuel"
+
     # ── Known FBO vendors — handling/ramp/landing fees ────────────
     if any(k in text for k in [
         "sheltair", "atlantic aviation",
@@ -875,15 +891,6 @@ def classify_doc_type(raw: dict) -> str:
         "landing fee",
         "into-plane",
         "overnight fee",
-        "jet a",
-        "jet-a",
-        "jeta",
-        "avgas",
-        "100ll",
-        "fuel surcharge",
-        "fueling",
-        "defueling",
-        "gallons",
         "into plane",
         "fbo",
         "fixed base",
@@ -893,6 +900,13 @@ def classify_doc_type(raw: dict) -> str:
         "fsii",
     ]):
         return "fbo_fee"
+
+    # ── Fuel (fallback — not caught by fuel-only check above) ────
+    if any(k in text for k in [
+        "jet a", "jet-a", "jeta", "avgas", "100ll",
+        "fuel surcharge", "fueling", "defueling", "gallons",
+    ]):
+        return "fuel"
 
     return "other"
 
