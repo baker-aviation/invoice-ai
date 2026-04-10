@@ -677,21 +677,13 @@ def _to_aware(dt) -> Optional[datetime]:
 
 def _faa_to_icao(code: str) -> str:
     """
-    Convert a 3-letter FAA airport code to a 4-letter ICAO code.
-    Most US airports are K + FAA code. Canadian airports start with C.
-    If the code is already 4 letters, return as-is.
+    Convert a 3-letter FAA/IATA airport code to a 4-letter ICAO code.
+    Uses comprehensive IATA→ICAO lookup for international airports
+    (NAS→MYNN, CUN→MMUN, BDA→TXKF, etc.) instead of blindly prepending K.
     """
-    code = code.upper().strip()
-    if len(code) == 4:
-        return code
-    if len(code) == 3:
-        # FAA LIDs starting with a digit (e.g. 3T5) don't get a K prefix
-        if code[0].isdigit():
-            return code
-        # Canadian airports typically already come as 4-letter (CYYZ etc.)
-        # US domestic: prepend K
-        return "K" + code
-    return code
+    from iata_to_icao import to_icao
+    result = to_icao(code)
+    return result if result else code
 
 
 def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[int], Optional[str]]:

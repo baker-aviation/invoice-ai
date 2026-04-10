@@ -22,6 +22,7 @@ type MinFlight = {
   scheduled_departure: string;
   jetinsight_url?: string | null;
   jetinsight_trip_id?: string | null;
+  international_leg?: boolean | null;
 };
 
 type DetectedTrip = {
@@ -31,6 +32,20 @@ type DetectedTrip = {
   trip_date: string;
   jetinsight_trip_id: string | null;
 };
+
+/** Check if a flight touches an international airport (ICAO check OR JetInsight flag) */
+function isFlightIntl(f: MinFlight): { depIntl: boolean; arrIntl: boolean } {
+  const depIntl = isInternationalIcao(f.departure_icao);
+  const arrIntl = isInternationalIcao(f.arrival_icao);
+  // If JetInsight explicitly flags this as international but neither ICAO
+  // looks foreign, trust JetInsight's flag (covers mapping gaps).
+  if (f.international_leg && !depIntl && !arrIntl) {
+    // We know it's international but can't tell which end — mark arrival
+    // as international since outbound pattern (US→INTL) is most common.
+    return { depIntl: false, arrIntl: true };
+  }
+  return { depIntl, arrIntl };
+}
 
 function detectTrips(flights: MinFlight[]): DetectedTrip[] {
   // Sort by tail then departure time
@@ -53,8 +68,7 @@ function detectTrips(flights: MinFlight[]): DetectedTrip[] {
     let i = 0;
     while (i < tailFlights.length) {
       const f = tailFlights[i];
-      const depIntl = isInternationalIcao(f.departure_icao);
-      const arrIntl = isInternationalIcao(f.arrival_icao);
+      const { depIntl, arrIntl } = isFlightIntl(f);
 
       // Look for US → INTL (outbound leg starts a trip)
       if (!depIntl && arrIntl) {
@@ -73,10 +87,11 @@ function detectTrips(flights: MinFlight[]): DetectedTrip[] {
           if (gap > 7 * 24 * 60 * 60 * 1000) break;
 
           // Check continuity: next departure should match last arrival (or same airport area)
+          const { depIntl: nextDepIntl, arrIntl: nextArrIntl } = isFlightIntl(next);
           if (next.departure_icao !== lastArrival) {
             // Allow if both are at the same international location (repositioning)
-            // Otherwise break the chain
-            if (!isInternationalIcao(next.departure_icao)) break;
+            // Also allow if JetInsight flags it as international
+            if (!nextDepIntl && !next.international_leg) break;
           }
 
           flightIds.push(next.id);
@@ -85,7 +100,7 @@ function detectTrips(flights: MinFlight[]): DetectedTrip[] {
           j++;
 
           // If we've returned to a US airport, trip is complete
-          if (!isInternationalIcao(lastArrival)) break;
+          if (!nextArrIntl) break;
         }
 
         // Get JI trip ID — prefer direct column, fall back to URL parsing
@@ -252,7 +267,7 @@ export async function GET(req: NextRequest) {
 
     const { data: flights } = await supa
       .from("flights")
-      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_url, jetinsight_trip_id")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_url, jetinsight_trip_id, international_leg")
       .gte("scheduled_departure", lookback)
       .lte("scheduled_departure", lookahead)
       .order("scheduled_departure");
