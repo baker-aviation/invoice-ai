@@ -461,16 +461,56 @@ export default function FlightPickerModal({
             </div>
           )}
 
-          {!loading && flights.length > 0 && (
-            <div>
-              <div className="px-4 py-2 bg-blue-50/50 text-[10px] font-bold uppercase text-blue-600 tracking-wider">
-                Commercial Flights ({flights.length})
+          {!loading && flights.length > 0 && (() => {
+            // Group flights by departure date for accordion display
+            const byDate = new Map<string, TransportOption[]>();
+            for (const f of flights) {
+              const dateKey = f.depart_at?.slice(0, 10) ?? swapDate;
+              if (!byDate.has(dateKey)) byDate.set(dateKey, []);
+              byDate.get(dateKey)!.push(f);
+            }
+            const sortedDates = [...byDate.keys()].sort();
+            const hasMultipleDays = sortedDates.length > 1;
+
+            return (
+              <div>
+                {sortedDates.map((dateKey) => {
+                  const dayFlights = byDate.get(dateKey)!;
+                  const isSwapDay = dateKey === swapDate;
+                  const dayLabel = new Date(dateKey + "T12:00:00Z").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+
+                  if (!hasMultipleDays) {
+                    // Single day — no accordion needed
+                    return (
+                      <div key={dateKey}>
+                        <div className="px-4 py-2 bg-blue-50/50 text-[10px] font-bold uppercase text-blue-600 tracking-wider">
+                          Commercial Flights ({dayFlights.length})
+                        </div>
+                        {dayFlights.map((opt, i) => (
+                          <OptionRow key={`f-${dateKey}-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
+                        ))}
+                      </div>
+                    );
+                  }
+
+                  // Multiple days — collapsible accordion per day
+                  return (
+                    <details key={dateKey} open={isSwapDay || sortedDates.indexOf(dateKey) === 0}>
+                      <summary className={`px-4 py-2 cursor-pointer select-none text-[10px] font-bold uppercase tracking-wider flex items-center justify-between ${
+                        isSwapDay ? "bg-blue-50/50 text-blue-600" : "bg-indigo-50/50 text-indigo-600"
+                      }`}>
+                        <span>{dayLabel} — {dayFlights.length} flight{dayFlights.length !== 1 ? "s" : ""}</span>
+                        {!isSwapDay && <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">{isSwapDay ? "SWAP DAY" : "DAY BEFORE"}</span>}
+                      </summary>
+                      {dayFlights.map((opt, i) => (
+                        <OptionRow key={`f-${dateKey}-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
+                      ))}
+                    </details>
+                  );
+                })}
               </div>
-              {flights.map((opt, i) => (
-                <OptionRow key={`f-${i}`} opt={opt} onSelect={handleSelect} direction={direction} swapDate={swapDate} />
-              ))}
-            </div>
-          )}
+            );
+          })()}
 
           {!loading && ground.length > 0 && (
             <div>
