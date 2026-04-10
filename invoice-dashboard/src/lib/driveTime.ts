@@ -119,6 +119,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
   KSGU: [37.0364, -113.5103],  // St George Regional, UT
   KSLC: [40.7884, -111.9778],  // Salt Lake City
+  KSLK: [44.3853, -74.2062],  // Adirondack Regional, Saranac Lake, NY
   KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
   KTWF: [42.4818, -114.4877],  // Twin Falls ID
 
