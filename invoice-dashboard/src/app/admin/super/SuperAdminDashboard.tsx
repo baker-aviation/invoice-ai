@@ -49,6 +49,7 @@ type DashboardData = {
   queues: QueueDepth[];
   flightaware: FaHealth;
   slackEnabled: boolean;
+  fuelSlackTestMode?: boolean;
   slackUpdatedAt: string | null;
   slackUpdatedBy: string | null;
 };
@@ -516,6 +517,39 @@ export default function SuperAdminDashboard() {
                 }`}
               >
                 {data.slackEnabled ? "Kill Slack" : "Enable Slack"}
+              </button>
+            </div>
+
+            {/* Fuel Slack Test Mode */}
+            <div className={`rounded-lg border p-3 flex items-center justify-between shadow-sm ${data.fuelSlackTestMode ? "bg-amber-50 border-amber-200" : "bg-white"}`}>
+              <div className="flex items-center gap-3">
+                <div className={`h-2.5 w-2.5 rounded-full ${data.fuelSlackTestMode ? "bg-amber-500" : "bg-slate-300"}`} />
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Fuel Slack Test Mode</div>
+                  <div className="text-xs text-gray-400">
+                    {data.fuelSlackTestMode
+                      ? "Fuel messages redirected to #fuel-planning"
+                      : "Fuel messages go to per-tail channels"}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newState = !data.fuelSlackTestMode;
+                  await fetch("/api/admin/super", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "toggle_fuel_slack_test", enabled: newState }),
+                  });
+                  fetchData();
+                }}
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                  data.fuelSlackTestMode
+                    ? "bg-amber-600 border-amber-600 text-white hover:bg-amber-700"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                {data.fuelSlackTestMode ? "Exit Test Mode" : "Enable Test Mode"}
               </button>
             </div>
           </div>

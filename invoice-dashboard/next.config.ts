@@ -64,6 +64,12 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/alerts", destination: "/invoices?tab=alerts", permanent: true },
+      { source: "/foreflight", destination: "/fuel-planning", permanent: true },
+      { source: "/foreflight/:path*", destination: "/fuel-planning/:path*", permanent: true },
+      { source: "/hamilton", destination: "/integrations/hamilton", permanent: true },
+      { source: "/hamilton/:path*", destination: "/integrations/hamilton/:path*", permanent: true },
+      { source: "/jetinsight", destination: "/integrations/jetinsight", permanent: true },
+      { source: "/jetinsight/:path*", destination: "/integrations/jetinsight/:path*", permanent: true },
     ];
   },
 };

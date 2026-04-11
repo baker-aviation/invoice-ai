@@ -12,6 +12,7 @@ type LegData = {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
+  cheaperAtOtherFbo?: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null;
   ffSource: string;
   waiver: {
     fboName: string;
@@ -875,8 +876,13 @@ export default function FleetFuelDashboard() {
                             <span className="text-gray-400 mx-1">&rarr;</span>
                             <span className="font-medium text-gray-900">{strip(leg.to)}</span>
                           </td>
-                          <td className="py-2 pr-3 text-xs text-gray-700 max-w-[140px] truncate">
-                            {leg.departureFbo || leg.waiver?.fboName || "—"}
+                          <td className="py-2 pr-3 text-xs text-gray-700 max-w-[140px]">
+                            <div className="truncate">{leg.departureFbo || leg.waiver?.fboName || "—"}</div>
+                            {leg.cheaperAtOtherFbo && (
+                              <div className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 inline-block">
+                                {leg.cheaperAtOtherFbo.fbo} ${leg.cheaperAtOtherFbo.price.toFixed(2)} (−${leg.cheaperAtOtherFbo.savingsPerGal.toFixed(2)}/gal)
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 pr-3 text-xs text-blue-600 max-w-[120px] truncate">
                             {leg.departureFboVendor || "—"}

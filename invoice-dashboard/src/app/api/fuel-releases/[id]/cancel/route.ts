@@ -3,7 +3,7 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getVendorAdapter } from "@/lib/fuelVendors";
 import type { VendorId, ReleaseStatus } from "@/lib/fuelVendors";
-import { postSlackMessage } from "@/lib/slack";
+import { postSlackMessage, resolveFuelSlackChannel } from "@/lib/slack";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +81,7 @@ export async function POST(
     .single();
 
   await postSlackMessage({
-    channel: src?.slack_channel_id || "C0ANTTQ6R96",
+    channel: await resolveFuelSlackChannel(src?.slack_channel_id ?? null),
     text: `Fuel release cancelled: ${release.tail_number} at ${strip(release.airport_code)}`,
     blocks: [{
       type: "section",

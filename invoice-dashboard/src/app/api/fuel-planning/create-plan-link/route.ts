@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { resolveFuelSlackChannel } from "@/lib/slack";
 import { randomBytes } from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   const token = randomBytes(24).toString("base64url");
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
   const supa = createServiceClient();
   const { error: insertErr } = await supa.from("fuel_plan_links").insert({
@@ -60,16 +61,17 @@ export async function POST(req: NextRequest) {
 
   // Optionally send to Slack
   if (body.send_slack && process.env.SLACK_BOT_TOKEN) {
-    // Look up per-tail Slack channel, fall back to #fuel-planning
-    let channel = (body.slack_channel as string) || "";
-    if (!channel) {
+    // Look up per-tail Slack channel; honor fuel_slack_test_mode override
+    let intendedChannel = (body.slack_channel as string) || "";
+    if (!intendedChannel) {
       const { data: src } = await supa
         .from("ics_sources")
         .select("slack_channel_id")
         .eq("label", tail.toUpperCase())
         .single();
-      channel = "C0ANTTQ6R96"; // Force #fuel-planning for testing
+      intendedChannel = src?.slack_channel_id ?? "";
     }
+    const channel = await resolveFuelSlackChannel(intendedChannel);
     const savings = Math.round(planData.tankerSavings ?? 0);
     const isPilotSummary = body.mode === "pilot_summary";
 

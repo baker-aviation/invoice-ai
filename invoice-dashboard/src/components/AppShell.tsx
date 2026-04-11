@@ -16,11 +16,10 @@ const NAV = [
   { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false, superAdminOnly: false },
   { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false, superAdminOnly: false },
   // { href: "/fees", label: "Fees", exact: false, adminOnly: false, superAdminOnly: false },
-  { href: "/foreflight", label: "Fuel Planning", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/fuel-planning", label: "Fuel Planning", exact: false, adminOnly: false, superAdminOnly: false },
   { href: "/pilots", label: "Pilots", exact: false, adminOnly: false, superAdminOnly: false },
   { href: "/aircraft", label: "Aircraft", exact: false, adminOnly: false, superAdminOnly: false },
-  { href: "/hamilton", label: "Hamilton", exact: false, adminOnly: true, superAdminOnly: false },
-  { href: "/jetinsight", label: "JetInsight", exact: false, adminOnly: true, superAdminOnly: false },
+  { href: "/integrations", label: "Integrations", exact: false, adminOnly: true, superAdminOnly: false },
   { href: "/health", label: "Health", exact: false, adminOnly: false, superAdminOnly: true },
   { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true, superAdminOnly: false },
 ];

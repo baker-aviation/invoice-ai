@@ -1,7 +1,16 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { STD_AIRCRAFT, type AircraftType } from "@/app/tanker/model";
+import FboFeesBlock, { type LegFeeQuery } from "@/app/fuel-planning/FboFeesBlock";
+import FboFeesEditModal from "@/app/fuel-planning/FboFeesEditModal";
+
+/**
+ * Reusable fuel plan view. Used by:
+ *  - the tokenized crew share link at /tanker/plan/[token] (mode="crew")
+ *  - the admin Aircraft Fuel Plans tab (mode="admin") — embeds multiple cards
+ */
+export type FuelPlanViewMode = "crew" | "admin";
 
 type VendorOption = {
   vendor: string;
@@ -74,8 +83,7 @@ function fmtHrs(h: number): string {
   return hrs > 0 ? `${hrs}h ${min}m` : `${min}m`;
 }
 
-export default function SharedPlanPage({ params }: { params: Promise<{ token: string }> }) {
-  const [token, setToken] = useState<string | null>(null);
+export function SharedPlanView({ token, mode = "crew" }: { token: string | null; mode?: FuelPlanViewMode }) {
   const [plan, setPlan] = useState<PlanData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -116,8 +124,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
     recentPrices: Array<{ price: number; vendor: string; date: string; gallons: number; tail: string }>;
   }> | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-
-  useEffect(() => { params.then((p) => setToken(p.token)); }, [params]);
+  const [feeEditTarget, setFeeEditTarget] = useState<LegFeeQuery | null>(null);
 
   const loadPlan = useCallback(async () => {
     if (!token) return;
@@ -301,9 +308,14 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
     setRecalculating(false);
   };
 
+  const wrapperCls = mode === "crew" ? "min-h-screen bg-gray-50" : "";
+  const innerCls = mode === "crew"
+    ? "max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5"
+    : "space-y-4";
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className={`${wrapperCls} flex items-center justify-center p-6`}>
         <p className="text-gray-500 animate-pulse">Loading fuel plan...</p>
       </div>
     );
@@ -311,7 +323,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
 
   if (error || !plan) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className={`${wrapperCls} flex items-center justify-center p-6`}>
         <div className="text-center">
           <h1 className="text-xl font-bold text-gray-800 mb-2">Plan Unavailable</h1>
           <p className="text-gray-500">{error ?? "Plan not found"}</p>
@@ -326,8 +338,8 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const savings = Math.round(plan.tankerSavings);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5">
+    <div className={wrapperCls}>
+      <div className={innerCls}>
 
         {/* Header */}
         <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
@@ -467,6 +479,26 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
               </div>
             </div>
           </div>
+        )}
+
+        {/* FBO Fees — per leg, three-source merged */}
+        {plan.legs.length > 0 && (
+          <FboFeesBlock
+            legs={plan.legs.map((l) => ({
+              airport: l.from,
+              fbo_name: l.departureFbo ?? l.waiver?.fboName ?? "",
+              aircraft_type: plan.aircraftType === "CE-750" ? "Citation X" : plan.aircraftType === "CL-30" ? "Challenger 300" : String(plan.aircraftType),
+            }))}
+            onEditMissing={(q) => setFeeEditTarget(q)}
+          />
+        )}
+
+        {feeEditTarget && (
+          <FboFeesEditModal
+            target={feeEditTarget}
+            onClose={() => setFeeEditTarget(null)}
+            onSaved={() => { setFeeEditTarget(null); loadPlan(); }}
+          />
         )}
 
         {/* Price History — collapsible */}
@@ -914,10 +946,18 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
           )}
         </div>
 
-        <p className="text-center text-xs text-gray-400">
-          Baker Aviation Fuel Planning &mdash; expires {new Date(expiresAt).toLocaleString()}
-        </p>
+        {mode === "crew" && (
+          <p className="text-center text-xs text-gray-400">
+            Baker Aviation Fuel Planning &mdash; expires {new Date(expiresAt).toLocaleString()}
+          </p>
+        )}
       </div>
     </div>
   );
+}
+
+export default function SharedPlanPage({ params }: { params: Promise<{ token: string }> }) {
+  const [token, setToken] = useState<string | null>(null);
+  useEffect(() => { params.then((p) => setToken(p.token)); }, [params]);
+  return <SharedPlanView token={token} mode="crew" />;
 }

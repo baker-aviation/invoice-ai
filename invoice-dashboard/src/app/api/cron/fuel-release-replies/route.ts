@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret, requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { listMailboxMessages } from "@/lib/graph-mail-send";
-import { postSlackMessage } from "@/lib/slack";
+import { postSlackMessage, resolveFuelSlackChannel } from "@/lib/slack";
 
 export const dynamic = "force-dynamic";
 
@@ -174,7 +174,7 @@ export async function GET(req: NextRequest) {
       .select("slack_channel_id")
       .eq("label", release.tail_number.toUpperCase())
       .single();
-    const channel = src?.slack_channel_id || "C0ANTTQ6R96"; // #fuel-planning
+    const channel = await resolveFuelSlackChannel(src?.slack_channel_id ?? null);
 
     await postSlackMessage({
       channel,
