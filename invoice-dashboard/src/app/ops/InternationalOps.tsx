@@ -702,7 +702,19 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             if (ovf.length > 0) tags.push({ label: "OVF", done: allDone(ovf), title: `Overflight Permit${ovf.length > 1 ? "s" : ""} (${ovf.map((c) => c.airport_icao).join(", ")})` });
             if (canpass.length > 0) tags.push({ label: "CAN", done: allDone(canpass), title: "CANPASS Call (4-24hr before Canada arrival)" });
             // eAPIS tag: prefer scraped status from JetInsight, fall back to clearance status
-            const eapisScraped = trip.eapis_status ?? [];
+            // Filter out US/territory-to-US/territory legs — no eAPIS required
+            // USVI (TI*) and Puerto Rico (TJ*) are US territories for eAPIS purposes
+            const isUsDomesticForEapis = (icao: string) => {
+              if (!icao || icao.length !== 4) return true;
+              if (icao.startsWith("K") || icao.startsWith("TI") || icao.startsWith("TJ")) return true;
+              for (const p of ["PH","PA","PF","PG","PJ","PK","PM","PO","PP","PW"]) {
+                if (icao.startsWith(p)) return true;
+              }
+              return false;
+            };
+            const eapisScraped = (trip.eapis_status ?? []).filter(
+              (s: { dep_icao: string; arr_icao: string }) => !isUsDomesticForEapis(s.dep_icao) || !isUsDomesticForEapis(s.arr_icao)
+            );
             const eapisAllApproved = eapisScraped.length > 0 && eapisScraped.every((s) => s.status === "approved");
             if (eapisScraped.length > 0) {
               tags.push({ label: "eAPI", done: eapisAllApproved, title: eapisAllApproved ? "eAPIS: All legs approved" : `eAPIS: ${eapisScraped.filter((s) => s.status !== "approved").length} leg(s) not yet approved` });
@@ -1029,12 +1041,21 @@ function TripDetail({ trip, countries, onRefresh }: {
         )}
       </div>
 
-      {/* eAPIS Status (scraped from JetInsight) */}
-      {trip.eapis_status && trip.eapis_status.length > 0 && (
+      {/* eAPIS Status (scraped from JetInsight) — filter out US/territory-to-US/territory legs */}
+      {(() => {
+        const isUsDom = (icao: string) => {
+          if (!icao || icao.length !== 4) return true;
+          if (icao.startsWith("K") || icao.startsWith("TI") || icao.startsWith("TJ")) return true;
+          for (const p of ["PH","PA","PF","PG","PJ","PK","PM","PO","PP","PW"]) { if (icao.startsWith(p)) return true; }
+          return false;
+        };
+        const intlLegs = (trip.eapis_status ?? []).filter((l: { dep_icao: string; arr_icao: string }) => !isUsDom(l.dep_icao) || !isUsDom(l.arr_icao));
+        if (intlLegs.length === 0) return null;
+        return (
         <div className="border border-gray-200 bg-white rounded-lg px-3 py-2.5">
           <h4 className="text-xs font-semibold text-gray-700 mb-2">eAPIS Status</h4>
           <div className="space-y-1">
-            {trip.eapis_status.map((leg: { dep_icao: string; arr_icao: string; status: string; provider: string }, i: number) => (
+            {intlLegs.map((leg: { dep_icao: string; arr_icao: string; status: string; provider: string }, i: number) => (
               <div key={i} className="flex items-center gap-2 text-xs">
                 <span className="font-medium text-gray-600">{leg.dep_icao} → {leg.arr_icao}:</span>
                 <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold ${
@@ -1053,7 +1074,8 @@ function TripDetail({ trip, countries, onRefresh }: {
             ))}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Suggested handlers from country defaults (Ticket 5) */}
       {(() => {
