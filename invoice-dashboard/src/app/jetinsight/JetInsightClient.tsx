@@ -384,7 +384,150 @@ function OverviewTab() {
           </div>
         )}
       </div>
+
+      {/* Hamilton section */}
+      <HamiltonSection />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hamilton Section (inside Overview tab)
+// ---------------------------------------------------------------------------
+
+function HamiltonSection() {
+  const [hConfig, setHConfig] = useState<Record<string, { value: string; updated_at: string }>>({});
+  const [hCookieStatus, setHCookieStatus] = useState("unknown");
+  const [hCookieInput, setHCookieInput] = useState("");
+  const [hSaving, setHSaving] = useState(false);
+  const [hSyncing, setHSyncing] = useState(false);
+  const [hSyncResult, setHSyncResult] = useState<string | null>(null);
+  const [hStats, setHStats] = useState<{
+    totalTrips: number;
+    agents: { salesAgentName: string | null; salesAgentId: string; count: number; totalValue: number }[];
+  }>({ totalTrips: 0, agents: [] });
+
+  const loadHConfig = useCallback(async () => {
+    const res = await fetch("/api/hamilton/config");
+    if (res.ok) {
+      const data = await res.json();
+      setHConfig(data.config ?? {});
+      setHCookieStatus(data.cookieStatus ?? "unknown");
+    }
+  }, []);
+
+  const loadHStats = useCallback(async () => {
+    const res = await fetch("/api/hamilton/declines?limit=0");
+    if (res.ok) {
+      const data = await res.json();
+      setHStats({ totalTrips: data.totalDeclines ?? 0, agents: data.agentSummary ?? [] });
+    }
+  }, []);
+
+  useEffect(() => { loadHConfig(); loadHStats(); }, [loadHConfig, loadHStats]);
+
+  async function saveHCookie() {
+    if (!hCookieInput.trim()) return;
+    setHSaving(true);
+    const res = await fetch("/api/hamilton/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "session_cookie", value: hCookieInput }),
+    });
+    if (res.ok) { setHCookieInput(""); await loadHConfig(); }
+    setHSaving(false);
+  }
+
+  async function triggerHSync() {
+    setHSyncing(true);
+    setHSyncResult(null);
+    try {
+      const res = await fetch("/api/hamilton/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setHSyncResult(`Synced ${data.tripsUpserted} trips (page ${data.nextPage - 1}). Total in Hamilton: ${data.totalDeclines}`);
+      loadHStats();
+    } catch (err) {
+      setHSyncResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setHSyncing(false);
+  }
+
+  const hCookieBg = hCookieStatus === "ok" ? "bg-green-100 text-green-800" : hCookieStatus === "stale" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
+
+  return (
+    <>
+      <div className="mt-10 mb-4 border-t border-slate-200 pt-6">
+        <h2 className="text-xl font-bold text-slate-900">Hamilton AI</h2>
+        <p className="text-sm text-slate-500">Declined trip tracking &amp; sales agent performance</p>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white p-6">
+        <h3 className="mb-4 text-lg font-semibold text-slate-900">Hamilton Session Cookie</h3>
+        <div className="mb-4 flex items-center gap-3">
+          <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${hCookieBg}`}>
+            {hCookieStatus === "ok" ? "Valid" : hCookieStatus === "stale" ? "Stale (> 24h)" : "Missing"}
+          </span>
+          {hConfig.session_cookie?.updated_at && (
+            <span className="text-sm text-slate-500">Updated: {new Date(hConfig.session_cookie.updated_at).toLocaleString()}</span>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <input type="password" placeholder="Paste wos-session cookie from app.hamilton.ai..." value={hCookieInput} onChange={(e) => setHCookieInput(e.target.value)} className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          <button onClick={saveHCookie} disabled={hSaving || !hCookieInput.trim()} className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">{hSaving ? "Saving..." : "Save"}</button>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">Log into app.hamilton.ai, open DevTools &gt; Application &gt; Cookies, copy the wos-session value.</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard label="Declined Trips (synced)" value={hStats.totalTrips} />
+        <StatCard label="Sales Agents" value={hStats.agents.length} />
+        <StatCard label="Total Declined Value" value={`$${Math.round(hStats.agents.reduce((s, a) => s + a.totalValue, 0)).toLocaleString()}`} />
+      </div>
+
+      {hStats.agents.length > 0 && (
+        <div className="rounded-lg border border-slate-200 bg-white p-6">
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Declines by Sales Agent</h3>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
+                <th className="pb-2">Agent</th>
+                <th className="pb-2 text-right">Declines</th>
+                <th className="pb-2 text-right">Total Value</th>
+                <th className="pb-2 text-right">Avg Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {hStats.agents.map((a) => (
+                <tr key={a.salesAgentId} className="border-b border-slate-100">
+                  <td className="py-2 font-medium text-slate-900">{a.salesAgentName ?? a.salesAgentId.substring(0, 8) + "..."}</td>
+                  <td className="py-2 text-right text-slate-700">{a.count}</td>
+                  <td className="py-2 text-right text-slate-700">${Math.round(a.totalValue).toLocaleString()}</td>
+                  <td className="py-2 text-right text-slate-500">${a.count > 0 ? Math.round(a.totalValue / a.count).toLocaleString() : 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-slate-200 bg-white p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900">Sync Declines</h3>
+            <p className="text-sm text-slate-500">Fetches 1 page (200 trips) from Hamilton. Cron runs every 10 min automatically.</p>
+          </div>
+          <button onClick={triggerHSync} disabled={hSyncing || hCookieStatus === "missing"} className="rounded-md bg-blue-600 px-6 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{hSyncing ? "Syncing..." : "Sync Page"}</button>
+        </div>
+        {hSyncResult && (
+          <div className={`mt-4 rounded-md px-4 py-3 text-sm ${hSyncResult.startsWith("Error") ? "bg-red-50 text-red-800" : "bg-green-50 text-green-800"}`}>{hSyncResult}</div>
+        )}
+      </div>
+    </>
   );
 }
 
