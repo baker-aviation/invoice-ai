@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 
 type LegData = {
   from: string;
@@ -197,6 +198,12 @@ export default function FleetFuelDashboard() {
             onChange={(e) => setDateStr(e.target.value)}
             className="text-sm border border-gray-300 rounded-md px-3 py-1.5"
           />
+          <Link
+            href="/fuel-dashboard/vendors"
+            className="px-3 py-1.5 text-sm font-medium bg-slate-900 text-white rounded-md hover:bg-slate-700 transition-colors"
+          >
+            Manage Vendors
+          </Link>
           <button
             onClick={loadData}
             disabled={loading}

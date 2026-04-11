@@ -119,6 +119,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
   KSGU: [37.0364, -113.5103],  // St George Regional, UT
   KSLC: [40.7884, -111.9778],  // Salt Lake City
+  KSLK: [44.3853, -74.2062],  // Adirondack Regional, Saranac Lake, NY
   KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
   KTWF: [42.4818, -114.4877],  // Twin Falls ID
 
@@ -380,10 +381,13 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   MKJP: [17.9357, -76.7875],   // Kingston, Jamaica
   MDPC: [18.5674, -68.3634],   // Punta Cana, DR
   MWCR: [19.2928, -81.3577],   // Grand Cayman
+  TIST: [18.3373, -64.9734],   // Cyril E. King (St. Thomas, USVI)
   TNCM: [18.0410, -63.1089],   // St. Maarten
   TQPF: [18.2048, -63.0551],   // Anguilla
   TBPB: [13.0746, -59.4925],   // Barbados
   TVSA: [13.1444, -61.2110],   // St. Vincent
+  TVSM: [12.5884, -61.1502],   // Mustique (St. Vincent & Grenadines)
+  TXKF: [32.3640, -64.6787],   // L.F. Wade Intl, Bermuda
   MROC: [9.9939, -84.2088],    // San Jose, Costa Rica
   MRLB: [10.5933, -85.5444],   // Liberia, Costa Rica
   MPTO: [9.0714, -79.3835],    // Panama City (Tocumen)
@@ -564,7 +568,9 @@ const COMMERCIAL_AIRPORTS = new Set([
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
   "CYXX", // Abbotsford
   "CYQA", // Muskoka
+  "TIST", // St. Thomas, USVI
   "TJSJ", // San Juan, PR
+  "TXKF", // Bermuda
   // Caribbean / Latin America
   "TLPL", // St Lucia Hewanorra
   "MMSL", // Mazatlán

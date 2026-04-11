@@ -6,7 +6,7 @@
  * which just tracks releases in the DB and sends Slack notifications.
  */
 
-export type VendorId = "evo" | "wfs" | "avfuel" | "manual";
+export type VendorId = "evo" | "wfs" | "avfuel" | "email" | "manual";
 
 export type ReleaseStatus =
   | "pending"     // submitted, awaiting vendor confirmation

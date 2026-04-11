@@ -4373,27 +4373,12 @@ export function twoPassAssignAndOptimize(params: {
     byTailForCleanup.get(f.tail_number)!.push(f);
   }
 
+  // Only clear crew with NO transport at all — don't clear crew who have flights
+  // booked but arrive late. Late arrivals show a warning; clearing them drops tails.
   const unsolvableRows = finalResult.rows.filter((r) => {
     if (r.direction !== "oncoming" || r.name.startsWith("[UNASSIGNED")) return false;
-    // Case 1: no transport found
-    if (r.travel_type === "none") return true;
-    // Case 2: crew arrives after the aircraft departs their swap airport
-    const availTime = r.available_time ?? r.arrival_time;
-    if (!availTime || !r.swap_location) return false;
-    const availMs = new Date(availTime).getTime();
-    const swapIcao = r.swap_location.length === 3 ? `K${r.swap_location}` : r.swap_location;
-    const tailLegs = byTailForCleanup.get(r.tail_number) ?? [];
-    const wedStr = swapDate;
-    // Find earliest departure from swap airport on swap day (skip overnight legs before 6am)
-    const depsFromSwap = tailLegs
-      .filter((f) => f.departure_icao === swapIcao && f.scheduled_departure?.startsWith(wedStr))
-      .map((f) => new Date(f.scheduled_departure).getTime())
-      .filter((t) => new Date(t).getUTCHours() >= 6 || new Date(t).getHours() >= 6)
-      .sort((a, b) => a - b);
-    if (depsFromSwap.length > 0 && availMs > depsFromSwap[0]) {
-      return true; // crew arrives after aircraft departs
-    }
-    return false;
+    // Only clear when transport planner found nothing viable
+    return r.travel_type === "none";
   });
   if (unsolvableRows.length > 0) {
     for (const row of unsolvableRows) {

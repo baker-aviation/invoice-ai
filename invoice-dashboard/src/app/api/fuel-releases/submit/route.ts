@@ -46,7 +46,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const vendorId = resolveVendorId((vendorName as string) ?? "");
+  const supa = createServiceClient();
+
+  // Look up vendor from DB first, fall back to legacy name resolution
+  const vendorNameStr = (vendorName as string) ?? "";
+  let vendorId;
+  let vendorDbName = vendorNameStr;
+  let releaseType: string | undefined;
+
+  const { data: dbVendor } = await supa
+    .from("fuel_vendors")
+    .select("slug, name, release_type, contact_email")
+    .eq("active", true)
+    .or(`slug.eq.${vendorNameStr.toLowerCase()},name.ilike.%${vendorNameStr}%`)
+    .limit(1)
+    .single();
+
+  if (dbVendor) {
+    releaseType = dbVendor.release_type;
+    vendorDbName = dbVendor.name;
+  }
+
+  vendorId = resolveVendorId(vendorNameStr, releaseType);
   const adapter = getVendorAdapter(vendorId);
 
   // Call the vendor adapter
@@ -77,7 +98,6 @@ export async function POST(req: NextRequest) {
   }
 
   // Insert DB record
-  const supa = createServiceClient();
   const now = new Date().toISOString();
   const row = {
     submitted_by: auth.userId,
@@ -87,7 +107,7 @@ export async function POST(req: NextRequest) {
     fbo_name: (fbo as string) || null,
     departure_date: date as string,
     vendor_id: vendorId,
-    vendor_name: adapter.vendorName,
+    vendor_name: vendorDbName || adapter.vendorName,
     gallons_requested: Number(gallons),
     quoted_price: quotedPrice ? Number(quotedPrice) : null,
     status: adapterResult.status,
@@ -132,11 +152,12 @@ export async function POST(req: NextRequest) {
         text: [
           `*Fuel Release Requested*`,
           `*Tail:* ${tailNumber}  *Airport:* ${airportLabel}`,
-          `*FBO:* ${(fbo as string) || "—"}  *Vendor:* ${adapter.vendorName}`,
+          `*FBO:* ${(fbo as string) || "—"}  *Vendor:* ${vendorDbName || adapter.vendorName}`,
           `*Gallons:* ${Number(gallons).toLocaleString()}${priceLabel}`,
           `*Date:* ${date}`,
           `*Status:* ${adapterResult.status}`,
           adapterResult.vendorConfirmation ? `*Confirmation:* ${adapterResult.vendorConfirmation}` : "",
+          adapterResult.message?.includes("email sent") ? `_${adapterResult.message}_` : "",
         ].filter(Boolean).join("\n"),
       },
     }],
