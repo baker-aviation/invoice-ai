@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
-import { postSlackMessage } from "@/lib/slack";
+import { postSlackMessage, resolveFuelSlackChannel } from "@/lib/slack";
 import { createServiceClient } from "@/lib/supabase/service";
 import { randomBytes } from "crypto";
 
 export const maxDuration = 120;
-
-const FUEL_PLANNING_CHANNEL = "C0ANTTQ6R96"; // #fuel-planning (testing)
 
 /**
  * GET /api/cron/tankering-plans
@@ -145,7 +143,7 @@ export async function GET(req: NextRequest) {
   for (const tp of plans) {
     if (!tp.plan || tp.error) continue;
     const linkToken = randomBytes(24).toString("base64url");
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
     const { error: linkErr } = await supa2.from("fuel_plan_links").insert({
       token: linkToken,
       tail_number: tp.tail,
@@ -249,7 +247,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const slackResult = await postSlackMessage({
-      channel: FUEL_PLANNING_CHANNEL,
+      channel: await resolveFuelSlackChannel(null),
       text: `${runLabel} Fuel Briefing — ${dateStr} | ${fmtDollars(savingsTotal)} saved`,
       blocks,
     });

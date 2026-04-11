@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { resolveFuelSlackChannel } from "@/lib/slack";
 import { randomBytes } from "crypto";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-const DEFAULT_FUEL_CHANNEL = "C0ANTTQ6R96"; // #fuel-planning
 
 /**
  * POST /api/fuel-planning/send-tankering-alerts
@@ -77,7 +76,7 @@ export async function POST(req: NextRequest) {
 
   for (const plan of validPlans) {
     const token = randomBytes(24).toString("base64url");
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
     // Store the plan with token
     const { error: insertErr } = await supa.from("fuel_plan_links").insert({
@@ -99,8 +98,9 @@ export async function POST(req: NextRequest) {
 
     const savings = Math.round(plan.tankerSavings);
 
-    // Send all to #fuel-planning for now (testing new format)
-    const channel = DEFAULT_FUEL_CHANNEL;
+    // Resolve per-tail channel, honoring fuel_slack_test_mode admin toggle
+    const intendedChannel = channelByTail.get(plan.tail?.toUpperCase()) ?? null;
+    const channel = await resolveFuelSlackChannel(intendedChannel);
 
     if (slackToken) {
       try {
