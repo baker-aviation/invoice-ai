@@ -4895,7 +4895,10 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {(() => {
         const totalNeeded = (gapAlerts as { totalNeeded?: number } | null)?.totalNeeded ?? 0;
         const alreadyCached = (gapAlerts as { alreadyCached?: number } | null)?.alreadyCached ?? 0;
-        const coveragePct = totalNeeded > 0 ? Math.min(100, Math.round((alreadyCached / totalNeeded) * 100)) : (routeStatus && routeStatus.total_routes > 0 ? 100 : 0);
+        const unaliasedCount = gapAlerts?.newAirports?.length ?? 0;
+        const rawPct = totalNeeded > 0 ? Math.min(100, Math.round((alreadyCached / totalNeeded) * 100)) : (routeStatus && routeStatus.total_routes > 0 ? 100 : 0);
+        // If airports are missing aliases, cap at 99% — cache isn't truly complete
+        const coveragePct = unaliasedCount > 0 ? Math.min(99, rawPct) : rawPct;
         const hasGaps = gapAlerts && (gapAlerts.newAirports.length > 0 || gapAlerts.missingPairs > 0);
         const lastSeeded = routeStatus?.last_computed;
         const seededAgo = lastSeeded ? Math.round((Date.now() - new Date(lastSeeded).getTime()) / 60000) : null;
@@ -4952,7 +4955,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               <div className={`text-xs font-medium ${
                 coveragePct >= 95 ? "text-green-700" : coveragePct >= 80 ? "text-amber-700" : "text-red-700"
               }`}>
-                {coveragePct >= 95 ? "Cache complete — ready to optimize"
+                {coveragePct >= 95 && unaliasedCount === 0 ? "Cache complete — ready to optimize"
+                  : coveragePct >= 95 && unaliasedCount > 0 ? `${unaliasedCount} airport${unaliasedCount > 1 ? "s" : ""} need aliases — add below then re-seed`
                   : coveragePct >= 80 ? `Good enough to optimize, ${gapAlerts?.missingPairs ?? 0} routes missing`
                   : coveragePct > 0 ? "Seed routes before optimizing for best results"
                   : "No routes cached — click Seed Routes"}

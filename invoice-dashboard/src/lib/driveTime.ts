@@ -61,6 +61,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // California
   KBUR: [34.2007, -118.3585],  // Burbank
   KLAX: [33.9425, -118.4081],  // Los Angeles
+  KLVK: [37.6934, -121.8204],  // Livermore Municipal, CA
   KOAK: [37.7213, -122.2208],  // Oakland
   KPAO: [37.4611, -122.1150],  // Palo Alto
   KSAN: [32.7336, -117.1897],  // San Diego
@@ -141,6 +142,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
 
   // New England / Northeast GA
   KASH: [42.7817, -71.5148],   // Nashua/Boire (NH)
+  KLCI: [43.5727, -71.4189],   // Laconia Municipal, NH
   KPWM: [43.6462, -70.3093],   // Portland (ME)
   KBTV: [44.4720, -73.1533],   // Burlington (VT)
   KBUF: [42.9405, -78.7322],   // Buffalo NY

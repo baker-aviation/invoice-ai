@@ -91,6 +91,19 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const [releaseStatus, setReleaseStatus] = useState<Record<number, { status: "idle" | "loading" | "submitted" | "error"; id?: string; message?: string }>>({});
   const [requestingAll, setRequestingAll] = useState(false);
 
+  // Public release status (read-only, by airport code)
+  type PublicRelease = {
+    id: string;
+    airport_code: string;
+    vendor_name: string;
+    vendor_id: string;
+    status: string;
+    vendor_confirmation: string | null;
+  };
+  type PublicVendorMeta = { release_type: string; notes: string | null };
+  const [publicReleases, setPublicReleases] = useState<PublicRelease[]>([]);
+  const [vendorMeta, setVendorMeta] = useState<Record<string, PublicVendorMeta>>({});
+
   const [mlwOverrides, setMlwOverrides] = useState<Record<string, number>>({});
   const [zfwOverrides, setZfwOverrides] = useState<Record<string, number>>({});
   const [feeOverrides, setFeeOverrides] = useState<Record<string, number>>({});
@@ -167,6 +180,57 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
       })
       .catch(() => {});
   }, [token, isAuthed]);
+
+  // Load public release status (no auth required) — visible to everyone
+  useEffect(() => {
+    if (!token) return;
+    fetch(`/api/fuel-planning/shared-plan/${token}/releases`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.ok) return;
+        setPublicReleases(data.releases ?? []);
+        setVendorMeta(data.vendors ?? {});
+      })
+      .catch(() => {});
+  }, [token]);
+
+  // Helper: find release for a specific airport code
+  const getReleaseForAirport = useCallback((airportCode: string): PublicRelease | undefined => {
+    return publicReleases.find((r) => r.airport_code === airportCode && r.status !== "cancelled");
+  }, [publicReleases]);
+
+  // Helper: get payment method info for a vendor name
+  const getPaymentMethod = useCallback((vendorName: string | null): { type: "email" | "card" | "api" | "unknown"; label: string } => {
+    if (!vendorName) return { type: "unknown", label: "Unknown" };
+    const lower = vendorName.toLowerCase();
+    // Card vendors
+    if (lower.includes("signature") || lower === "retail" || lower.includes("horizon card")) {
+      return { type: "card", label: "Card on File" };
+    }
+    // Look up in vendor metadata
+    const meta = vendorMeta[lower];
+    if (meta) {
+      if (meta.release_type === "email") return { type: "email", label: "Email Release" };
+      if (meta.release_type === "card") return { type: "card", label: "Card on File" };
+      if (meta.release_type === "api") return { type: "api", label: "API Release" };
+    }
+    return { type: "unknown", label: "Manual" };
+  }, [vendorMeta]);
+
+  const RELEASE_STATUS_STYLES: Record<string, string> = {
+    pending: "bg-gray-100 text-gray-700",
+    confirmed: "bg-green-100 text-green-700",
+    completed: "bg-green-200 text-green-800",
+    rejected: "bg-red-100 text-red-700",
+    failed: "bg-red-100 text-red-700",
+  };
+
+  const PAYMENT_METHOD_STYLES: Record<string, string> = {
+    email: "bg-blue-50 text-blue-700",
+    card: "bg-amber-50 text-amber-700",
+    api: "bg-green-50 text-green-700",
+    unknown: "bg-gray-50 text-gray-600",
+  };
 
   const submitRelease = async (legIndex: number) => {
     if (!plan?.plan || !token) return;
@@ -463,12 +527,13 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       <th className="pb-2 pr-3 text-right">Fuel to Dest</th>
                       <th className="pb-2 pr-3 text-right">Flight Time</th>
                       <th className="pb-2 pr-3 text-right">Price/gal</th>
-                      <th className="pb-2 pr-3">FBO</th>
+                      <th className="pb-2 pr-3">FBO / Payment</th>
                       <th className="pb-2 pr-3 text-right">Handling Fee</th>
                       <th className="pb-2 pr-3 text-right">Order (lbs)</th>
                       <th className="pb-2 pr-3 text-right">Order (gal)</th>
                       <th className="pb-2 pr-3 text-right">Landing Fuel</th>
                       <th className="pb-2 text-right">Cost</th>
+                      <th className="pb-2 pr-3 text-center">Release</th>
                       {isAuthed && <th className="pb-2 pl-3"></th>}
                     </tr>
                   </thead>
@@ -485,7 +550,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       return (<>
                         {showDayHeader && (
                           <tr key={`day-${i}`} className="bg-gray-50">
-                            <td colSpan={isAuthed ? 11 : 10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                            <td colSpan={isAuthed ? 12 : 11} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
                               {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                             </td>
                           </tr>
@@ -510,6 +575,15 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                             {leg.departureFboVendor && leg.departureFboVendor !== leg.departureFbo && (
                               <div className="text-[10px] text-blue-400 truncate">Fuel: {leg.departureFboVendor}</div>
                             )}
+                            {(() => {
+                              const method = getPaymentMethod(leg.departureFboVendor);
+                              if (method.type === "unknown") return null;
+                              return (
+                                <span className={`inline-block mt-1 px-1.5 py-0.5 text-[10px] font-medium rounded ${PAYMENT_METHOD_STYLES[method.type] ?? PAYMENT_METHOD_STYLES.unknown}`}>
+                                  {method.label}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="py-2.5 pr-3 text-right text-xs">
                             {leg.waiver?.feeWaived > 0 ? (
@@ -533,6 +607,33 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                                 {feePaid > 0 && <div className="text-[10px] text-red-500">+{fmtDollars(feePaid)} fee</div>}
                               </div>
                             ) : <span className="font-mono text-gray-400">—</span>}
+                          </td>
+                          <td className="py-2.5 pr-3 text-center">
+                            {(() => {
+                              const method = getPaymentMethod(leg.departureFboVendor);
+                              if (method.type === "card") {
+                                return (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700 whitespace-nowrap">
+                                    Use Card
+                                  </span>
+                                );
+                              }
+                              if (orderGal <= 0) return <span className="text-gray-300 text-xs">—</span>;
+                              const rel = getReleaseForAirport(leg.from);
+                              if (!rel) {
+                                return <span className="text-[10px] text-gray-400 italic">not requested</span>;
+                              }
+                              return (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${RELEASE_STATUS_STYLES[rel.status] ?? RELEASE_STATUS_STYLES.pending}`}>
+                                    {rel.status}
+                                  </span>
+                                  {rel.vendor_confirmation && (
+                                    <span className="text-[9px] text-gray-400 font-mono">{rel.vendor_confirmation}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
                           {isAuthed && (
                             <td className="py-2.5 pl-3">
@@ -568,6 +669,7 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}</td>
                       <td className="py-2.5 pr-3"></td>
                       <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(optimized.totalTripCost)}</td>
+                      <td className="py-2.5"></td>
                       {isAuthed && <td></td>}
                     </tr>
                   </tfoot>
@@ -606,12 +708,33 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                         <span className="text-xs text-gray-500">{fmtHrs(leg.flightTimeHours)}</span>
                       </div>
 
-                      {/* FBO */}
-                      <div className="text-xs text-gray-600 mb-2">
+                      {/* FBO + payment method + release status */}
+                      <div className="text-xs text-gray-600 mb-2 flex flex-wrap items-center gap-1.5">
                         <span className="font-medium">{leg.departureFbo || leg.waiver?.fboName || "—"}</span>
                         {leg.departureFboVendor && leg.departureFboVendor !== leg.departureFbo && (
-                          <span className="text-blue-500 ml-1">via {leg.departureFboVendor}</span>
+                          <span className="text-blue-500">via {leg.departureFboVendor}</span>
                         )}
+                        {(() => {
+                          const method = getPaymentMethod(leg.departureFboVendor);
+                          if (method.type === "unknown") return null;
+                          return (
+                            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${PAYMENT_METHOD_STYLES[method.type]}`}>
+                              {method.label}
+                            </span>
+                          );
+                        })()}
+                        {(() => {
+                          const method = getPaymentMethod(leg.departureFboVendor);
+                          if (method.type === "card") return null;
+                          if (orderGal <= 0) return null;
+                          const rel = getReleaseForAirport(leg.from);
+                          if (!rel) return null;
+                          return (
+                            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${RELEASE_STATUS_STYLES[rel.status] ?? RELEASE_STATUS_STYLES.pending}`}>
+                              {rel.status}
+                            </span>
+                          );
+                        })()}
                       </div>
 
                       {/* Stats grid */}
