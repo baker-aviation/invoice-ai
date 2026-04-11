@@ -5,8 +5,8 @@
 
 import type { Flight } from "@/lib/opsApi";
 
-/** US ICAO prefixes (mainland K + territory P-prefixes) */
-const US_ICAO_PREFIXES = ["K", "PH", "PA", "PF", "PG", "PJ", "PK", "PM", "PO", "PP", "PW"];
+/** US ICAO prefixes (mainland K + territory P-prefixes + TI USVI + TJ Puerto Rico) */
+const US_ICAO_PREFIXES = ["K", "PH", "PA", "PF", "PG", "PJ", "PK", "PM", "PO", "PP", "PW", "TI", "TJ"];
 
 /** USVI/PR airports — currently treated as domestic (no customs required) */
 const INTL_TREATED_ICAOS = new Set<string>();
