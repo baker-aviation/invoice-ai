@@ -360,6 +360,127 @@ function ReleasePreviewModal({
   );
 }
 
+// ─── Release Detail Modal ───────────────────────────────────────────────────
+
+function ReleaseDetailModal({
+  release,
+  onClose,
+}: {
+  release: FuelRelease;
+  onClose: () => void;
+}) {
+  const statusColor = STATUS_COLORS[release.status] ?? STATUS_COLORS.pending;
+  const history = release.status_history ?? [];
+  const replyEntry = history.find((h) => h.by === "email-reply");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">Release Details</h3>
+            <p className="text-sm text-gray-500">
+              {release.tail_number} &mdash; {strip(release.airport_code)} &mdash; {release.vendor_name}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <span className="text-gray-500">Status</span>
+              <div className="mt-1">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusColor}`}>
+                  {release.status}
+                </span>
+              </div>
+            </div>
+            <div>
+              <span className="text-gray-500">Reference</span>
+              <div className="mt-1 font-mono text-gray-900">{release.vendor_confirmation ?? "—"}</div>
+            </div>
+            <div>
+              <span className="text-gray-500">Gallons</span>
+              <div className="mt-1 font-semibold text-gray-900">{release.gallons_requested.toLocaleString()}</div>
+            </div>
+            <div>
+              <span className="text-gray-500">Date</span>
+              <div className="mt-1 text-gray-900">{release.departure_date}</div>
+            </div>
+            {release.quoted_price && (
+              <div>
+                <span className="text-gray-500">Price/gal</span>
+                <div className="mt-1 text-gray-900">${release.quoted_price.toFixed(2)}</div>
+              </div>
+            )}
+            <div>
+              <span className="text-gray-500">FBO</span>
+              <div className="mt-1 text-gray-900">{release.fbo_name ?? "—"}</div>
+            </div>
+          </div>
+
+          {/* Vendor Reply */}
+          {replyEntry && (
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500">
+                Vendor Reply
+              </div>
+              <div className="px-4 py-3 text-sm">
+                <p className="text-gray-900">{replyEntry.note}</p>
+                <p className="text-xs text-gray-400 mt-2">
+                  {new Date(replyEntry.at).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Timeline */}
+          {history.length > 0 && (
+            <div>
+              <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">Timeline</h4>
+              <div className="space-y-2">
+                {history.map((h, i) => (
+                  <div key={i} className="flex items-start gap-3 text-sm">
+                    <div className="w-1.5 h-1.5 rounded-full bg-gray-400 mt-1.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${STATUS_COLORS[h.status] ?? "bg-gray-100 text-gray-600"}`}>
+                        {h.status}
+                      </span>
+                      <span className="text-xs text-gray-400 ml-2">
+                        {new Date(h.at).toLocaleString()}
+                      </span>
+                      {h.note && (
+                        <p className="text-xs text-gray-600 mt-0.5 truncate">{h.note}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-200 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ─────────────────────────────────────────────────────────
 
 export default function FleetFuelDashboard() {
@@ -374,6 +495,7 @@ export default function FleetFuelDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<Record<string, boolean>>({});
   const [previewPending, setPreviewPending] = useState<PendingRelease | null>(null);
+  const [detailRelease, setDetailRelease] = useState<FuelRelease | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -417,18 +539,14 @@ export default function FleetFuelDashboard() {
     }
   };
 
-  const getRelease = (tail: string, legIndex: number, airportCode?: string): FuelRelease | undefined => {
+  const getRelease = (tail: string, _legIndex: number, airportCode?: string): FuelRelease | undefined => {
     // Match by tail + airport code (stable across plan regeneration)
-    // Fall back to plan_leg_index for legacy releases without airport match
     if (airportCode) {
-      const byAirport = releases.find(
+      return releases.find(
         (r) => r.tail_number === tail && r.airport_code === airportCode && r.status !== "cancelled",
       );
-      if (byAirport) return byAirport;
     }
-    return releases.find(
-      (r) => r.tail_number === tail && r.plan_leg_index === legIndex && r.status !== "cancelled",
-    );
+    return undefined;
   };
 
   // Open preview modal instead of submitting directly
@@ -500,6 +618,14 @@ export default function FleetFuelDashboard() {
             setPreviewPending(null);
             await refreshReleases();
           }}
+        />
+      )}
+
+      {/* Release Detail Modal */}
+      {detailRelease && (
+        <ReleaseDetailModal
+          release={detailRelease}
+          onClose={() => setDetailRelease(null)}
         />
       )}
 
@@ -654,7 +780,10 @@ export default function FleetFuelDashboard() {
                           </td>
                           <td className="py-2 pr-3 text-center">
                             {release ? (
-                              <div className="flex flex-col items-center gap-1">
+                              <button
+                                onClick={() => setDetailRelease(release)}
+                                className="flex flex-col items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
+                              >
                                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[release.status] ?? STATUS_COLORS.pending}`}>
                                   {release.status}
                                 </span>
@@ -664,15 +793,14 @@ export default function FleetFuelDashboard() {
                                 {(() => {
                                   const replyEntry = release.status_history?.find((h) => h.by === "email-reply");
                                   if (!replyEntry?.note) return null;
-                                  // Extract reply snippet from note like 'Reply from user@x.com: "confirmed"'
                                   const snippet = replyEntry.note.replace(/^Reply from [^:]+:\s*"?/, "").replace(/"$/, "");
                                   return (
-                                    <span className="text-[10px] text-gray-500 max-w-[140px] truncate block" title={replyEntry.note}>
+                                    <span className="text-[10px] text-gray-500 max-w-[140px] truncate block">
                                       &ldquo;{snippet.slice(0, 50)}&rdquo;
                                     </span>
                                   );
                                 })()}
-                              </div>
+                              </button>
                             ) : orderGal > 0 ? (
                               <span className="text-xs text-gray-400">—</span>
                             ) : null}
