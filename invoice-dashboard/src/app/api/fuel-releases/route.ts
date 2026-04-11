@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 
 export const dynamic = "force-dynamic";
 
@@ -41,5 +42,32 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to fetch releases" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, releases: data ?? [] });
+  // Sign stored reply attachment URLs so the Release Details modal can
+  // render direct PDF links. Failures don't fail the request.
+  type StoredAttachment = { name: string; gcs_key: string; gcs_bucket: string; content_type: string; size?: number; uploaded_at?: string };
+  const releases = await Promise.all(
+    ((data ?? []) as Array<Record<string, unknown>>).map(async (row) => {
+      const raw: StoredAttachment[] = Array.isArray(row.reply_attachments)
+        ? (row.reply_attachments as StoredAttachment[])
+        : [];
+      const signed = await Promise.all(
+        raw.map(async (a) => {
+          let url: string | null = null;
+          try {
+            url = await signGcsUrl(a.gcs_bucket, a.gcs_key);
+          } catch { /* ignore */ }
+          return {
+            name: a.name,
+            content_type: a.content_type,
+            size: a.size ?? null,
+            uploaded_at: a.uploaded_at ?? null,
+            url,
+          };
+        }),
+      );
+      return { ...row, reply_attachments: signed };
+    }),
+  );
+
+  return NextResponse.json({ ok: true, releases });
 }

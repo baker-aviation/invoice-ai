@@ -103,6 +103,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
     vendor_confirmation?: string | null;
     latest_reply?: { at?: string; note?: string; by?: string } | null;
     timeline?: Array<{ at?: string; status?: string; by?: string; note?: string }>;
+    attachments?: Array<{ name: string; content_type: string; size: number | null; uploaded_at: string | null; url: string | null }>;
   }>>({});
   const [requestingAll, setRequestingAll] = useState(false);
 
@@ -217,6 +218,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
               vendor_confirmation: rel.vendor_confirmation,
               latest_reply: rel.latest_reply,
               timeline: rel.timeline,
+              attachments: rel.attachments,
             };
           }
         }
@@ -701,6 +703,18 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                                       &ldquo;{det.latest_reply.note.slice(0, 40)}{det.latest_reply.note.length > 40 ? "…" : ""}&rdquo;
                                     </span>
                                   )}
+                                  {(det?.attachments ?? []).filter((a) => a.url).map((a, ai) => (
+                                    <a
+                                      key={ai}
+                                      href={a.url ?? "#"}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[9px] text-blue-600 hover:underline truncate max-w-[160px]"
+                                      title={a.name}
+                                    >
+                                      📎 {a.name}
+                                    </a>
+                                  ))}
                                 </div>
                               );
                             })()}
@@ -854,9 +868,44 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                       {/* Request Fuel button (admin) / status display (crew) */}
                       {orderGal > 0 && (() => {
                         const rs = releaseStatus[i];
-                        if (rs?.status === "submitted") return (
-                          <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-green-100 text-green-700 font-medium">Fuel Requested</div>
+                        const det = releaseDetails[i];
+                        const renderDetails = () => (
+                          <>
+                            {det?.vendor_confirmation && (
+                              <div className="mt-1 text-[10px] font-mono text-gray-500 text-center">{det.vendor_confirmation}</div>
+                            )}
+                            {det?.latest_reply?.note && (
+                              <div className="mt-1 text-[10px] text-gray-500 text-center italic">
+                                &ldquo;{det.latest_reply.note.slice(0, 80)}{det.latest_reply.note.length > 80 ? "…" : ""}&rdquo;
+                              </div>
+                            )}
+                            {(det?.attachments ?? []).filter((a) => a.url).map((a, ai) => (
+                              <a
+                                key={ai}
+                                href={a.url ?? "#"}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 block text-center text-[11px] text-blue-600 hover:underline truncate"
+                                title={a.name}
+                              >
+                                📎 {a.name}
+                              </a>
+                            ))}
+                          </>
                         );
+                        if (rs?.status === "submitted") {
+                          const relStatus = det?.status ?? "pending";
+                          const cls =
+                            relStatus === "confirmed" ? "bg-green-100 text-green-700"
+                            : relStatus === "rejected" ? "bg-red-100 text-red-700"
+                            : "bg-amber-100 text-amber-700";
+                          return (
+                            <div className="mt-2">
+                              <div className={`text-center text-xs px-3 py-1.5 rounded-md font-medium ${cls}`}>{relStatus}</div>
+                              {renderDetails()}
+                            </div>
+                          );
+                        }
                         if (rs?.status === "loading") return (
                           <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse">Sending...</div>
                         );

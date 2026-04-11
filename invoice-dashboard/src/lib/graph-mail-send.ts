@@ -7,7 +7,7 @@
 
 const DEFAULT_MAILBOX = "operations@baker-aviation.com";
 
-async function getGraphToken(): Promise<string> {
+export async function getGraphToken(): Promise<string> {
   const tenant = process.env.MS_TENANT_ID;
   const clientId = process.env.MS_CLIENT_ID;
   const clientSecret = process.env.MS_CLIENT_SECRET;
@@ -132,6 +132,7 @@ export async function listMailboxMessages(opts: {
   from: string;
   bodyPreview: string;
   body?: string;
+  hasAttachments?: boolean;
 }>> {
   const token = await getGraphToken();
   const lookback = opts.lookbackMinutes ?? 120;
@@ -147,7 +148,7 @@ export async function listMailboxMessages(opts: {
   url.searchParams.set("$top", String(Math.min(maxMsg, 100)));
   url.searchParams.set("$orderby", "receivedDateTime desc");
   url.searchParams.set("$filter", filterStr);
-  url.searchParams.set("$select", "id,subject,receivedDateTime,from,bodyPreview,body");
+  url.searchParams.set("$select", "id,subject,receivedDateTime,from,bodyPreview,body,hasAttachments");
 
   const res = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${token}` },
@@ -167,5 +168,53 @@ export async function listMailboxMessages(opts: {
     from: m.from?.emailAddress?.address ?? "",
     bodyPreview: m.bodyPreview ?? "",
     body: m.body?.content ?? "",
+    hasAttachments: Boolean(m.hasAttachments),
   }));
+}
+
+/**
+ * Download non-inline attachments from a Graph message to GCS.
+ * Returns metadata for each saved attachment so callers can persist
+ * references on their own tables.
+ */
+export async function downloadMailboxAttachments(opts: {
+  mailbox: string;
+  messageId: string;
+  gcsPrefix: string;
+  allowedContentTypes?: string[];
+}): Promise<Array<{ name: string; gcs_key: string; gcs_bucket: string; content_type: string; size: number }>> {
+  const saved: Array<{ name: string; gcs_key: string; gcs_bucket: string; content_type: string; size: number }> = [];
+  try {
+    const token = await getGraphToken();
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(opts.mailbox)}/messages/${opts.messageId}/attachments`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) return saved;
+    const data = await res.json();
+
+    const { getGcsStorage } = await import("@/lib/gcs-upload");
+    const storage = await getGcsStorage();
+    const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+
+    for (const att of data.value ?? []) {
+      if (att.isInline || !att.contentBytes) continue;
+      const contentType: string = att.contentType || "application/octet-stream";
+      if (opts.allowedContentTypes && !opts.allowedContentTypes.some((t) => contentType.startsWith(t))) {
+        continue;
+      }
+      const safeName = String(att.name || "attachment").replace(/\//g, "_");
+      const gcsKey = `${opts.gcsPrefix}/${Date.now()}-${safeName}`;
+      try {
+        const buf = Buffer.from(att.contentBytes, "base64");
+        await storage.bucket(bucket).file(gcsKey).save(buf, { contentType });
+        saved.push({ name: safeName, gcs_key: gcsKey, gcs_bucket: bucket, content_type: contentType, size: buf.byteLength });
+      } catch (err) {
+        console.error(`[downloadMailboxAttachments] Failed to save ${safeName}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error("[downloadMailboxAttachments] Failed to fetch attachments:", err);
+  }
+  return saved;
 }
