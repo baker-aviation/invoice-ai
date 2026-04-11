@@ -1,5 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 
+export const FUEL_PLANNING_TEST_CHANNEL = "C0ANTTQ6R96"; // #fuel-planning
+
 /**
  * Check if Slack messaging is enabled (kill switch).
  * Returns false if the super admin has disabled Slack via app_settings.
@@ -14,9 +16,37 @@ export async function isSlackEnabled(): Promise<boolean> {
       .single();
     return data?.value !== "false";
   } catch {
-    // If table doesn't exist or query fails, default to enabled
     return true;
   }
+}
+
+/**
+ * When fuel_slack_test_mode is on, all fuel-related Slack messages are
+ * redirected to #fuel-planning regardless of the intended channel.
+ * Unrelated Slack traffic (vans, crew swap, hiring, etc.) is untouched.
+ */
+export async function isFuelSlackTestMode(): Promise<boolean> {
+  try {
+    const supa = createServiceClient();
+    const { data } = await supa
+      .from("app_settings")
+      .select("value")
+      .eq("key", "fuel_slack_test_mode")
+      .single();
+    return data?.value === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the channel a fuel-related Slack message should land in.
+ * Pass the intended channel (e.g. a per-tail channel); we override to the
+ * test channel if fuel_slack_test_mode is on.
+ */
+export async function resolveFuelSlackChannel(intended: string | null | undefined): Promise<string> {
+  if (await isFuelSlackTestMode()) return FUEL_PLANNING_TEST_CHANNEL;
+  return intended || FUEL_PLANNING_TEST_CHANNEL;
 }
 
 /**

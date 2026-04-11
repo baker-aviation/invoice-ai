@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getVendorAdapter, resolveVendorId } from "@/lib/fuelVendors";
-import { postSlackMessage } from "@/lib/slack";
+import { postSlackMessage, resolveFuelSlackChannel } from "@/lib/slack";
 
 export const dynamic = "force-dynamic";
 
@@ -138,13 +138,12 @@ export async function POST(req: NextRequest) {
   const airportLabel = strip(airport as string);
   const priceLabel = quotedPrice ? ` @ $${Number(quotedPrice).toFixed(2)}/gal` : "";
 
-  let channel = "";
   const { data: src } = await supa
     .from("ics_sources")
     .select("slack_channel_id")
     .eq("label", (tailNumber as string).toUpperCase())
     .single();
-  channel = src?.slack_channel_id || "C0ANTTQ6R96"; // fallback: #fuel-planning
+  const channel = await resolveFuelSlackChannel(src?.slack_channel_id ?? null);
 
   await postSlackMessage({
     channel,
