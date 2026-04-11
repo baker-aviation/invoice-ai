@@ -365,13 +365,55 @@ function ReleasePreviewModal({
 function ReleaseDetailModal({
   release,
   onClose,
+  onReplySent,
 }: {
   release: FuelRelease;
   onClose: () => void;
+  onReplySent: () => void;
 }) {
   const statusColor = STATUS_COLORS[release.status] ?? STATUS_COLORS.pending;
   const history = release.status_history ?? [];
   const replyEntry = history.find((h) => h.by === "email-reply");
+
+  const [showCompose, setShowCompose] = useState(false);
+  const [replyBody, setReplyBody] = useState("");
+  const [replyCc, setReplyCc] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const [sendSuccess, setSendSuccess] = useState("");
+
+  const handleSendReply = async () => {
+    if (!replyBody.trim()) {
+      setSendError("Message body is required");
+      return;
+    }
+    setSending(true);
+    setSendError("");
+    setSendSuccess("");
+    try {
+      const res = await fetch("/api/fuel-releases/reply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          releaseId: release.id,
+          body: replyBody,
+          cc: replyCc ? replyCc.split(/[,;\s]+/).filter(Boolean) : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setSendSuccess(data.message || "Reply sent");
+      setReplyBody("");
+      setReplyCc("");
+      setShowCompose(false);
+      onReplySent();
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Send failed");
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -457,7 +499,7 @@ function ReleaseDetailModal({
                         {new Date(h.at).toLocaleString()}
                       </span>
                       {h.note && (
-                        <p className="text-xs text-gray-600 mt-0.5 truncate">{h.note}</p>
+                        <p className="text-xs text-gray-600 mt-0.5 break-words">{h.note}</p>
                       )}
                     </div>
                   </div>
@@ -465,10 +507,77 @@ function ReleaseDetailModal({
               </div>
             </div>
           )}
+
+          {/* Reply Composer */}
+          {showCompose && (
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-blue-50 border-b border-gray-200 text-xs font-medium text-blue-700">
+                Reply to Vendor
+              </div>
+              <div className="px-4 py-3 space-y-3">
+                <div className="text-xs text-gray-500">
+                  From: <span className="font-mono text-gray-700">operations@baker-aviation.com</span>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">CC (optional)</label>
+                  <input
+                    type="text"
+                    value={replyCc}
+                    onChange={(e) => setReplyCc(e.target.value)}
+                    placeholder="comma-separated emails"
+                    className="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Message</label>
+                  <textarea
+                    value={replyBody}
+                    onChange={(e) => setReplyBody(e.target.value)}
+                    rows={5}
+                    placeholder="Type your reply..."
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 resize-none"
+                  />
+                </div>
+                {sendError && (
+                  <div className="p-2 bg-red-50 border border-red-200 rounded text-red-700 text-xs">{sendError}</div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => { setShowCompose(false); setSendError(""); }}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSendReply}
+                    disabled={sending || !replyBody.trim()}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {sending ? "Sending..." : "Send Reply"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {sendSuccess && !showCompose && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+              {sendSuccess}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-200 flex justify-end">
+        <div className="px-6 py-4 border-t border-gray-200 flex justify-between items-center">
+          {!showCompose && (
+            <button
+              onClick={() => setShowCompose(true)}
+              className="px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Reply to Vendor
+            </button>
+          )}
+          {showCompose && <div />}
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
@@ -626,6 +735,9 @@ export default function FleetFuelDashboard() {
         <ReleaseDetailModal
           release={detailRelease}
           onClose={() => setDetailRelease(null)}
+          onReplySent={async () => {
+            await refreshReleases();
+          }}
         />
       )}
 
