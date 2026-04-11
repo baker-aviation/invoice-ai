@@ -243,11 +243,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Group by tail
+    // Group by tail, deduping on (tail, dep, arr, scheduled_departure).
+    // Same values = same flight indexed twice by legacy ICS + JSON syncs.
     const scheduleByTail = new Map<string, ScheduleLeg[]>();
+    const seenKeys = new Set<string>();
     for (const f of flightRows) {
       if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
       const tail = f.tail_number.toUpperCase();
+      const dedupKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      if (seenKeys.has(dedupKey)) continue;
+      seenKeys.add(dedupKey);
       if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
       const originFbo = fboByLeg.get(`${tail}|${f.departure_icao}`) ?? null;
       scheduleByTail.get(tail)!.push({

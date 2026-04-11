@@ -97,6 +97,13 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   // Fuel release state
   const [isAuthed, setIsAuthed] = useState(false);
   const [releaseStatus, setReleaseStatus] = useState<Record<number, { status: "idle" | "loading" | "submitted" | "error"; id?: string; message?: string }>>({});
+  const [releaseDetails, setReleaseDetails] = useState<Record<number, {
+    status: string;
+    vendor_name?: string | null;
+    vendor_confirmation?: string | null;
+    latest_reply?: { at?: string; note?: string; by?: string } | null;
+    timeline?: Array<{ at?: string; status?: string; by?: string; note?: string }>;
+  }>>({});
   const [requestingAll, setRequestingAll] = useState(false);
 
   const [mlwOverrides, setMlwOverrides] = useState<Record<string, number>>({});
@@ -179,21 +186,31 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
           setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
         })
         .catch(() => {});
-    } else {
-      fetch(`/api/fuel-planning/shared-plan/${token}/releases`)
-        .then((r) => r.json())
-        .then((data) => {
-          if (!data.releases) return;
-          const byLeg: Record<number, { status: "submitted"; id: string }> = {};
-          for (const rel of data.releases) {
-            if (rel.plan_leg_index != null) {
-              byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
-            }
-          }
-          setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
-        })
-        .catch(() => {});
     }
+    // Always load public release details (status + reply thread) for
+    // display. This works for crew (unauthed) and admin alike.
+    fetch(`/api/fuel-planning/shared-plan/${token}/releases`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.releases) return;
+        const byLeg: Record<number, { status: "submitted"; id: string }> = {};
+        const details: typeof releaseDetails = {};
+        for (const rel of data.releases) {
+          if (rel.plan_leg_index != null) {
+            byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
+            details[rel.plan_leg_index] = {
+              status: rel.status,
+              vendor_name: rel.vendor_name,
+              vendor_confirmation: rel.vendor_confirmation,
+              latest_reply: rel.latest_reply,
+              timeline: rel.timeline,
+            };
+          }
+        }
+        setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
+        setReleaseDetails(details);
+      })
+      .catch(() => {});
   }, [token, isAuthed]);
 
   const submitRelease = async (legIndex: number) => {
@@ -579,12 +596,32 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                               </div>
                             ) : <span className="font-mono text-gray-400">—</span>}
                           </td>
-                          <td className="py-2.5 pl-3">
+                          <td className="py-2.5 pl-3 align-top">
                             {orderGal > 0 && (() => {
                               const rs = releaseStatus[i];
-                              if (rs?.status === "submitted") return (
-                                <span className="text-xs px-2 py-1 rounded-md bg-green-100 text-green-700 font-medium whitespace-nowrap">Requested</span>
-                              );
+                              const det = releaseDetails[i];
+                              if (rs?.status === "submitted") {
+                                const relStatus = det?.status ?? "pending";
+                                const statusColor =
+                                  relStatus === "confirmed" ? "bg-green-100 text-green-700"
+                                  : relStatus === "rejected" ? "bg-red-100 text-red-700"
+                                  : "bg-amber-100 text-amber-700";
+                                return (
+                                  <div className="flex flex-col items-start gap-0.5">
+                                    <span className={`text-xs px-2 py-1 rounded-md font-medium whitespace-nowrap ${statusColor}`}>
+                                      {relStatus}
+                                    </span>
+                                    {det?.vendor_confirmation && (
+                                      <span className="text-[10px] font-mono text-gray-500">{det.vendor_confirmation}</span>
+                                    )}
+                                    {det?.latest_reply?.note && (
+                                      <span className="text-[10px] text-gray-500 max-w-[180px] truncate" title={det.latest_reply.note}>
+                                        &ldquo;{det.latest_reply.note.slice(0, 40)}{det.latest_reply.note.length > 40 ? "…" : ""}&rdquo;
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              }
                               if (rs?.status === "loading") return (
                                 <span className="text-xs px-2 py-1 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse whitespace-nowrap">Sending...</span>
                               );
