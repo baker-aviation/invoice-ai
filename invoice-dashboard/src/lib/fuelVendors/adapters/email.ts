@@ -176,10 +176,13 @@ export class EmailAdapter implements FuelVendorAdapter {
 
     const subject = `Fuel Release Request — ${req.tailNumber} at ${strip(req.airport)} [${refCode}]`;
 
+    const sendTo = req.toOverride || vendor.contact_email;
+
     const result = await sendGraphMail({
-      to: vendor.contact_email,
+      to: sendTo,
       subject,
       html,
+      cc: req.cc,
     });
 
     if (!result.success) {
@@ -190,11 +193,12 @@ export class EmailAdapter implements FuelVendorAdapter {
       };
     }
 
+    const ccNote = req.cc?.length ? ` (cc: ${req.cc.join(", ")})` : "";
     return {
       success: true,
       status: "pending",
       vendorConfirmation: refCode,
-      message: `Release email sent to ${vendor.contact_email}`,
+      message: `Release email sent to ${sendTo}${ccNote}`,
     };
   }
 

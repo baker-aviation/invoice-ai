@@ -56,6 +56,8 @@ export interface FuelReleaseRequest {
   submittedByEmail?: string;
   planLinkToken?: string;
   planLegIndex?: number;
+  toOverride?: string;      // override the vendor's default email
+  cc?: string[];            // CC recipients
 }
 
 export interface FuelReleaseResponse {

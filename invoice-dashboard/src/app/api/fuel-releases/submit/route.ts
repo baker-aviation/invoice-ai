@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
     airport, fbo, tailNumber, vendorName,
     gallons, quotedPrice, date, notes,
     planLinkToken, planLegIndex,
+    toOverride, cc,
   } = body as Record<string, unknown>;
 
   if (!airport || !tailNumber || !gallons || !date) {
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
   const adapter = getVendorAdapter(vendorId);
 
   // Call the vendor adapter
+  const ccList = Array.isArray(cc) ? (cc as string[]).filter(Boolean) : undefined;
   const releaseReq = {
     airport: airport as string,
     fbo: (fbo as string) ?? "",
@@ -83,6 +85,8 @@ export async function POST(req: NextRequest) {
     submittedByEmail: auth.email,
     planLinkToken: (planLinkToken as string) ?? undefined,
     planLegIndex: planLegIndex != null ? Number(planLegIndex) : undefined,
+    toOverride: (toOverride as string) ?? undefined,
+    cc: ccList,
   };
 
   let adapterResult;

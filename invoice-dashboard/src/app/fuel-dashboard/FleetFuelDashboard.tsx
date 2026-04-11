@@ -117,6 +117,8 @@ function ReleasePreviewModal({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [editTo, setEditTo] = useState("");
+  const [editCc, setEditCc] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editDestination, setEditDestination] = useState("");
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -146,6 +148,8 @@ function ReleasePreviewModal({
         if (!res.ok) throw new Error("Failed to generate preview");
         const data: PreviewData = await res.json();
         setPreview(data);
+        setEditTo(data.to ?? "");
+        setEditCc("");
         setEditNotes(data.editable?.notes ?? "");
         setEditDestination(data.editable?.destination ?? "");
       } catch (err) {
@@ -186,6 +190,8 @@ function ReleasePreviewModal({
           date: leg.departureDate || dateStr,
           notes: editNotes || editDestination || undefined,
           planLegIndex: legIndex,
+          toOverride: editTo !== preview?.to ? editTo : undefined,
+          cc: editCc ? editCc.split(/[,;\s]+/).filter(Boolean) : undefined,
         }),
       });
       if (!res.ok) {
@@ -232,21 +238,36 @@ function ReleasePreviewModal({
             <>
               {/* Email metadata */}
               {preview.to ? (
-                <div className="space-y-2">
-                  <div className="flex gap-2 text-sm">
-                    <span className="font-medium text-gray-500 w-16">To:</span>
-                    <span className="text-gray-900 font-mono">{preview.to}</span>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16 shrink-0">To:</span>
+                    <input
+                      type="email"
+                      value={editTo}
+                      onChange={(e) => setEditTo(e.target.value)}
+                      className="flex-1 border border-gray-300 rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
+                    />
                   </div>
-                  <div className="flex gap-2 text-sm">
-                    <span className="font-medium text-gray-500 w-16">From:</span>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16 shrink-0">CC:</span>
+                    <input
+                      type="text"
+                      value={editCc}
+                      onChange={(e) => setEditCc(e.target.value)}
+                      placeholder="comma-separated emails"
+                      className="flex-1 border border-gray-300 rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16 shrink-0">From:</span>
                     <span className="text-gray-900 font-mono">operations@baker-aviation.com</span>
                   </div>
-                  <div className="flex gap-2 text-sm">
-                    <span className="font-medium text-gray-500 w-16">Subject:</span>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16 shrink-0">Subject:</span>
                     <span className="text-gray-900">{preview.subject}</span>
                   </div>
-                  <div className="flex gap-2 text-sm">
-                    <span className="font-medium text-gray-500 w-16">Vendor:</span>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16 shrink-0">Vendor:</span>
                     <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
                       {preview.vendor}
                     </span>
@@ -631,15 +652,26 @@ export default function FleetFuelDashboard() {
                             ) : null}
                           </td>
                           <td className="py-2 text-right">
-                            {orderGal > 0 && !release && (
-                              <button
-                                onClick={() => openPreview(tailPlan, i)}
-                                disabled={isSubmitting}
-                                className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors disabled:opacity-50 whitespace-nowrap"
-                              >
-                                {isSubmitting ? "..." : "Request"}
-                              </button>
-                            )}
+                            {orderGal > 0 && !release && (() => {
+                              const vname = (leg.departureFboVendor || "").toLowerCase();
+                              const isCard = vname.includes("signature") || vname === "retail" || vname.includes("horizon card");
+                              if (isCard) {
+                                return (
+                                  <span className="text-xs px-2 py-1 rounded-md bg-amber-50 text-amber-700 font-medium whitespace-nowrap">
+                                    Card on File
+                                  </span>
+                                );
+                              }
+                              return (
+                                <button
+                                  onClick={() => openPreview(tailPlan, i)}
+                                  disabled={isSubmitting}
+                                  className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors disabled:opacity-50 whitespace-nowrap"
+                                >
+                                  {isSubmitting ? "..." : "Request"}
+                                </button>
+                              );
+                            })()}
                           </td>
                         </tr>
                       );
@@ -654,3 +686,4 @@ export default function FleetFuelDashboard() {
     </div>
   );
 }
+
