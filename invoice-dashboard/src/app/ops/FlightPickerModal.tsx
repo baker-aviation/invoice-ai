@@ -17,6 +17,7 @@ type TransportOption = {
   duration_minutes: number | null;
   is_direct: boolean;
   connection_count: number;
+  connection_airport: string | null;
   has_backup: boolean;
   backup_flight: string | null;
   score: number;
@@ -659,7 +660,7 @@ function OptionRow({
           )}
           {opt.connection_count > 0 && (
             <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 text-amber-600">
-              {opt.connection_count} stop{opt.connection_count > 1 ? "s" : ""}
+              {opt.connection_count} stop{opt.connection_count > 1 ? "s" : ""}{opt.connection_airport ? ` via ${opt.connection_airport}` : ""}
             </span>
           )}
         </div>

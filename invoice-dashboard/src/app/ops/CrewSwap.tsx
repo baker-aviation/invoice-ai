@@ -184,6 +184,7 @@ type CrewSwapRow = {
   all_swap_points?: string[];
   travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
   flight_number: string | null;
+  connection_airport: string | null;
   departure_time: string | null;
   arrival_time: string | null;
   travel_from: string | null;
@@ -825,8 +826,8 @@ function ScoringSection({ title, rows }: { title: string; rows: { name: string; 
   );
 }
 
-/** Display flight number with connection details — e.g. "UA1232 → UA5369" instead of "UA1232/UA5369" */
-function FlightNumberDisplay({ flightNumber }: { flightNumber: string }) {
+/** Display flight number with connection details — e.g. "UA1232 → UA5369 (via DEN)" */
+function FlightNumberDisplay({ flightNumber, connectionAirport }: { flightNumber: string; connectionAirport?: string | null }) {
   const segments = flightNumber.split("/");
   if (segments.length === 1) {
     return <span className="font-mono text-blue-700 font-medium">{flightNumber}</span>;
@@ -839,7 +840,9 @@ function FlightNumberDisplay({ flightNumber }: { flightNumber: string }) {
           <span>{seg}</span>
         </span>
       ))}
-      <span className="text-[9px] px-1 py-0 rounded bg-amber-100 text-amber-700 ml-1">{segments.length - 1} stop</span>
+      <span className="text-[9px] px-1 py-0 rounded bg-amber-100 text-amber-700 ml-1">
+        {segments.length - 1} stop{connectionAirport ? ` via ${connectionAirport}` : ""}
+      </span>
     </span>
   );
 }
@@ -931,7 +934,7 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
       {/* Flight Number */}
       <td className="px-3 py-1.5 text-xs">
         {row.travel_type === "commercial" && row.flight_number ? (
-          <FlightNumberDisplay flightNumber={row.flight_number} />
+          <FlightNumberDisplay flightNumber={row.flight_number} connectionAirport={row.connection_airport} />
         ) : row.travel_type === "uber" ? (
           <span className="font-mono text-violet-700 font-medium">UBER</span>
         ) : row.travel_type === "rental_car" ? (
@@ -1455,7 +1458,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <div className="flex items-center gap-2 mt-1 text-xs">
                   {/* Transport type badge */}
                   {row.travel_type === "commercial" && row.flight_number ? (
-                    <FlightNumberDisplay flightNumber={row.flight_number} />
+                    <FlightNumberDisplay flightNumber={row.flight_number} connectionAirport={row.connection_airport} />
                   ) : row.travel_type === "uber" ? (
                     <span className="font-mono text-violet-700 font-semibold">UBER</span>
                   ) : row.travel_type === "rental_car" ? (

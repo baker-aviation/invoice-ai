@@ -285,6 +285,7 @@ type TransportCandidate = {
   isBudgetCarrier: boolean;
   hubConnection: boolean;
   connectionCount: number;
+  connectionAirport: string | null;
   offer: FlightOffer | null;
   drive: DriveEstimate | null;
   fboArrivalTime: Date | null;
@@ -765,7 +766,7 @@ function buildCandidates(
         isDirect: true,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive,
         fboArrivalTime: fboArr,
@@ -864,7 +865,7 @@ function buildCandidates(
           isDirect: true,
           isBudgetCarrier: false,
           hubConnection: false,
-          connectionCount: 0,
+          connectionCount: 0, connectionAirport: null,
           offer: null,
           drive: null,
           fboArrivalTime: fboArr,
@@ -1102,6 +1103,7 @@ function buildCandidates(
           isBudgetCarrier: isBudget,
           hubConnection: isHub,
           connectionCount: segs.length - 1,
+          connectionAirport: segs.length > 1 ? segs[0].arrival.iataCode : null,
           offer,
           drive: driveToFbo,
           fboArrivalTime: fboArr,
@@ -1266,6 +1268,7 @@ function buildCandidates(
                 isBudgetCarrier: isBudget,
                 hubConnection: isHub,
                 connectionCount: segs.length - 1,
+                connectionAirport: segs.length > 1 ? segs[0].arrival.iataCode : null,
                 offer,
                 drive: driveToHub,
                 fboArrivalTime: null,
@@ -1310,7 +1313,7 @@ function buildCandidates(
       isDirect: false,
       isBudgetCarrier: false,
       hubConnection: false,
-      connectionCount: 0,
+      connectionCount: 0, connectionAirport: null,
       offer: null,
       drive: null,
       fboArrivalTime: null,
@@ -1879,7 +1882,7 @@ function optimizeTail(
         isDirect: true,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive: onTask.best.drive,
         fboArrivalTime: null,
@@ -2867,7 +2870,7 @@ export function buildSwapPlan(params: {
                 task.best = {
                   type: "none", flightNumber: null, depTime: null, arrTime: null,
                   from: "", to: "", cost: 0, durationMin: 0, isDirect: false,
-                  isBudgetCarrier: false, hubConnection: false, connectionCount: 0,
+                  isBudgetCarrier: false, hubConnection: false, connectionCount: 0, connectionAirport: null,
                   offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null,
                   dutyOnTime: null, score: 0, backups: [],
                 };
@@ -3020,7 +3023,7 @@ export function buildSwapPlan(params: {
         isDirect: false,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive: null,
         fboArrivalTime: null,
@@ -3059,6 +3062,7 @@ export function buildSwapPlan(params: {
       all_swap_points: extractSwapPoints(task.tail, byTail, swapDate).swapPoints.map((sp) => toIata(sp.icao)),
       travel_type: best?.type ?? "none",
       flight_number: best?.flightNumber ?? null,
+      connection_airport: best?.connectionAirport ?? null,
       departure_time: best?.depTime?.toISOString() ?? null,
       arrival_time: best?.arrTime?.toISOString() ?? null,
       travel_from: best?.from ?? null,
