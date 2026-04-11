@@ -114,6 +114,8 @@ interface LegData {
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
   allVendors?: Array<{ vendor: string; price: number; tier: string }>;
+  // Phase 4b: cheaper alternative FBO at same airport
+  cheaperAtOtherFbo?: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null;
   ffSource: "foreflight" | "estimate";
   ffZfw: number | null;   // ForeFlight actual ZFW for this leg
   ffMlw: number | null;   // ForeFlight actual MLW for this leg
@@ -343,33 +345,33 @@ export async function POST(req: NextRequest) {
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
         const fboName = leg.origin_fbo ?? (legWaiver.fboName || null);
 
-        // Fuel price at departure — priority:
-        // 1. Sales rep's pick from trip notes (what they actually chose)
-        // 2. Cheapest contract vendor at this specific FBO
+        // Fuel price at departure — priority (Phase 4a: default to cheapest):
+        // 1. Cheapest contract vendor at selected FBO for expected uplift
+        // 2. Sales rep's pick from trip notes (only if no contract rate found)
         // 3. JetInsight retail Jet A price at this FBO
         // 4. Airport-wide best (only if no FBO name known)
         let depRate = 0;
         let depVendor: string | null = null;
         let priceSource: "trip_notes" | "contract" | "retail" | "airport_fallback" = "contract";
 
-        // 1. Check trip notes fuel choice
-        if (leg.jetinsight_trip_id) {
-          const fc = fuelChoiceMap.get(`${leg.jetinsight_trip_id}|${leg.departure_icao}`);
-          if (fc) {
-            depRate = fc.price;
-            depVendor = fc.vendor;
-            priceSource = "trip_notes";
-          }
-        }
-
-        // 2. Cheapest contract vendor at this FBO
-        if (!depRate && fboName) {
+        // 1. Cheapest contract vendor at this FBO (defaults to cheapest)
+        if (fboName) {
           const estimatedGallons = Math.round(totalFuel / ppg);
           const fboRate = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
           if (fboRate) {
             depRate = fboRate.price;
             depVendor = fboRate.vendor;
             priceSource = "contract";
+          }
+        }
+
+        // 2. Sales rep's manual pick from trip notes (fallback if no contract)
+        if (!depRate && leg.jetinsight_trip_id) {
+          const fc = fuelChoiceMap.get(`${leg.jetinsight_trip_id}|${leg.departure_icao}`);
+          if (fc) {
+            depRate = fc.price;
+            depVendor = fc.vendor;
+            priceSource = "trip_notes";
           }
         }
 
@@ -413,6 +415,28 @@ export async function POST(req: NextRequest) {
               .map((r) => ({ vendor: r.vendor, price: r.price, tier: r.tier }))
           : [];
 
+        // Phase 4b: cheaper alternative FBO at same airport (>10¢/gal delta)
+        let cheaperAtOtherFbo: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null = null;
+        if (depRate > 0 && fboName) {
+          const depVariants = airportVariants(leg.departure_icao);
+          for (const v of depVariants) {
+            const airportBest = bestRates.get(v);
+            if (!airportBest) continue;
+            const sameFbo = airportBest.fbo && fboName &&
+              airportBest.fbo.toLowerCase().includes(fboName.toLowerCase().split(" ")[0]);
+            const delta = depRate - airportBest.price;
+            if (!sameFbo && delta > 0.10) {
+              cheaperAtOtherFbo = {
+                fbo: airportBest.fbo ?? airportBest.vendor,
+                vendor: airportBest.vendor,
+                price: airportBest.price,
+                savingsPerGal: delta,
+              };
+              break;
+            }
+          }
+        }
+
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
@@ -427,6 +451,7 @@ export async function POST(req: NextRequest) {
           bestPriceAtFbo: bestAtFbo,
           bestVendorAtFbo: bestVendorAtFbo,
           allVendors,
+          cheaperAtOtherFbo,
           ffSource: "estimate" as const,
           ffZfw: null,
           ffMlw: null,
