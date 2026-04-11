@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import type { AircraftType, MultiLegPlan } from "@/app/tanker/model";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -87,6 +87,40 @@ export default function AircraftFuelPlans() {
     if (!result?.plans) return [];
     return [...result.plans].sort(sortPlans);
   }, [result]);
+
+  // On mount / when targetDate changes, rehydrate tokens + plans from the
+  // DB so a page refresh doesn't force a regenerate. If plans already exist
+  // for the selected date, populate the list and token map.
+  useEffect(() => {
+    let cancelled = false;
+    setTokensByTail({});
+    fetch(`/api/fuel-planning/plan-links-by-date?date=${targetDate}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.tokens) setTokensByTail(data.tokens);
+        const plans = Object.values(data.plans ?? {}) as TailPlan[];
+        if (plans.length > 0) {
+          setResult((prev) => prev ?? {
+            ok: true,
+            date: targetDate,
+            plans,
+            fleetTotals: {
+              totalFuelCost: plans.reduce((s, p) => s + (p.plan?.totalFuelCost ?? 0), 0),
+              totalFees: plans.reduce((s, p) => s + (p.plan?.totalFees ?? 0), 0),
+              totalTripCost: plans.reduce((s, p) => s + (p.plan?.totalTripCost ?? 0), 0),
+              naiveCost: plans.reduce((s, p) => s + (p.naiveCost ?? 0), 0),
+              tankerSavings: plans.reduce((s, p) => s + (p.tankerSavings ?? 0), 0),
+              planCount: plans.length,
+            },
+            fuelPriceCount: 0,
+            shutdownDataDate: null,
+          });
+        }
+      })
+      .catch(() => { /* first-load, no existing plans is fine */ });
+    return () => { cancelled = true; };
+  }, [targetDate]);
 
   const handleGenerate = useCallback(async () => {
     setGenerating(true);

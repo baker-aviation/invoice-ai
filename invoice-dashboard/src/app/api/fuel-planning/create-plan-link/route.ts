@@ -38,22 +38,52 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "tail, date, and plan required" }, { status: 400 });
   }
 
-  const token = randomBytes(24).toString("base64url");
+  const supa = createServiceClient();
+
+  // Reuse existing (tail, date) row so fuel releases associated with the
+  // old token stay associated across regenerates. Unlocked rows get the
+  // fresh plan_data; locked rows keep the snapshot.
+  const { data: existing } = await supa
+    .from("fuel_plan_links")
+    .select("id, token, locked_at")
+    .eq("tail_number", tail)
+    .eq("date", date)
+    .maybeSingle();
+
+  let token: string;
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-  const supa = createServiceClient();
-  const { error: insertErr } = await supa.from("fuel_plan_links").insert({
-    token,
-    tail_number: tail,
-    aircraft_type: aircraftType ?? null,
-    date,
-    plan_data: planData,
-    expires_at: expiresAt,
-  });
-
-  if (insertErr) {
-    console.error("[create-plan-link] insert error:", insertErr.message);
-    return NextResponse.json({ error: "Failed to create link" }, { status: 500 });
+  if (existing?.token) {
+    token = existing.token;
+    const updates: Record<string, unknown> = {
+      aircraft_type: aircraftType ?? null,
+      expires_at: expiresAt,
+    };
+    if (!existing.locked_at) {
+      updates.plan_data = planData;
+    }
+    const { error: updateErr } = await supa
+      .from("fuel_plan_links")
+      .update(updates)
+      .eq("id", existing.id);
+    if (updateErr) {
+      console.error("[create-plan-link] update error:", updateErr.message);
+      return NextResponse.json({ error: "Failed to update link" }, { status: 500 });
+    }
+  } else {
+    token = randomBytes(24).toString("base64url");
+    const { error: insertErr } = await supa.from("fuel_plan_links").insert({
+      token,
+      tail_number: tail,
+      aircraft_type: aircraftType ?? null,
+      date,
+      plan_data: planData,
+      expires_at: expiresAt,
+    });
+    if (insertErr) {
+      console.error("[create-plan-link] insert error:", insertErr.message);
+      return NextResponse.json({ error: "Failed to create link" }, { status: 500 });
+    }
   }
 
   const origin = req.nextUrl.origin;
