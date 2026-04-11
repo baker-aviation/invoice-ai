@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# nested duplicate (local only, breaks Turbopack builds)
+/invoice-dashboard/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
