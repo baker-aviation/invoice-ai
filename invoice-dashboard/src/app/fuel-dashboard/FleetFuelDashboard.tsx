@@ -686,3 +686,4 @@ export default function FleetFuelDashboard() {
     </div>
   );
 }
+
