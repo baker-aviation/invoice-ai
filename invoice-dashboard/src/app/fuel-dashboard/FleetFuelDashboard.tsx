@@ -56,6 +56,7 @@ type FuelRelease = {
   plan_leg_index: number | null;
   vendor_confirmation: string | null;
   status_history: Array<{ status: string; at: string; by: string; note?: string }> | null;
+  reply_attachments?: Array<{ name: string; content_type: string; size: number | null; uploaded_at: string | null; url: string | null }>;
   created_at: string;
 };
 
@@ -480,6 +481,33 @@ function ReleaseDetailModal({
                 <p className="text-xs text-gray-400 mt-2">
                   {new Date(replyEntry.at).toLocaleString()}
                 </p>
+              </div>
+            </div>
+          )}
+
+          {/* Attachments (PDF confirmations scraped from vendor reply) */}
+          {(release.reply_attachments ?? []).filter((a) => a.url).length > 0 && (
+            <div className="border border-blue-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-blue-50 border-b border-blue-100 text-xs font-medium text-blue-700">
+                Confirmation PDF{(release.reply_attachments ?? []).filter((a) => a.url).length > 1 ? "s" : ""}
+              </div>
+              <div className="px-4 py-3 space-y-1.5">
+                {(release.reply_attachments ?? []).filter((a) => a.url).map((a, i) => (
+                  <a
+                    key={i}
+                    href={a.url ?? "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-3 text-sm text-blue-600 hover:underline"
+                  >
+                    <span className="truncate">📎 {a.name}</span>
+                    {a.size != null && (
+                      <span className="text-xs text-gray-400 shrink-0">
+                        {(a.size / 1024).toFixed(0)} KB
+                      </span>
+                    )}
+                  </a>
+                ))}
               </div>
             </div>
           )}

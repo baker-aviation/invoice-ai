@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret, requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { listMailboxMessages } from "@/lib/graph-mail-send";
+import { listMailboxMessages, downloadMailboxAttachments } from "@/lib/graph-mail-send";
 import { postSlackMessage, resolveFuelSlackChannel } from "@/lib/slack";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   // Get pending/confirmed releases that have a ref code (vendor_confirmation starting with BR-)
   const { data: pendingReleases, error: relErr } = await supa
     .from("fuel_releases")
-    .select("id, vendor_confirmation, tail_number, airport_code, fbo_name, vendor_name, status, status_history")
+    .select("id, vendor_confirmation, tail_number, airport_code, fbo_name, vendor_name, status, status_history, reply_attachments")
     .in("status", ["pending"])
     .not("vendor_confirmation", "is", null)
     .like("vendor_confirmation", "BR-%");
@@ -129,8 +129,23 @@ export async function GET(req: NextRequest) {
 
     const now = new Date().toISOString();
 
-    // Append reply entry to status_history
-    const existingHistory = (release.status_history ?? []) as Array<{ status: string; at: string; by: string; note?: string }>;
+    // Pull PDF attachments from the reply email and stash them on GCS.
+    // We accept PDFs + common image mimetypes; ignore everything else to
+    // avoid storing noise (e.g. signature logos marked non-inline).
+    let savedAttachments: Array<{ name: string; gcs_key: string; gcs_bucket: string; content_type: string; size: number; uploaded_at: string; message_id: string }> = [];
+    if (msg.hasAttachments) {
+      const files = await downloadMailboxAttachments({
+        mailbox: OPS_MAILBOX,
+        messageId: msg.id,
+        gcsPrefix: `fuel-releases/${release.id}`,
+        allowedContentTypes: ["application/pdf", "image/"],
+      });
+      savedAttachments = files.map((f) => ({ ...f, uploaded_at: now, message_id: msg.id }));
+    }
+
+    // Append reply entry to status_history (with attachment count so the
+    // timeline UI can hint at a PDF without needing the full array).
+    const existingHistory = (release.status_history ?? []) as Array<{ status: string; at: string; by: string; note?: string; attachment_count?: number }>;
     const newHistory = [
       ...existingHistory,
       {
@@ -138,8 +153,11 @@ export async function GET(req: NextRequest) {
         at: msg.receivedDateTime || now,
         by: "email-reply",
         note: `Reply from ${msg.from}: "${cleanedPreview.slice(0, 200)}"`,
+        ...(savedAttachments.length > 0 && { attachment_count: savedAttachments.length }),
       },
     ];
+
+    const existingAttachments = (release.reply_attachments ?? []) as Array<Record<string, unknown>>;
 
     // Update the release
     await supa
@@ -147,6 +165,7 @@ export async function GET(req: NextRequest) {
       .update({
         status: newStatus,
         status_history: newHistory,
+        reply_attachments: [...existingAttachments, ...savedAttachments],
       })
       .eq("id", release.id);
 
