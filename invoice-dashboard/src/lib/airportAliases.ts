@@ -362,7 +362,7 @@ const RAW: [string, string, boolean][] = [
   ["KOKC", "KOKC", true],    // Oklahoma City (IS commercial)
 
   // Alaska
-  ["KANC", "KANC", true],    // Anchorage (IS commercial)
+  ["PANC", "PANC", true],    // Anchorage (IS commercial — ICAO is PANC, not KANC)
 
   // USVI
   ["KSTT", "KSTT", true],    // St. Thomas (IS commercial)
@@ -401,6 +401,12 @@ const RAW: [string, string, boolean][] = [
   ["MYNN", "MYNN", true],   // Nassau Bahamas (IS commercial)
   ["MYNN", "KMIA", false],  // Nassau → Miami (backup)
   ["MPTO", "MPTO", true],   // Panama City (IS commercial)
+  // Brazil
+  ["SBCV", "SBVT", true],   // Vitória Eurico de Aguiar Salles → Vitória commercial (VIX)
+  // Canada
+  ["CYQR", "CYQR", true],   // Regina (IS commercial — YQR)
+  // Oregon
+  ["KRDM", "KRDM", true],   // Redmond/Bend (IS commercial — RDM)
 ];
 
 export const DEFAULT_AIRPORT_ALIASES: AirportAliasEntry[] = RAW.map(([fbo, comm, pref]) => ({

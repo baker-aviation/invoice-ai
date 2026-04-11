@@ -1146,17 +1146,18 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const offBadPairing = badPairings ? findBadPairing(offPic?.name, offSic?.name, badPairings) : null;
 
         // Timing analysis: check aircraft never unattended
-        const latestOnArrival = [onPic, onSic]
+        // Aircraft is covered if the EARLIEST oncoming arrives before the EARLIEST offgoing departs
+        const earliestOnArrival = [onPic, onSic]
           .filter((r) => r?.available_time)
           .map((r) => new Date(r!.available_time!).getTime())
-          .sort((a, b) => b - a)[0] ?? null;
+          .sort((a, b) => a - b)[0] ?? null;
         const earliestOffDep = [offPic, offSic]
           .filter((r) => r?.departure_time)
           .map((r) => new Date(r!.departure_time!).getTime())
           .sort((a, b) => a - b)[0] ?? null;
-        const hasGap = latestOnArrival && earliestOffDep && earliestOffDep >= latestOnArrival;
-        const gapMinutes = latestOnArrival && earliestOffDep
-          ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
+        const hasGap = earliestOnArrival && earliestOffDep && earliestOffDep >= earliestOnArrival;
+        const gapMinutes = earliestOnArrival && earliestOffDep
+          ? Math.round((earliestOffDep - earliestOnArrival) / 60_000)
           : null;
 
         // Check if ANY oncoming crew arrives AFTER aircraft departs THEIR swap point
@@ -4520,7 +4521,13 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           { key: "setup" as const, label: "Setup", badge: null },
           { key: "review" as const, label: "Review", badge: Object.values(reviewChecks).every(Boolean) ? "\u2713" : `${Object.values(reviewChecks).filter(Boolean).length}/5` },
           { key: "plan" as const, label: "Plan", badge: swapPlan ? `${swapPlan.rows.length / 4 | 0} tails` : null },
-          { key: "impacts" as const, label: "Impacts", badge: alertCount > 0 ? `${alertCount}` : null },
+          { key: "impacts" as const, label: "Impacts", badge: (() => {
+            const unresolvedImpacts = planImpacts.filter(i => !i.resolved).length;
+            if (alertCount > 0 && unresolvedImpacts > 0) return `${alertCount} alerts / ${unresolvedImpacts} impacts`;
+            if (alertCount > 0) return `${alertCount} alerts`;
+            if (unresolvedImpacts > 0) return `${unresolvedImpacts} impacts`;
+            return null;
+          })() },
           { key: "scoring" as const, label: "Scoring", badge: null },
         ]).map((tab) => (
           <button
@@ -6433,7 +6440,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   }`}>
                     {a.change_type.replace("_", " ")}
                   </span>
-                  <span className="font-mono font-bold text-sm text-gray-900">{a.tail_number}</span>
+                  <button
+                    className="font-mono font-bold text-sm text-blue-700 hover:underline cursor-pointer"
+                    onClick={() => { setActiveTab("plan"); setTimeout(() => document.getElementById(`tail-${a.tail_number}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100); }}
+                    title="Jump to tail in Plan view"
+                  >{a.tail_number}</button>
                   <span className="text-xs text-gray-700">{description}</span>
                   {(a as unknown as { _count: number })._count > 1 && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-500 font-medium">
@@ -6490,7 +6501,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     }`}>
                       {imp.severity}
                     </span>
-                    <span className="font-mono font-bold text-sm text-gray-900">{imp.tail_number}</span>
+                    <button
+                      className="font-mono font-bold text-sm text-blue-700 hover:underline cursor-pointer"
+                      onClick={() => { setActiveTab("plan"); setTimeout(() => document.getElementById(`tail-${imp.tail_number}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100); }}
+                      title="Jump to tail in Plan view"
+                    >{imp.tail_number}</button>
                     {imp.detected_at && (
                       <span className="text-[10px] text-gray-400">
                         {new Date(imp.detected_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}

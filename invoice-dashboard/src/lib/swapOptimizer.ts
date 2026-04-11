@@ -3090,11 +3090,13 @@ export function buildSwapPlan(params: {
           }
           return null;
         }
-        // Offgoing: use arrival home if solved, otherwise last leg + buffer
-        if (best?.arrTime) {
-          return new Date(best.arrTime.getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+        // Offgoing: duty ends 30min after last REVENUE leg wheels-down (trip home is on their own time)
+        const liveLegs = swapDayLegs.filter((f) => isLiveType(f.flight_type));
+        const lastRevLeg = liveLegs[liveLegs.length - 1];
+        if (lastRevLeg?.scheduled_arrival) {
+          return new Date(new Date(lastRevLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
         }
-        // Fallback for unsolved offgoing: duty ends at last leg arrival + buffer
+        // Fallback: use last leg of any type if no revenue legs
         const lastLeg = swapDayLegs[swapDayLegs.length - 1];
         if (lastLeg?.scheduled_arrival) {
           return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
