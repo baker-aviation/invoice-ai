@@ -220,7 +220,7 @@ export async function POST(req: NextRequest) {
 
     const { data: flightRows } = await supa
       .from("flights")
-      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id, jetinsight_event_uuid, flight_type")
       .gte("scheduled_departure", dayStart)
       .lte("scheduled_departure", dayEndExtended)
       .order("scheduled_departure", { ascending: true });
@@ -243,16 +243,46 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Group by tail, deduping on (tail, dep, arr, scheduled_departure).
-    // Same values = same flight indexed twice by legacy ICS + JSON syncs.
+    // Filter phantom flight rows. A phantom is a row with no JetInsight
+    // event UUID — real JSON-synced legs always have one. When such a
+    // row collides with a real leg (same tail + dep + arr + date), drop
+    // the phantom. Standalone phantoms (no collision) still pass through
+    // as a safety net for tails the JSON sync hasn't seen yet.
+    type FlightRow = {
+      tail_number: string;
+      departure_icao: string;
+      arrival_icao: string;
+      scheduled_departure: string;
+      scheduled_arrival: string | null;
+      origin_fbo: string | null;
+      jetinsight_trip_id: string | null;
+      jetinsight_event_uuid: string | null;
+      flight_type: string | null;
+    };
+    const hasRealLegForDayRoute = new Set<string>();
+    for (const f of flightRows as FlightRow[]) {
+      if (!f.jetinsight_event_uuid) continue;
+      const date = f.scheduled_departure.slice(0, 10);
+      hasRealLegForDayRoute.add(
+        `${f.tail_number.toUpperCase()}|${f.departure_icao}|${f.arrival_icao}|${date}`,
+      );
+    }
+
+    // Exact-time dedupe after phantom filter.
     const scheduleByTail = new Map<string, ScheduleLeg[]>();
-    const seenKeys = new Set<string>();
-    for (const f of flightRows) {
+    const seenExactKeys = new Set<string>();
+    for (const f of flightRows as FlightRow[]) {
       if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
       const tail = f.tail_number.toUpperCase();
-      const dedupKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
-      if (seenKeys.has(dedupKey)) continue;
-      seenKeys.add(dedupKey);
+      const date = f.scheduled_departure.slice(0, 10);
+      const dayRouteKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${date}`;
+      if (!f.jetinsight_event_uuid && hasRealLegForDayRoute.has(dayRouteKey)) {
+        continue; // phantom collides with a real leg — drop it
+      }
+      const exactKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      if (seenExactKeys.has(exactKey)) continue;
+      seenExactKeys.add(exactKey);
+
       if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
       const originFbo = fboByLeg.get(`${tail}|${f.departure_icao}`) ?? null;
       scheduleByTail.get(tail)!.push({
