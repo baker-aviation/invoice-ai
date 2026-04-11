@@ -21,7 +21,7 @@ import type {
 } from "../types";
 
 /** Generate a short ref code from a UUID: BR-{first 8 chars uppercase} */
-function makeRefCode(releaseId: string): string {
+export function makeRefCode(releaseId: string): string {
   return `BR-${releaseId.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
 }
 
@@ -30,7 +30,7 @@ function strip(code: string): string {
   return code.length === 4 && code.startsWith("K") ? code.slice(1) : code;
 }
 
-function buildReleaseEmailHtml(opts: {
+export function buildReleaseEmailHtml(opts: {
   tailNumber: string;
   airport: string;
   fbo: string;

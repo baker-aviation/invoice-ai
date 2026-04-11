@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 
 type LegData = {
@@ -56,6 +56,29 @@ type FuelRelease = {
   created_at: string;
 };
 
+type PreviewData = {
+  releaseType: string;
+  vendor: string;
+  to: string | null;
+  subject: string | null;
+  html: string | null;
+  message: string | null;
+  editable?: {
+    notes: string;
+    gallons: number;
+    fbo: string;
+    destination: string;
+    requiresDestination: boolean;
+  };
+};
+
+type PendingRelease = {
+  tailPlan: TailPlan;
+  legIndex: number;
+  leg: LegData;
+  orderGal: number;
+};
+
 function fmtNum(n: number): string {
   return Math.round(n).toLocaleString("en-US");
 }
@@ -77,9 +100,247 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: "bg-yellow-100 text-yellow-700",
 };
 
+// ─── Preview Modal ──────────────────────────────────────────────────────────
+
+function ReleasePreviewModal({
+  pending,
+  dateStr,
+  onClose,
+  onSent,
+}: {
+  pending: PendingRelease;
+  dateStr: string;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editDestination, setEditDestination] = useState("");
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  const { tailPlan, legIndex, leg, orderGal } = pending;
+
+  // Fetch preview on mount
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const res = await fetch("/api/fuel-releases/preview", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            airport: leg.from,
+            fbo: leg.departureFbo || leg.waiver?.fboName || "",
+            tailNumber: tailPlan.tail,
+            vendorName: leg.departureFboVendor || "",
+            gallons: Math.round(orderGal),
+            quotedPrice: leg.departurePricePerGal > 0 ? leg.departurePricePerGal : undefined,
+            date: leg.departureDate || dateStr,
+          }),
+        });
+        if (!res.ok) throw new Error("Failed to generate preview");
+        const data: PreviewData = await res.json();
+        setPreview(data);
+        setEditNotes(data.editable?.notes ?? "");
+        setEditDestination(data.editable?.destination ?? "");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Preview failed");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [leg, tailPlan, orderGal, dateStr, legIndex]);
+
+  // Write HTML to iframe when preview loads
+  useEffect(() => {
+    if (preview?.html && iframeRef.current) {
+      const doc = iframeRef.current.contentDocument;
+      if (doc) {
+        doc.open();
+        doc.write(preview.html);
+        doc.close();
+      }
+    }
+  }, [preview?.html]);
+
+  const handleSend = async () => {
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/fuel-releases/submit", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          airport: leg.from,
+          fbo: leg.departureFbo || leg.waiver?.fboName || "",
+          tailNumber: tailPlan.tail,
+          vendorName: leg.departureFboVendor || "",
+          gallons: Math.round(orderGal),
+          quotedPrice: leg.departurePricePerGal > 0 ? leg.departurePricePerGal : undefined,
+          date: leg.departureDate || dateStr,
+          notes: editNotes || editDestination || undefined,
+          planLegIndex: legIndex,
+        }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || "Submit failed");
+      }
+      onSent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Send failed");
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">
+              Fuel Release Preview
+            </h3>
+            <p className="text-sm text-gray-500">
+              {tailPlan.tail} &mdash; {strip(leg.from)} &rarr; {strip(leg.to)} &mdash; {fmtNum(orderGal)} gal
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {loading && (
+            <div className="text-center py-8 text-gray-500 animate-pulse">Generating email preview...</div>
+          )}
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
+          )}
+
+          {preview && !loading && (
+            <>
+              {/* Email metadata */}
+              {preview.to ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16">To:</span>
+                    <span className="text-gray-900 font-mono">{preview.to}</span>
+                  </div>
+                  <div className="flex gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16">From:</span>
+                    <span className="text-gray-900 font-mono">operations@baker-aviation.com</span>
+                  </div>
+                  <div className="flex gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16">Subject:</span>
+                    <span className="text-gray-900">{preview.subject}</span>
+                  </div>
+                  <div className="flex gap-2 text-sm">
+                    <span className="font-medium text-gray-500 w-16">Vendor:</span>
+                    <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
+                      {preview.vendor}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                  {preview.message}
+                </div>
+              )}
+
+              {/* Email body preview */}
+              {preview.html && (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500">
+                    Email Preview
+                  </div>
+                  <iframe
+                    ref={iframeRef}
+                    title="Email preview"
+                    className="w-full border-0"
+                    style={{ height: "360px" }}
+                    sandbox="allow-same-origin"
+                  />
+                </div>
+              )}
+
+              {/* Editable fields */}
+              {preview.editable?.requiresDestination && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Destination (required by {preview.vendor})
+                  </label>
+                  <input
+                    type="text"
+                    value={editDestination}
+                    onChange={(e) => setEditDestination(e.target.value)}
+                    placeholder="e.g. EGLL, London Heathrow"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Notes (optional)
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Add any notes for the vendor..."
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 resize-none"
+                />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+          >
+            Cancel
+          </button>
+          {preview?.to ? (
+            <button
+              onClick={handleSend}
+              disabled={sending || loading}
+              className="px-5 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {sending ? "Sending..." : "Send Release Email"}
+            </button>
+          ) : preview && !preview.to ? (
+            <button
+              onClick={handleSend}
+              disabled={sending || loading}
+              className="px-5 py-2 text-sm font-medium rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50"
+            >
+              {sending ? "Submitting..." : "Submit Release (Manual)"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Dashboard ─────────────────────────────────────────────────────────
+
 export default function FleetFuelDashboard() {
   const [dateStr, setDateStr] = useState(() => {
-    // Default to tomorrow
     const d = new Date();
     d.setDate(d.getDate() + 1);
     return d.toISOString().split("T")[0];
@@ -89,6 +350,7 @@ export default function FleetFuelDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<Record<string, boolean>>({});
+  const [previewPending, setPreviewPending] = useState<PendingRelease | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -124,13 +386,29 @@ export default function FleetFuelDashboard() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Get release for a specific tail + leg index
+  const refreshReleases = async () => {
+    const relRes = await fetch(`/api/fuel-releases?date=${dateStr}`, { credentials: "include" });
+    if (relRes.ok) {
+      const relData = await relRes.json();
+      setReleases(relData.releases ?? []);
+    }
+  };
+
   const getRelease = (tail: string, legIndex: number): FuelRelease | undefined => {
     return releases.find(
       (r) => r.tail_number === tail && r.plan_leg_index === legIndex && r.status !== "cancelled",
     );
   };
 
+  // Open preview modal instead of submitting directly
+  const openPreview = (tailPlan: TailPlan, legIndex: number) => {
+    const leg = tailPlan.legs[legIndex];
+    const orderGal = tailPlan.plan?.fuelOrderGalByStop[legIndex] ?? 0;
+    if (orderGal <= 0) return;
+    setPreviewPending({ tailPlan, legIndex, leg, orderGal });
+  };
+
+  // Legacy direct submit (used by "Request All")
   const submitRelease = async (tailPlan: TailPlan, legIndex: number) => {
     const leg = tailPlan.legs[legIndex];
     const orderGal = tailPlan.plan?.fuelOrderGalByStop[legIndex] ?? 0;
@@ -152,16 +430,12 @@ export default function FleetFuelDashboard() {
           gallons: Math.round(orderGal),
           quotedPrice: leg.departurePricePerGal > 0 ? leg.departurePricePerGal : undefined,
           date: leg.departureDate || dateStr,
+          planLegIndex: legIndex,
         }),
       });
 
       if (res.ok) {
-        // Refresh releases
-        const relRes = await fetch(`/api/fuel-releases?date=${dateStr}`, { credentials: "include" });
-        if (relRes.ok) {
-          const relData = await relRes.json();
-          setReleases(relData.releases ?? []);
-        }
+        await refreshReleases();
       }
     } catch { /* ignore */ }
 
@@ -185,6 +459,19 @@ export default function FleetFuelDashboard() {
 
   return (
     <div className="space-y-5">
+      {/* Preview Modal */}
+      {previewPending && (
+        <ReleasePreviewModal
+          pending={previewPending}
+          dateStr={dateStr}
+          onClose={() => setPreviewPending(null)}
+          onSent={async () => {
+            setPreviewPending(null);
+            await refreshReleases();
+          }}
+        />
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -346,7 +633,7 @@ export default function FleetFuelDashboard() {
                           <td className="py-2 text-right">
                             {orderGal > 0 && !release && (
                               <button
-                                onClick={() => submitRelease(tailPlan, i)}
+                                onClick={() => openPreview(tailPlan, i)}
                                 disabled={isSubmitting}
                                 className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors disabled:opacity-50 whitespace-nowrap"
                               >
