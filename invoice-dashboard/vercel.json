@@ -83,7 +83,7 @@
     },
     {
       "path": "/api/cron/fbo-mismatch-digest",
-      "schedule": "0 14 * * *"
+      "schedule": "10 14,15 * * *"
     },
     {
       "path": "/api/cron/graph-subscriptions",

@@ -14,6 +14,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  // Cron fires at both 14:00 and 15:00 UTC to cover EDT/EST. Bail unless it's 10 AM Eastern.
+  const easternHour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      hour12: false,
+    }).format(new Date())
+  );
+  if (easternHour !== 10) {
+    return NextResponse.json({ ok: true, skipped: true, easternHour });
+  }
+
   const supa = createServiceClient();
   const now = new Date();
   const horizon = new Date(now.getTime() + 72 * 3600_000).toISOString();
@@ -34,12 +46,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, sent: false, count: 0 });
   }
 
-  // Filter to mismatches where the departing leg is within 72hr
+  // Filter to mismatches where the departing leg is within the next 72hr
   const flightIds = alerts.map((a) => a.flight_id).filter(Boolean) as string[];
   const { data: flights } = await supa
     .from("flights")
     .select("id, scheduled_departure")
     .in("id", flightIds)
+    .gte("scheduled_departure", now.toISOString())
     .lte("scheduled_departure", horizon);
 
   const inWindowIds = new Set((flights ?? []).map((f) => f.id));
@@ -84,6 +97,14 @@ export async function GET(req: NextRequest) {
     channel: FBO_BOSSES_CHANNEL,
     text: message,
   });
+
+  if (result && result.ok !== true) {
+    console.error("[fbo-mismatch-digest] slack post failed:", result.error, result);
+    return NextResponse.json(
+      { ok: false, sent: false, count: relevant.length, slack: result },
+      { status: 502 }
+    );
+  }
 
   console.log(`[fbo-mismatch-digest] sent ${relevant.length} mismatches to #fbo-bosses`);
   return NextResponse.json({ ok: true, sent: true, count: relevant.length, slack: result });
