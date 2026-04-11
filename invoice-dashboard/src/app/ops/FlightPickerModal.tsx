@@ -620,7 +620,18 @@ function OptionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {opt.flight_number && (
-            <span className="font-mono text-sm font-medium text-gray-900">{opt.flight_number}</span>
+            opt.flight_number.includes("/") ? (
+              <span className="font-mono text-sm font-medium text-gray-900 flex items-center gap-0.5">
+                {opt.flight_number.split("/").map((seg, i) => (
+                  <span key={i} className="flex items-center gap-0.5">
+                    {i > 0 && <span className="text-gray-400 text-xs mx-0.5">&rarr;</span>}
+                    <span>{seg}</span>
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="font-mono text-sm font-medium text-gray-900">{opt.flight_number}</span>
+            )
           )}
           {opt.depart_at && opt.arrive_at && (
             <span className="text-xs text-gray-500">

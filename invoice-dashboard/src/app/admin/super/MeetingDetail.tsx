@@ -465,10 +465,10 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                   key={ticket.id}
                   className={`border rounded-lg p-4 transition-colors ${
                     ticket.status === "rejected"
-                      ? "border-zinc-700/50 bg-zinc-900/30 opacity-60"
+                      ? "border-red-800/30 bg-zinc-900/50"
                       : ticket.status === "accepted"
                         ? "border-emerald-700/50 bg-emerald-900/10"
-                        : "border-zinc-700 bg-zinc-800/50"
+                        : "border-zinc-600 bg-zinc-800/70"
                   }`}
                 >
                   <div className="flex gap-4">
@@ -485,7 +485,7 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                             className="h-24 w-auto object-cover"
                           />
                         </button>
-                        <p className="text-[10px] text-zinc-500 text-center mt-1">
+                        <p className="text-[10px] text-zinc-400 text-center mt-1">
                           {formatTime(relevantTimestamp || 0)}
                         </p>
                       </div>
@@ -504,8 +504,8 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                             />
                           ) : (
                             <div className="flex items-center gap-2">
-                              <span className="text-xs font-mono text-zinc-500">{typeIcon(ticket.ticket_type)}</span>
-                              <h4 className="text-sm font-medium text-zinc-100 truncate">{ticket.title}</h4>
+                              <span className="text-xs font-mono text-zinc-400">{typeIcon(ticket.ticket_type)}</span>
+                              <h4 className="text-sm font-medium text-white truncate">{ticket.title}</h4>
                             </div>
                           )}
 
@@ -513,12 +513,12 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                             <span className={`text-xs ${priorityColor(ticket.priority)}`}>
                               {ticket.priority}
                             </span>
-                            <span className="text-xs text-zinc-600">|</span>
-                            <span className="text-xs text-zinc-500">{ticket.ticket_type.replace("_", " ")}</span>
+                            <span className="text-xs text-zinc-500">|</span>
+                            <span className="text-xs text-zinc-300">{ticket.ticket_type.replace("_", " ")}</span>
                             {ticket.assignee_hint && (
                               <>
-                                <span className="text-xs text-zinc-600">|</span>
-                                <span className="text-xs text-zinc-400">{ticket.assignee_hint}</span>
+                                <span className="text-xs text-zinc-500">|</span>
+                                <span className="text-xs text-zinc-200">{ticket.assignee_hint}</span>
                               </>
                             )}
                             {statusBadge(ticket.status)}
@@ -607,7 +607,7 @@ export default function MeetingDetail({ meetingId, onDelete }: { meetingId: numb
                           className="w-full mt-2 px-2 py-1 bg-zinc-700 border border-zinc-600 rounded text-sm text-zinc-200 h-20 resize-y"
                         />
                       ) : ticket.description ? (
-                        <p className="text-sm text-zinc-200 mt-2 line-clamp-3">{ticket.description}</p>
+                        <p className="text-sm text-zinc-50 mt-2 line-clamp-3">{ticket.description}</p>
                       ) : null}
 
                       {/* Add notes before accepting */}

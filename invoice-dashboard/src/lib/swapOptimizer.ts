@@ -3066,21 +3066,38 @@ export function buildSwapPlan(params: {
       cost_estimate: best ? Math.round(best.cost) : null,
       duration_minutes: best?.durationMin ?? null,
       available_time: best?.fboArrivalTime?.toISOString() ?? null,
-      duty_on_time: best?.dutyOnTime?.toISOString() ?? null,
+      duty_on_time: (() => {
+        // Use transport-computed duty-on when available
+        if (best?.dutyOnTime) return best.dutyOnTime.toISOString();
+        // Fallback: compute from the tail's first swap-day leg
+        const tailLegs = byTail.get(task.tail) ?? [];
+        const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+        const firstLeg = swapDayLegs[0];
+        if (firstLeg?.scheduled_departure) {
+          // Duty-on = first leg departure minus FBO_ARRIVAL_BUFFER (60 min)
+          return new Date(new Date(firstLeg.scheduled_departure).getTime() - ms(FBO_ARRIVAL_BUFFER)).toISOString();
+        }
+        return null;
+      })(),
       duty_off_time: (() => {
+        const tailLegs = byTail.get(task.tail) ?? [];
+        const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
         if (task.direction === "oncoming") {
           // Oncoming duty ends: last leg arrival on swap day + DUTY_OFF_AFTER_LAST_LEG
-          const tailLegs = byTail.get(task.tail) ?? [];
-          const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
           const lastLeg = swapDayLegs[swapDayLegs.length - 1];
           if (lastLeg?.scheduled_arrival) {
             return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
           }
           return null;
         }
-        // Offgoing duty ends: arrival home (commercial landing or drive arrival)
+        // Offgoing: use arrival home if solved, otherwise last leg + buffer
         if (best?.arrTime) {
           return new Date(best.arrTime.getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+        }
+        // Fallback for unsolved offgoing: duty ends at last leg arrival + buffer
+        const lastLeg = swapDayLegs[swapDayLegs.length - 1];
+        if (lastLeg?.scheduled_arrival) {
+          return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
         }
         return null;
       })(),
