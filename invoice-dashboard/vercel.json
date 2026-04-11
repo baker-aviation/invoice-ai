@@ -92,6 +92,10 @@
     {
       "path": "/api/cron/hamilton-declines",
       "schedule": "8,18,28,38,48,58 * * * *"
+    },
+    {
+      "path": "/api/cron/fuel-release-replies",
+      "schedule": "5,20,35,50 * * * *"
     }
   ]
 }
