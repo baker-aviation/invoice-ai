@@ -80,22 +80,20 @@ export async function POST(req: NextRequest) {
       ? [strip(planData.shutdownAirport ?? ""), ...planData.legs.map((l: { to: string }) => strip(l.to))].join("-")
       : tail;
 
-    // Pilot summary: brief confirmation. Dispatch: opportunity with View Plan button.
-    const slackPayload = isPilotSummary
-      ? {
-          channel,
-          text: `${tail} ${route} $${savings} saved`,
-          blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${tail}*  ${route} — *$${savings.toLocaleString()} saved*` } }],
-        }
-      : {
-          channel,
-          text: `${tail} tankering opportunity — ${planUrl}`,
-          blocks: [{
-            type: "section",
-            text: { type: "mrkdwn", text: `*${tail}* — Tankering opportunity (~$${savings.toLocaleString()})` },
-            accessory: { type: "button", text: { type: "plain_text", text: "View Plan" }, url: planUrl },
-          }],
-        };
+    // Both modes: just tail + route + View Plan button. Legs/savings live on the linked page.
+    const headerText = isPilotSummary
+      ? `*${tail}*  ${route}`
+      : `*${tail}*  ${route}${savings > 0 ? `  (~$${savings.toLocaleString()} tanker savings)` : ""}`;
+
+    const slackPayload = {
+      channel,
+      text: `${tail} ${route} — ${planUrl}`,
+      blocks: [{
+        type: "section",
+        text: { type: "mrkdwn", text: headerText },
+        accessory: { type: "button", text: { type: "plain_text", text: "View Plan" }, url: planUrl },
+      }],
+    };
 
     try {
       await fetch("https://slack.com/api/chat.postMessage", {
