@@ -19,6 +19,7 @@ const NAV = [
   { href: "/foreflight", label: "Fuel Planning", exact: false, adminOnly: false, superAdminOnly: false },
   { href: "/pilots", label: "Pilots", exact: false, adminOnly: false, superAdminOnly: false },
   { href: "/aircraft", label: "Aircraft", exact: false, adminOnly: false, superAdminOnly: false },
+  { href: "/hamilton", label: "Hamilton", exact: false, adminOnly: true, superAdminOnly: false },
   { href: "/jetinsight", label: "JetInsight", exact: false, adminOnly: true, superAdminOnly: false },
   { href: "/health", label: "Health", exact: false, adminOnly: false, superAdminOnly: true },
   { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true, superAdminOnly: false },
