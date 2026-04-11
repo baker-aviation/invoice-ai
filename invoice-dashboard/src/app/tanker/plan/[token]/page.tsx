@@ -150,29 +150,50 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
       .catch(() => {});
   }, [plan]);
 
-  // Check if viewer is authenticated (for fuel release buttons)
+  // Admins can request fuel. Crew (tokenized link) see status only.
+  const canRequestFuel = mode === "admin";
+
+  // Check if viewer is authenticated for admin-gated API calls
   useEffect(() => {
     fetch("/api/fuel-releases?limit=0", { credentials: "include" })
       .then((r) => { if (r.ok) setIsAuthed(true); })
       .catch(() => {});
   }, []);
 
-  // Load existing releases for this plan token
+  // Load existing releases for this plan token (admin path uses
+  // /api/fuel-releases; crew path uses the public shared-plan releases
+  // endpoint which exposes status + reply).
   useEffect(() => {
-    if (!token || !isAuthed) return;
-    fetch(`/api/fuel-releases?limit=100`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((data) => {
-        if (!data.releases) return;
-        const byLeg: Record<number, { status: "submitted"; id: string }> = {};
-        for (const rel of data.releases) {
-          if (rel.plan_link_token === token && rel.plan_leg_index != null && rel.status !== "cancelled") {
-            byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
+    if (!token) return;
+    if (isAuthed) {
+      fetch(`/api/fuel-releases?limit=100`, { credentials: "include" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.releases) return;
+          const byLeg: Record<number, { status: "submitted"; id: string }> = {};
+          for (const rel of data.releases) {
+            if (rel.plan_link_token === token && rel.plan_leg_index != null && rel.status !== "cancelled") {
+              byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
+            }
           }
-        }
-        setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
-      })
-      .catch(() => {});
+          setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
+        })
+        .catch(() => {});
+    } else {
+      fetch(`/api/fuel-planning/shared-plan/${token}/releases`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.releases) return;
+          const byLeg: Record<number, { status: "submitted"; id: string }> = {};
+          for (const rel of data.releases) {
+            if (rel.plan_leg_index != null) {
+              byLeg[rel.plan_leg_index] = { status: "submitted", id: rel.id };
+            }
+          }
+          setReleaseStatus((prev) => ({ ...prev, ...byLeg }));
+        })
+        .catch(() => {});
+    }
   }, [token, isAuthed]);
 
   const submitRelease = async (legIndex: number) => {
@@ -306,21 +327,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                   {fmtDollars(optimized.totalTripCost)}
                 </span>
               )}
-              {isAuthed && optimized && optimized.fuelOrderGalByStop.some((g: number) => g > 0) && (
-                <button
-                  onClick={submitAllReleases}
-                  disabled={requestingAll || optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")
-                      ? "bg-green-100 text-green-700"
-                      : "bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50"
-                  }`}
-                >
-                  {optimized.fuelOrderGalByStop.every((_: number, i: number) => releaseStatus[i]?.status === "submitted")
-                    ? "All Requested"
-                    : requestingAll ? "Requesting..." : "Request All Fuel"}
-                </button>
-              )}
+              {/* Request All Fuel button removed — releases are requested per-leg from the table below. */}
               <button
                 onClick={async () => {
                   setSlackSending(true);
@@ -354,6 +361,8 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
             <div className="px-4 sm:px-5 py-3">
               <div className="space-y-2">
                 {plan.legs.map((leg, i) => {
+                  // Crew mode: only show the selected plan date's legs.
+                  if (mode === "crew" && date && leg.departureDate && leg.departureDate !== date) return null;
                   const vendors = leg.allVendors ?? [];
                   const chosen = leg.departureFboVendor;
                   const chosenPrice = leg.departurePricePerGal;
@@ -420,11 +429,13 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
         {/* FBO Fees — per leg, three-source merged */}
         {plan.legs.length > 0 && (
           <FboFeesBlock
-            legs={plan.legs.map((l) => ({
-              airport: l.from,
-              fbo_name: l.departureFbo ?? l.waiver?.fboName ?? "",
-              aircraft_type: plan.aircraftType === "CE-750" ? "Citation X" : plan.aircraftType === "CL-30" ? "Challenger 300" : String(plan.aircraftType),
-            }))}
+            legs={plan.legs
+              .filter((l) => mode !== "crew" || !date || !l.departureDate || l.departureDate === date)
+              .map((l) => ({
+                airport: l.from,
+                fbo_name: l.departureFbo ?? l.waiver?.fboName ?? "",
+                aircraft_type: plan.aircraftType === "CE-750" ? "Citation X" : plan.aircraftType === "CL-30" ? "Challenger 300" : String(plan.aircraftType),
+              }))}
             onEditMissing={(q) => setFeeEditTarget(q)}
           />
         )}
@@ -450,6 +461,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
             {showHistory && (
               <div className="px-4 sm:px-5 py-3 border-t border-gray-200 space-y-3">
                 {plan.legs.map((leg, i) => {
+                  if (mode === "crew" && date && leg.departureDate && leg.departureDate !== date) return null;
                   const ap = leg.from.length === 4 && leg.from.startsWith("K") ? leg.from.slice(1) : leg.from;
                   const hist = priceHistory[ap];
                   if (!hist || hist.recentPrices.length === 0) return null;
@@ -501,23 +513,24 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                       <th className="pb-2 pr-3 text-right">Order (gal)</th>
                       <th className="pb-2 pr-3 text-right">Landing Fuel</th>
                       <th className="pb-2 text-right">Cost</th>
-                      {isAuthed && <th className="pb-2 pl-3"></th>}
+                      <th className="pb-2 pl-3">Release</th>
                     </tr>
                   </thead>
                   <tbody>
                     {plan.legs.map((leg, i) => {
+                      if (mode === "crew" && date && leg.departureDate && leg.departureDate !== date) return null;
                       const orderLbs = optimized.fuelOrderLbsByStop[i] ?? 0;
                       const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
                       const landingFuel = optimized.landingFuelByStop[i] ?? 0;
                       const feePaid = optimized.feePaidByStop[i] ?? 0;
                       const legCost = orderGal * leg.departurePricePerGal + feePaid;
                       const prevDate = i > 0 ? plan.legs[i - 1].departureDate : null;
-                      const showDayHeader = leg.departureDate && leg.departureDate !== prevDate;
+                      const showDayHeader = mode !== "crew" && leg.departureDate && leg.departureDate !== prevDate;
 
                       return (<>
                         {showDayHeader && (
                           <tr key={`day-${i}`} className="bg-gray-50">
-                            <td colSpan={isAuthed ? 11 : 10} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                            <td colSpan={11} className="py-1.5 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wide">
                               {new Date(leg.departureDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                             </td>
                           </tr>
@@ -566,29 +579,30 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                               </div>
                             ) : <span className="font-mono text-gray-400">—</span>}
                           </td>
-                          {isAuthed && (
-                            <td className="py-2.5 pl-3">
-                              {orderGal > 0 && (() => {
-                                const rs = releaseStatus[i];
-                                if (rs?.status === "submitted") return (
-                                  <span className="text-xs px-2 py-1 rounded-md bg-green-100 text-green-700 font-medium whitespace-nowrap">Requested</span>
-                                );
-                                if (rs?.status === "loading") return (
-                                  <span className="text-xs px-2 py-1 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse whitespace-nowrap">Sending...</span>
-                                );
-                                if (rs?.status === "error") return (
-                                  <button onClick={() => submitRelease(i)}
-                                    className="text-xs px-2 py-1 rounded-md bg-red-100 text-red-700 font-medium hover:bg-red-200 transition-colors whitespace-nowrap"
-                                    title={rs.message}>Retry</button>
-                                );
-                                return (
-                                  <button onClick={() => submitRelease(i)}
-                                    className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors whitespace-nowrap">
-                                    Request Fuel</button>
-                                );
-                              })()}
-                            </td>
-                          )}
+                          <td className="py-2.5 pl-3">
+                            {orderGal > 0 && (() => {
+                              const rs = releaseStatus[i];
+                              if (rs?.status === "submitted") return (
+                                <span className="text-xs px-2 py-1 rounded-md bg-green-100 text-green-700 font-medium whitespace-nowrap">Requested</span>
+                              );
+                              if (rs?.status === "loading") return (
+                                <span className="text-xs px-2 py-1 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse whitespace-nowrap">Sending...</span>
+                              );
+                              if (rs?.status === "error" && canRequestFuel) return (
+                                <button onClick={() => submitRelease(i)}
+                                  className="text-xs px-2 py-1 rounded-md bg-red-100 text-red-700 font-medium hover:bg-red-200 transition-colors whitespace-nowrap"
+                                  title={rs.message}>Retry</button>
+                              );
+                              if (canRequestFuel) return (
+                                <button onClick={() => submitRelease(i)}
+                                  className="text-xs px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors whitespace-nowrap">
+                                  Request Fuel</button>
+                              );
+                              return (
+                                <span className="text-xs text-gray-400 italic whitespace-nowrap">not requested</span>
+                              );
+                            })()}
+                          </td>
                         </tr>
                       </>);
                     })}
@@ -600,7 +614,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                       <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}</td>
                       <td className="py-2.5 pr-3"></td>
                       <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(optimized.totalTripCost)}</td>
-                      {isAuthed && <td></td>}
+                      <td></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -609,11 +623,12 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
               {/* Mobile cards — hidden on desktop */}
               <div className="md:hidden space-y-3">
                 {plan.legs.map((leg, i) => {
+                  if (mode === "crew" && date && leg.departureDate && leg.departureDate !== date) return null;
                   const orderLbs = optimized.fuelOrderLbsByStop[i] ?? 0;
                   const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
                   const landingFuel = optimized.landingFuelByStop[i] ?? 0;
                   const prevDate = i > 0 ? plan.legs[i - 1].departureDate : null;
-                  const showDayHeader = leg.departureDate && leg.departureDate !== prevDate;
+                  const showDayHeader = mode !== "crew" && leg.departureDate && leg.departureDate !== prevDate;
                   const feePaid = optimized.feePaidByStop[i] ?? 0;
                   const tankerOut = optimized.tankerOutByStop[i] ?? 0;
                   const legCost = orderGal * leg.departurePricePerGal + feePaid;
@@ -689,8 +704,8 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                         )}
                       </div>
 
-                      {/* Request Fuel button */}
-                      {isAuthed && orderGal > 0 && (() => {
+                      {/* Request Fuel button (admin) / status display (crew) */}
+                      {orderGal > 0 && (() => {
                         const rs = releaseStatus[i];
                         if (rs?.status === "submitted") return (
                           <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-green-100 text-green-700 font-medium">Fuel Requested</div>
@@ -698,15 +713,18 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                         if (rs?.status === "loading") return (
                           <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-500 font-medium animate-pulse">Sending...</div>
                         );
-                        if (rs?.status === "error") return (
+                        if (rs?.status === "error" && canRequestFuel) return (
                           <button onClick={() => submitRelease(i)}
                             className="mt-2 w-full text-xs px-3 py-1.5 rounded-md bg-red-100 text-red-700 font-medium hover:bg-red-200 transition-colors"
                             title={rs.message}>Retry Request</button>
                         );
-                        return (
+                        if (canRequestFuel) return (
                           <button onClick={() => submitRelease(i)}
                             className="mt-2 w-full text-xs px-3 py-1.5 rounded-md bg-blue-100 text-blue-700 font-medium hover:bg-blue-200 transition-colors">
                             Request Fuel</button>
+                        );
+                        return (
+                          <div className="mt-2 text-center text-xs px-3 py-1.5 rounded-md bg-gray-50 text-gray-400 italic">Not yet requested</div>
                         );
                       })()}
                     </div>
