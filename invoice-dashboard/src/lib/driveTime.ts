@@ -315,6 +315,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSBA: [34.4262, -119.8404],  // Santa Barbara, CA
   KSBD: [34.0954, -117.2349],  // San Bernardino, CA
   KSEA: [47.4502, -122.3088],  // Seattle-Tacoma, WA
+  KYKM: [46.5682, -120.5441],  // Yakima Air Terminal, WA
   KSTS: [38.5090, -122.8129],  // Charles M Schulz/Sonoma County, CA
   KUDD: [33.7484, -116.2748],  // Bermuda Dunes, CA
 
@@ -384,6 +385,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   MDPC: [18.5674, -68.3634],   // Punta Cana, DR
   MWCR: [19.2928, -81.3577],   // Grand Cayman
   TIST: [18.3373, -64.9734],   // Cyril E. King (St. Thomas, USVI)
+  TISX: [17.7019, -64.7986],   // Henry E. Rohlsen (St. Croix, USVI)
   TNCM: [18.0410, -63.1089],   // St. Maarten
   TQPF: [18.2048, -63.0551],   // Anguilla
   TBPB: [13.0746, -59.4925],   // Barbados
@@ -571,6 +573,7 @@ const COMMERCIAL_AIRPORTS = new Set([
   "CYXX", // Abbotsford
   "CYQA", // Muskoka
   "TIST", // St. Thomas, USVI
+  "TISX", // St. Croix, USVI
   "TJSJ", // San Juan, PR
   "TXKF", // Bermuda
   // Caribbean / Latin America
