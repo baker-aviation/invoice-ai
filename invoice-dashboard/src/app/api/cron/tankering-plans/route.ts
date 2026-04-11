@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
         "Content-Type": "application/json",
         "x-service-key": process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
       },
-      body: JSON.stringify({ date: dateStr }),
+      body: JSON.stringify({ date: dateStr, skipSync: true }),
     });
 
     genData = await genRes.json();

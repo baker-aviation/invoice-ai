@@ -5,6 +5,7 @@ import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { buildBestRateByAirport, airportVariants, getBestRateAtFbo, getAllRatesAtFbo } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, STD_AIRCRAFT, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
 import { getFboWaiver, preloadDbFees } from "@/lib/fboFeeLookup";
+import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -151,10 +152,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const targetDate = (body.date as string) || tomorrow();
+    const skipSync = body.skipSync === true;
 
     const supa = createServiceClient();
 
-    // 0. Preload FBO fees from DB (jetinsight-scrape data)
+    // 0a. Pull fresh shutdown fuel from JetInsight before planning. Skippable
+    // via { skipSync: true } for callers (e.g. the cron) that already ran it.
+    if (!skipSync) {
+      try {
+        await syncPostFlightData(undefined, 1);
+      } catch (err) {
+        console.warn("[fuel-planning/generate] post-flight sync failed (continuing with stale data):", err);
+      }
+    }
+
+    // 0b. Preload FBO fees from DB (jetinsight-scrape data)
     await preloadDbFees();
 
     // 1. Get shutdown fuel + avg burn rates from post-flight data
