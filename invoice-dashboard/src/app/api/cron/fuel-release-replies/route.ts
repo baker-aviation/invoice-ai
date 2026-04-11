@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   // Get pending/confirmed releases that have a ref code (vendor_confirmation starting with BR-)
   const { data: pendingReleases, error: relErr } = await supa
     .from("fuel_releases")
-    .select("id, vendor_confirmation, tail_number, airport_code, fbo_name, vendor_name, status")
+    .select("id, vendor_confirmation, tail_number, airport_code, fbo_name, vendor_name, status, status_history")
     .in("status", ["pending"])
     .not("vendor_confirmation", "is", null)
     .like("vendor_confirmation", "BR-%");
@@ -99,11 +99,23 @@ export async function GET(req: NextRequest) {
     const release = refMap.get(refCode);
     if (!release) continue;
 
+    // Skip if the sender is operations@ itself (our own outgoing emails land in mailbox too)
+    const fromAddr = (msg.from || "").toLowerCase();
+    if (fromAddr.includes("operations@baker-aviation.com") || fromAddr.startsWith("/")) {
+      continue;
+    }
+
     // We have a match — this is a reply to one of our fuel release emails
     matched++;
 
+    // Strip Baker Aviation external caution banner from reply preview
+    const cleanedPreview = (msg.bodyPreview ?? "")
+      .replace(/CAUTION:[^\n]*?open attachments unless[^\n]*/i, "")
+      .replace(/^\s*\[[^\]]+\]\s*/, "")
+      .trim();
+
     // Determine status from reply content (simple keyword matching)
-    const bodyLower = (msg.bodyPreview + " " + (msg.body ?? "")).toLowerCase();
+    const bodyLower = (cleanedPreview + " " + (msg.body ?? "")).toLowerCase();
     let newStatus = "confirmed"; // Default: any reply = confirmed
     if (
       bodyLower.includes("reject") ||
@@ -117,20 +129,24 @@ export async function GET(req: NextRequest) {
 
     const now = new Date().toISOString();
 
+    // Append reply entry to status_history
+    const existingHistory = (release.status_history ?? []) as Array<{ status: string; at: string; by: string; note?: string }>;
+    const newHistory = [
+      ...existingHistory,
+      {
+        status: newStatus,
+        at: msg.receivedDateTime || now,
+        by: "email-reply",
+        note: `Reply from ${msg.from}: "${cleanedPreview.slice(0, 200)}"`,
+      },
+    ];
+
     // Update the release
     await supa
       .from("fuel_releases")
       .update({
         status: newStatus,
-        status_history: [
-          ...(release as unknown as { status_history: Array<{ status: string; at: string; by: string; note?: string }> }).status_history ?? [],
-          {
-            status: newStatus,
-            at: now,
-            by: "email-reply",
-            note: `Reply from ${msg.from}: "${msg.bodyPreview.slice(0, 100)}"`,
-          },
-        ],
+        status_history: newHistory,
       })
       .eq("id", release.id);
 
