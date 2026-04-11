@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
       handlersToFire.add("alert-replies");
       handlersToFire.add("fbo-fee-replies");
       handlersToFire.add("cbp-replies");
+      handlersToFire.add("fuel-release-replies");
     }
     if (resourceLower.includes("fuel@baker-aviation.com")) {
       handlersToFire.add("fuel-prices");
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
     "fbo-fee-replies": "/api/cron/fbo-fee-replies",
     "cbp-replies": "/api/ops/intl/parse-cbp-replies",
     "fuel-prices": "/api/fuel-prices/advertised/pull-mailbox",
+    "fuel-release-replies": "/api/cron/fuel-release-replies",
   };
 
   // Fire-and-forget: trigger each handler
