@@ -348,8 +348,36 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
 
   // ── Mountain / West (more) ─────────────────────────────────────────────────
   KFAT: [36.7762, -119.7181],  // Fresno, CA
+  KEUG: [44.1246, -123.2119],  // Eugene/Mahlon Sweet, OR
   KMHR: [38.5539, -121.2977],  // Sacramento Mather, CA
   KMRY: [36.5870, -121.8430],  // Monterey, CA
+  KPGA: [36.9261, -111.4484],  // Page Municipal, AZ
+  KSEZ: [34.8486, -111.7884],  // Sedona, AZ
+  KTUS: [32.1161, -110.9410],  // Tucson Intl, AZ
+  KCPP: [33.3112, -111.8952],  // Chandler Municipal, AZ
+
+  // ── Northeast (more) ──────────────────────────────────────────────────────
+  "1B1": [42.2913, -73.7103],  // Columbia County, Hudson NY
+  KACK: [41.2531, -70.0602],   // Nantucket Memorial, MA
+  KAFO: [42.2029, -77.8203],   // Afton/South Valley, NY
+  KSYR: [43.1112, -76.1063],   // Syracuse Hancock Intl, NY
+
+  // ── Southeast / Florida (more) ────────────────────────────────────────────
+  KDZB: [30.3917, -86.4711],   // Destin Executive, FL
+  KEYW: [24.5561, -81.7596],   // Key West Intl, FL
+  KFHB: [30.6118, -81.4612],   // Fernandina Beach Municipal, FL
+  KMTH: [24.7262, -81.0514],   // Marathon, FL Keys
+  KOCF: [29.1716, -82.2241],   // Ocala Intl, FL
+  KLEX: [38.0365, -84.6059],   // Lexington Blue Grass, KY
+  KBBG: [36.5322, -93.2005],   // Branson, MO
+
+  // ── Midwest / Plains (more) ───────────────────────────────────────────────
+  KDEC: [39.8347, -88.8657],   // Decatur, IL
+  KLBB: [33.6636, -101.8227],  // Lubbock Preston Smith Intl, TX
+
+  // ── International (more) ──────────────────────────────────────────────────
+  SKGP: [2.5700, -76.6086],    // Popayan, Colombia
+  TAPA: [17.1365, -61.7928],   // V.C. Bird Intl, Antigua
 
   // ── Alaska / Hawaii / Territories ─────────────────────────────────────────
   PANC: [61.1744, -149.9964],  // Anchorage, AK
@@ -397,7 +425,6 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   MPTO: [9.0714, -79.3835],    // Panama City (Tocumen)
   MHTG: [14.0609, -87.2172],   // Tegucigalpa, Honduras
   MGGT: [14.5833, -90.5275],   // Guatemala City
-  TXKF: [32.3640, -64.6787],   // Bermuda
   // Added 2026-04-06 — gap detection coverage
   KFDK: [39.4178, -77.3744],   // Frederick Municipal, MD (near IAD/DCA/BWI)
   KBIS: [46.7727, -100.7468],  // Bismarck, ND
@@ -565,6 +592,9 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KAVL", "KCHA", "KDAY", "KERI", "KFWA", "KGEG", "KHPN",
   "KISP", "KITH", "KMBS", "KMDW", "KMOB", "KPNS", "KSHV",
   "KSWF", "KTYC", "KPIA", "KCWA", "KCKB", "KLFT", "KMLI",
+  // Added 2026-04-11 — next-30-day batch
+  "KACK", "KEUG", "KEYW", "KLBB", "KLEX", "KSYR", "KTUS",
+  "TAPA", // Antigua
   "PANC", // Anchorage (non-K ICAO)
   "PAFA", // Fairbanks
   "PAJN", // Juneau
