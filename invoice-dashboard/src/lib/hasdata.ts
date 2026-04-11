@@ -5,9 +5,31 @@
 import type { FlightOffer, FlightSearchResult } from "./amadeus";
 import { getAirportTimezone } from "./airportTimezones";
 import { BUDGET_CARRIERS } from "./swapRules";
+import { createServiceClient } from "./supabase/service";
 
 const API_KEY = process.env.HASDATA_API_KEY!;
 const BASE_URL = "https://api.hasdata.com/scrape/google/flights";
+
+async function logHasDataCall(row: {
+  endpoint: string;
+  origin: string;
+  destination: string;
+  flight_date: string;
+  adults: number;
+  result_count: number;
+  status_code: number | null;
+  http_ok: boolean;
+  latency_ms: number;
+  caller: string | null;
+  error: string | null;
+}) {
+  try {
+    const supa = createServiceClient();
+    await supa.from("hasdata_api_log").insert(row);
+  } catch {
+    // never block the caller on logging failures
+  }
+}
 
 // ─── Types (HasData response) ────────────────────────────────────────────────
 
@@ -55,8 +77,10 @@ export async function searchFlights(params: {
   date: string;        // YYYY-MM-DD
   adults?: number;
   max?: number;
+  /** Optional tag used for usage stats (which API route triggered this call). */
+  caller?: string;
 }): Promise<FlightSearchResult> {
-  const { origin, destination, date, adults = 1, max = 20 } = params;
+  const { origin, destination, date, adults = 1, caller } = params;
 
   const orig = icaoToIata(origin);
   const dest = icaoToIata(destination);
@@ -72,17 +96,49 @@ export async function searchFlights(params: {
     sortBy: "price",
   });
 
-  const res = await fetch(`${BASE_URL}?${qs}`, {
-    headers: {
-      "x-api-key": API_KEY,
-      "Content-Type": "application/json",
-    },
-  });
+  const startedAt = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}?${qs}`, {
+      headers: {
+        "x-api-key": API_KEY,
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (err) {
+    await logHasDataCall({
+      endpoint: "searchFlights",
+      origin: orig,
+      destination: dest,
+      flight_date: date,
+      adults,
+      result_count: 0,
+      status_code: null,
+      http_ok: false,
+      latency_ms: Date.now() - startedAt,
+      caller: caller ?? null,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 
   const text = await res.text();
 
   if (!res.ok) {
     console.warn(`HasData ${res.status} for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
+    await logHasDataCall({
+      endpoint: "searchFlights",
+      origin: orig,
+      destination: dest,
+      flight_date: date,
+      adults,
+      result_count: 0,
+      status_code: res.status,
+      http_ok: false,
+      latency_ms: Date.now() - startedAt,
+      caller: caller ?? null,
+      error: text.slice(0, 500),
+    });
     if (res.status === 400 || res.status === 401 || res.status === 429 || res.status === 402) {
       return { origin: orig, destination: dest, date, offers: [], count: 0 };
     }
@@ -94,6 +150,19 @@ export async function searchFlights(params: {
     data = JSON.parse(text);
   } catch {
     console.warn(`HasData returned non-JSON for ${orig}->${dest}: ${text.slice(0, 200)}`);
+    await logHasDataCall({
+      endpoint: "searchFlights",
+      origin: orig,
+      destination: dest,
+      flight_date: date,
+      adults,
+      result_count: 0,
+      status_code: res.status,
+      http_ok: false,
+      latency_ms: Date.now() - startedAt,
+      caller: caller ?? null,
+      error: "non-JSON response",
+    });
     return { origin: orig, destination: dest, date, offers: [], count: 0 };
   }
 
@@ -127,6 +196,20 @@ export async function searchFlights(params: {
     }],
     numberOfBookableSeats: 9, // Google Flights doesn't provide seat count
   }));
+
+  await logHasDataCall({
+    endpoint: "searchFlights",
+    origin: orig,
+    destination: dest,
+    flight_date: date,
+    adults,
+    result_count: offers.length,
+    status_code: res.status,
+    http_ok: true,
+    latency_ms: Date.now() - startedAt,
+    caller: caller ?? null,
+    error: null,
+  });
 
   return { origin: orig, destination: dest, date, offers, count: offers.length };
 }
