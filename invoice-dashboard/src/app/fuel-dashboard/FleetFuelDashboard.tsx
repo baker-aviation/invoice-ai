@@ -53,6 +53,8 @@ type FuelRelease = {
   departure_date: string;
   plan_link_token: string | null;
   plan_leg_index: number | null;
+  vendor_confirmation: string | null;
+  status_history: Array<{ status: string; at: string; by: string; note?: string }> | null;
   created_at: string;
 };
 
@@ -415,7 +417,15 @@ export default function FleetFuelDashboard() {
     }
   };
 
-  const getRelease = (tail: string, legIndex: number): FuelRelease | undefined => {
+  const getRelease = (tail: string, legIndex: number, airportCode?: string): FuelRelease | undefined => {
+    // Match by tail + airport code (stable across plan regeneration)
+    // Fall back to plan_leg_index for legacy releases without airport match
+    if (airportCode) {
+      const byAirport = releases.find(
+        (r) => r.tail_number === tail && r.airport_code === airportCode && r.status !== "cancelled",
+      );
+      if (byAirport) return byAirport;
+    }
     return releases.find(
       (r) => r.tail_number === tail && r.plan_leg_index === legIndex && r.status !== "cancelled",
     );
@@ -467,7 +477,7 @@ export default function FleetFuelDashboard() {
     if (!tailPlan.plan) return;
     for (let i = 0; i < tailPlan.legs.length; i++) {
       const orderGal = tailPlan.plan.fuelOrderGalByStop[i] ?? 0;
-      if (orderGal > 0 && !getRelease(tailPlan.tail, i)) {
+      if (orderGal > 0 && !getRelease(tailPlan.tail, i, tailPlan.legs[i].from)) {
         await submitRelease(tailPlan, i);
       }
     }
@@ -566,7 +576,7 @@ export default function FleetFuelDashboard() {
           const acLabel = tailPlan.aircraftType === "CE-750" ? "Citation X" : tailPlan.aircraftType === "CL-30" ? "Challenger 300" : tailPlan.aircraftType;
           const allRequested = tailPlan.legs.every((_, i) => {
             const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
-            return orderGal <= 0 || !!getRelease(tailPlan.tail, i);
+            return orderGal <= 0 || !!getRelease(tailPlan.tail, i, tailPlan.legs[i].from);
           });
 
           return (
@@ -617,7 +627,7 @@ export default function FleetFuelDashboard() {
                       const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
                       const feePaid = optimized.feePaidByStop[i] ?? 0;
                       const legCost = orderGal * leg.departurePricePerGal + feePaid;
-                      const release = getRelease(tailPlan.tail, i);
+                      const release = getRelease(tailPlan.tail, i, leg.from);
                       const isSubmitting = submitting[`${tailPlan.tail}-${i}`];
 
                       return (
@@ -644,14 +654,33 @@ export default function FleetFuelDashboard() {
                           </td>
                           <td className="py-2 pr-3 text-center">
                             {release ? (
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[release.status] ?? STATUS_COLORS.pending}`}>
-                                {release.status}
-                              </span>
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[release.status] ?? STATUS_COLORS.pending}`}>
+                                  {release.status}
+                                </span>
+                                {release.vendor_confirmation && (
+                                  <span className="text-[10px] text-gray-400 font-mono">{release.vendor_confirmation}</span>
+                                )}
+                                {(() => {
+                                  const replyEntry = release.status_history?.find((h) => h.by === "email-reply");
+                                  if (!replyEntry?.note) return null;
+                                  // Extract reply snippet from note like 'Reply from user@x.com: "confirmed"'
+                                  const snippet = replyEntry.note.replace(/^Reply from [^:]+:\s*"?/, "").replace(/"$/, "");
+                                  return (
+                                    <span className="text-[10px] text-gray-500 max-w-[140px] truncate block" title={replyEntry.note}>
+                                      &ldquo;{snippet.slice(0, 50)}&rdquo;
+                                    </span>
+                                  );
+                                })()}
+                              </div>
                             ) : orderGal > 0 ? (
                               <span className="text-xs text-gray-400">—</span>
                             ) : null}
                           </td>
                           <td className="py-2 text-right">
+                            {release && release.status === "pending" && release.vendor_confirmation && (
+                              <span className="text-[10px] text-gray-400 italic">awaiting reply</span>
+                            )}
                             {orderGal > 0 && !release && (() => {
                               const vname = (leg.departureFboVendor || "").toLowerCase();
                               const isCard = vname.includes("signature") || vname === "retail" || vname.includes("horizon card");
