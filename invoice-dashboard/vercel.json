@@ -55,7 +55,7 @@
     },
     {
       "path": "/api/cron/jetinsight-trip-pax",
-      "schedule": "0 12-24 * * *"
+      "schedule": "0 12-23 * * *"
     },
     {
       "path": "/api/cron/jetinsight-salespersons",
