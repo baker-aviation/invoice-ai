@@ -363,6 +363,70 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
     );
   }
 
+  // Phase 6: Alert on tails appearing in JI but missing a Slack channel.
+  // Collects tails from scraped events, compares against ics_sources, and
+  // posts a single Slack alert for any tail without slack_channel_id.
+  try {
+    const seenTails = new Set<string>();
+    for (const e of events) {
+      if (e.tailNumber) seenTails.add(e.tailNumber.toUpperCase());
+    }
+    if (seenTails.size > 0) {
+      const { data: icsRows } = await supa
+        .from("ics_sources")
+        .select("label, slack_channel_id, slack_alerted_at")
+        .in("label", [...seenTails]);
+      const byLabel = new Map<string, { slack_channel_id: string | null; slack_alerted_at: string | null }>();
+      for (const r of icsRows ?? []) {
+        byLabel.set((r.label ?? "").toUpperCase(), {
+          slack_channel_id: r.slack_channel_id,
+          slack_alerted_at: r.slack_alerted_at,
+        });
+      }
+
+      const DEDUP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+      const nowIso = new Date().toISOString();
+      const missingTails: string[] = [];
+      for (const tail of seenTails) {
+        const row = byLabel.get(tail);
+        const hasChannel = row?.slack_channel_id;
+        if (hasChannel) continue;
+        const alertedAt = row?.slack_alerted_at ? new Date(row.slack_alerted_at).getTime() : 0;
+        if (Date.now() - alertedAt < DEDUP_WINDOW_MS) continue;
+        missingTails.push(tail);
+      }
+
+      if (missingTails.length > 0) {
+        const { postSlackMessage, resolveFuelSlackChannel } = await import("@/lib/slack");
+        await postSlackMessage({
+          channel: await resolveFuelSlackChannel(null),
+          text: `JetInsight sync: ${missingTails.length} tail${missingTails.length === 1 ? "" : "s"} missing Slack channel`,
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `*JetInsight sync — unmapped tails*\nTails seen in the schedule feed without a per-tail Slack channel in \`ics_sources\`:\n${missingTails.map((t) => `• \`${t}\``).join("\n")}\n\nAdd a \`slack_channel_id\` in \`ics_sources\` to route future alerts to the tail's crew channel.`,
+              },
+            },
+          ],
+        });
+        for (const tail of missingTails) {
+          await supa
+            .from("ics_sources")
+            .upsert(
+              { label: tail, slack_alerted_at: nowIso, enabled: byLabel.has(tail) ? undefined : false },
+              { onConflict: "label" },
+            );
+        }
+      }
+    }
+  } catch (err) {
+    result.errors.push(
+      `[NewTailAlert] ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Log sync run
   await supa.from("jetinsight_sync_runs").insert({
     sync_type: "schedule",

@@ -285,6 +285,7 @@ type TransportCandidate = {
   isBudgetCarrier: boolean;
   hubConnection: boolean;
   connectionCount: number;
+  connectionAirport: string | null;
   offer: FlightOffer | null;
   drive: DriveEstimate | null;
   fboArrivalTime: Date | null;
@@ -765,7 +766,7 @@ function buildCandidates(
         isDirect: true,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive,
         fboArrivalTime: fboArr,
@@ -864,7 +865,7 @@ function buildCandidates(
           isDirect: true,
           isBudgetCarrier: false,
           hubConnection: false,
-          connectionCount: 0,
+          connectionCount: 0, connectionAirport: null,
           offer: null,
           drive: null,
           fboArrivalTime: fboArr,
@@ -1102,6 +1103,7 @@ function buildCandidates(
           isBudgetCarrier: isBudget,
           hubConnection: isHub,
           connectionCount: segs.length - 1,
+          connectionAirport: segs.length > 1 ? segs[0].arrival.iataCode : null,
           offer,
           drive: driveToFbo,
           fboArrivalTime: fboArr,
@@ -1266,6 +1268,7 @@ function buildCandidates(
                 isBudgetCarrier: isBudget,
                 hubConnection: isHub,
                 connectionCount: segs.length - 1,
+                connectionAirport: segs.length > 1 ? segs[0].arrival.iataCode : null,
                 offer,
                 drive: driveToHub,
                 fboArrivalTime: null,
@@ -1310,7 +1313,7 @@ function buildCandidates(
       isDirect: false,
       isBudgetCarrier: false,
       hubConnection: false,
-      connectionCount: 0,
+      connectionCount: 0, connectionAirport: null,
       offer: null,
       drive: null,
       fboArrivalTime: null,
@@ -1879,7 +1882,7 @@ function optimizeTail(
         isDirect: true,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive: onTask.best.drive,
         fboArrivalTime: null,
@@ -2867,7 +2870,7 @@ export function buildSwapPlan(params: {
                 task.best = {
                   type: "none", flightNumber: null, depTime: null, arrTime: null,
                   from: "", to: "", cost: 0, durationMin: 0, isDirect: false,
-                  isBudgetCarrier: false, hubConnection: false, connectionCount: 0,
+                  isBudgetCarrier: false, hubConnection: false, connectionCount: 0, connectionAirport: null,
                   offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null,
                   dutyOnTime: null, score: 0, backups: [],
                 };
@@ -3020,7 +3023,7 @@ export function buildSwapPlan(params: {
         isDirect: false,
         isBudgetCarrier: false,
         hubConnection: false,
-        connectionCount: 0,
+        connectionCount: 0, connectionAirport: null,
         offer: null,
         drive: null,
         fboArrivalTime: null,
@@ -3059,6 +3062,7 @@ export function buildSwapPlan(params: {
       all_swap_points: extractSwapPoints(task.tail, byTail, swapDate).swapPoints.map((sp) => toIata(sp.icao)),
       travel_type: best?.type ?? "none",
       flight_number: best?.flightNumber ?? null,
+      connection_airport: best?.connectionAirport ?? null,
       departure_time: best?.depTime?.toISOString() ?? null,
       arrival_time: best?.arrTime?.toISOString() ?? null,
       travel_from: best?.from ?? null,
@@ -3066,21 +3070,40 @@ export function buildSwapPlan(params: {
       cost_estimate: best ? Math.round(best.cost) : null,
       duration_minutes: best?.durationMin ?? null,
       available_time: best?.fboArrivalTime?.toISOString() ?? null,
-      duty_on_time: best?.dutyOnTime?.toISOString() ?? null,
+      duty_on_time: (() => {
+        // Use transport-computed duty-on when available
+        if (best?.dutyOnTime) return best.dutyOnTime.toISOString();
+        // Fallback: compute from the tail's first swap-day leg
+        const tailLegs = byTail.get(task.tail) ?? [];
+        const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+        const firstLeg = swapDayLegs[0];
+        if (firstLeg?.scheduled_departure) {
+          // Duty-on = first leg departure minus FBO_ARRIVAL_BUFFER (60 min)
+          return new Date(new Date(firstLeg.scheduled_departure).getTime() - ms(FBO_ARRIVAL_BUFFER)).toISOString();
+        }
+        return null;
+      })(),
       duty_off_time: (() => {
+        const tailLegs = byTail.get(task.tail) ?? [];
+        const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
         if (task.direction === "oncoming") {
           // Oncoming duty ends: last leg arrival on swap day + DUTY_OFF_AFTER_LAST_LEG
-          const tailLegs = byTail.get(task.tail) ?? [];
-          const swapDayLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
           const lastLeg = swapDayLegs[swapDayLegs.length - 1];
           if (lastLeg?.scheduled_arrival) {
             return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
           }
           return null;
         }
-        // Offgoing duty ends: arrival home (commercial landing or drive arrival)
-        if (best?.arrTime) {
-          return new Date(best.arrTime.getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+        // Offgoing: duty ends 30min after last REVENUE leg wheels-down (trip home is on their own time)
+        const liveLegs = swapDayLegs.filter((f) => isLiveType(f.flight_type));
+        const lastRevLeg = liveLegs[liveLegs.length - 1];
+        if (lastRevLeg?.scheduled_arrival) {
+          return new Date(new Date(lastRevLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
+        }
+        // Fallback: use last leg of any type if no revenue legs
+        const lastLeg = swapDayLegs[swapDayLegs.length - 1];
+        if (lastLeg?.scheduled_arrival) {
+          return new Date(new Date(lastLeg.scheduled_arrival).getTime() + ms(DUTY_OFF_AFTER_LAST_LEG)).toISOString();
         }
         return null;
       })(),

@@ -12,6 +12,7 @@ type LegData = {
   departurePricePerGal: number;
   departureFboVendor: string | null;
   departureFbo: string | null;
+  cheaperAtOtherFbo?: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null;
   ffSource: string;
   waiver: {
     fboName: string;
@@ -55,6 +56,7 @@ type FuelRelease = {
   plan_leg_index: number | null;
   vendor_confirmation: string | null;
   status_history: Array<{ status: string; at: string; by: string; note?: string }> | null;
+  reply_attachments?: Array<{ name: string; content_type: string; size: number | null; uploaded_at: string | null; url: string | null }>;
   created_at: string;
 };
 
@@ -483,6 +485,33 @@ function ReleaseDetailModal({
             </div>
           )}
 
+          {/* Attachments (PDF confirmations scraped from vendor reply) */}
+          {(release.reply_attachments ?? []).filter((a) => a.url).length > 0 && (
+            <div className="border border-blue-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-blue-50 border-b border-blue-100 text-xs font-medium text-blue-700">
+                Confirmation PDF{(release.reply_attachments ?? []).filter((a) => a.url).length > 1 ? "s" : ""}
+              </div>
+              <div className="px-4 py-3 space-y-1.5">
+                {(release.reply_attachments ?? []).filter((a) => a.url).map((a, i) => (
+                  <a
+                    key={i}
+                    href={a.url ?? "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-3 text-sm text-blue-600 hover:underline"
+                  >
+                    <span className="truncate">📎 {a.name}</span>
+                    {a.size != null && (
+                      <span className="text-xs text-gray-400 shrink-0">
+                        {(a.size / 1024).toFixed(0)} KB
+                      </span>
+                    )}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Timeline */}
           {history.length > 0 && (
             <div>
@@ -875,8 +904,13 @@ export default function FleetFuelDashboard() {
                             <span className="text-gray-400 mx-1">&rarr;</span>
                             <span className="font-medium text-gray-900">{strip(leg.to)}</span>
                           </td>
-                          <td className="py-2 pr-3 text-xs text-gray-700 max-w-[140px] truncate">
-                            {leg.departureFbo || leg.waiver?.fboName || "—"}
+                          <td className="py-2 pr-3 text-xs text-gray-700 max-w-[140px]">
+                            <div className="truncate">{leg.departureFbo || leg.waiver?.fboName || "—"}</div>
+                            {leg.cheaperAtOtherFbo && (
+                              <div className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 inline-block">
+                                {leg.cheaperAtOtherFbo.fbo} ${leg.cheaperAtOtherFbo.price.toFixed(2)} (−${leg.cheaperAtOtherFbo.savingsPerGal.toFixed(2)}/gal)
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 pr-3 text-xs text-blue-600 max-w-[120px] truncate">
                             {leg.departureFboVendor || "—"}

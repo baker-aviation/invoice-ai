@@ -1,6 +1,5 @@
 export const dynamic = "force-dynamic";
 
-import { Topbar } from "@/components/Topbar";
 import JetInsightClient from "../JetInsightClient";
 
 export default async function JetInsightPage({
@@ -13,7 +12,6 @@ export default async function JetInsightPage({
 
   return (
     <>
-      <Topbar title="JetInsight Sync" />
       <JetInsightClient initialTab={initialTab} />
     </>
   );

@@ -14,6 +14,7 @@ import DayResultsTabs from "./crew-swap/DayResultsTabs";
 import PairConstraintEditor from "./crew-swap/PairConstraintEditor";
 import type { ValidationResult } from "@/lib/swapValidation";
 import { type SwapDay, dayToDate, isCrewAvailableForDay, sortDays, DAY_LABELS } from "@/lib/swapDays";
+import * as RULES from "@/lib/swapRules";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -183,6 +184,7 @@ type CrewSwapRow = {
   all_swap_points?: string[];
   travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
   flight_number: string | null;
+  connection_airport: string | null;
   departure_time: string | null;
   arrival_time: string | null;
   travel_from: string | null;
@@ -806,6 +808,45 @@ function isLiveFlightType(type: string | null): boolean {
 
 // ─── Swap Sheet (Excel-matching layout) ─────────────────────────────────────
 
+/** Scoring tab section — displays a group of optimizer rules */
+function ScoringSection({ title, rows }: { title: string; rows: { name: string; value: string; desc: string }[] }) {
+  return (
+    <div className="px-4 py-3">
+      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{title}</h4>
+      <div className="space-y-1">
+        {rows.map((r) => (
+          <div key={r.name} className="flex items-baseline gap-3 text-xs py-1 border-b border-gray-50 last:border-0">
+            <code className="font-mono text-[10px] text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded shrink-0">{r.name}</code>
+            <span className="font-semibold text-gray-900 shrink-0 min-w-[80px]">{r.value}</span>
+            <span className="text-gray-500">{r.desc}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Display flight number with connection details — e.g. "UA1232 → UA5369 (via DEN)" */
+function FlightNumberDisplay({ flightNumber, connectionAirport }: { flightNumber: string; connectionAirport?: string | null }) {
+  const segments = flightNumber.split("/");
+  if (segments.length === 1) {
+    return <span className="font-mono text-blue-700 font-medium">{flightNumber}</span>;
+  }
+  return (
+    <span className="font-mono text-blue-700 font-medium flex items-center gap-0.5 flex-wrap">
+      {segments.map((seg, i) => (
+        <span key={i} className="flex items-center gap-0.5">
+          {i > 0 && <span className="text-gray-400 text-[9px] mx-0.5">&rarr;</span>}
+          <span>{seg}</span>
+        </span>
+      ))}
+      <span className="text-[9px] px-1 py-0 rounded bg-amber-100 text-amber-700 ml-1">
+        {segments.length - 1} stop{connectionAirport ? ` via ${connectionAirport}` : ""}
+      </span>
+    </span>
+  );
+}
+
 /** Duty day duration tag — shows hours or duty-on time for oncoming without duty_off */
 function DutyDayTag({ row }: { row: CrewSwapRow }) {
   if (row.duty_on_time && row.duty_off_time) {
@@ -893,7 +934,7 @@ function SwapSheetRow({ row, onArrivalOverride, onToggleConfirm }: { row: CrewSw
       {/* Flight Number */}
       <td className="px-3 py-1.5 text-xs">
         {row.travel_type === "commercial" && row.flight_number ? (
-          <span className="font-mono text-blue-700 font-medium">{row.flight_number}</span>
+          <FlightNumberDisplay flightNumber={row.flight_number} connectionAirport={row.connection_airport} />
         ) : row.travel_type === "uber" ? (
           <span className="font-mono text-violet-700 font-medium">UBER</span>
         ) : row.travel_type === "rental_car" ? (
@@ -1108,17 +1149,18 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const offBadPairing = badPairings ? findBadPairing(offPic?.name, offSic?.name, badPairings) : null;
 
         // Timing analysis: check aircraft never unattended
-        const latestOnArrival = [onPic, onSic]
+        // Aircraft is covered if the EARLIEST oncoming arrives before the EARLIEST offgoing departs
+        const earliestOnArrival = [onPic, onSic]
           .filter((r) => r?.available_time)
           .map((r) => new Date(r!.available_time!).getTime())
-          .sort((a, b) => b - a)[0] ?? null;
+          .sort((a, b) => a - b)[0] ?? null;
         const earliestOffDep = [offPic, offSic]
           .filter((r) => r?.departure_time)
           .map((r) => new Date(r!.departure_time!).getTime())
           .sort((a, b) => a - b)[0] ?? null;
-        const hasGap = latestOnArrival && earliestOffDep && earliestOffDep >= latestOnArrival;
-        const gapMinutes = latestOnArrival && earliestOffDep
-          ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
+        const hasGap = earliestOnArrival && earliestOffDep && earliestOffDep >= earliestOnArrival;
+        const gapMinutes = earliestOnArrival && earliestOffDep
+          ? Math.round((earliestOffDep - earliestOnArrival) / 60_000)
           : null;
 
         // Check if ANY oncoming crew arrives AFTER aircraft departs THEIR swap point
@@ -1416,7 +1458,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <div className="flex items-center gap-2 mt-1 text-xs">
                   {/* Transport type badge */}
                   {row.travel_type === "commercial" && row.flight_number ? (
-                    <span className="font-mono text-blue-700 font-semibold">{row.flight_number}</span>
+                    <FlightNumberDisplay flightNumber={row.flight_number} connectionAirport={row.connection_airport} />
                   ) : row.travel_type === "uber" ? (
                     <span className="font-mono text-violet-700 font-semibold">UBER</span>
                   ) : row.travel_type === "rental_car" ? (
@@ -1489,15 +1531,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           : "border-l-green-500";
 
         return (
-          <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${isLocked ? "ring-2 ring-blue-300" : ""} ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
+          <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${isLocked ? "ring-2 ring-amber-400" : ""} ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
             {/* Tail header */}
-            <div className={`px-4 py-2 border-b flex items-center justify-between ${isLocked ? "bg-blue-50" : "bg-gray-50"}`}>
+            <div className={`px-4 py-2 border-b flex items-center justify-between ${isLocked ? "bg-amber-50" : "bg-gray-50"}`}>
               <div className="flex items-center gap-2">
                 {onLockTail && (
                   <button
                     onClick={() => onLockTail(tail)}
-                    className={`w-6 h-6 rounded flex items-center justify-center text-sm transition-colors ${
-                      isLocked ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-400 hover:bg-gray-300"
+                    className={`w-7 h-7 rounded flex items-center justify-center text-sm transition-colors ${
+                      isLocked ? "bg-amber-500 text-white shadow-sm" : "bg-gray-200 text-gray-400 hover:bg-gray-300"
                     }`}
                     title={isLocked ? "Unlock — optimizer will recalculate this tail" : "Lock — keep this assignment during re-optimization"}
                   >
@@ -1505,6 +1547,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                   </button>
                 )}
                 <span className="font-mono font-bold text-gray-900">{tail}</span>
+                {isLocked && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold tracking-wide">LOCKED</span>}
                 {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
                 {(() => {
                   const allPts = [...new Set(onPic?.all_swap_points ?? onSic?.all_swap_points ?? offPic?.all_swap_points ?? [])];
@@ -2303,7 +2346,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const wednesdayPlan = dayPlans["wednesday"] ?? null;
   // Daily pairs are now managed as force_pair constraints with day field in swapConstraints
   // Tabs
-  const [activeTab, setActiveTab] = useState<"setup" | "review" | "plan" | "impacts">("setup");
+  const [activeTab, setActiveTab] = useState<"setup" | "review" | "plan" | "impacts" | "scoring">("setup");
   // Toasts
   const [toasts, setToasts] = useState<Toast[]>([]);
   const addToast = useCallback((type: Toast["type"], msg: string) => {
@@ -4481,7 +4524,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           { key: "setup" as const, label: "Setup", badge: null },
           { key: "review" as const, label: "Review", badge: Object.values(reviewChecks).every(Boolean) ? "\u2713" : `${Object.values(reviewChecks).filter(Boolean).length}/5` },
           { key: "plan" as const, label: "Plan", badge: swapPlan ? `${swapPlan.rows.length / 4 | 0} tails` : null },
-          { key: "impacts" as const, label: "Impacts", badge: alertCount > 0 ? `${alertCount}` : null },
+          { key: "impacts" as const, label: "Impacts", badge: (() => {
+            const unresolvedImpacts = planImpacts.filter(i => !i.resolved).length;
+            if (alertCount > 0 && unresolvedImpacts > 0) return `${alertCount} alerts / ${unresolvedImpacts} impacts`;
+            if (alertCount > 0) return `${alertCount} alerts`;
+            if (unresolvedImpacts > 0) return `${unresolvedImpacts} impacts`;
+            return null;
+          })() },
+          { key: "scoring" as const, label: "Scoring", badge: null },
         ]).map((tab) => (
           <button
             key={tab.key}
@@ -5669,6 +5719,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 No swap assignments — upload Excel or auto-detect
               </span>
             )}
+            {lockedTails.size > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-bold">
+                {lockedTails.size} tail{lockedTails.size !== 1 ? "s" : ""} locked
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {routeStatus && routeStatus.total_routes > 0 && (() => {
@@ -6388,7 +6443,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   }`}>
                     {a.change_type.replace("_", " ")}
                   </span>
-                  <span className="font-mono font-bold text-sm text-gray-900">{a.tail_number}</span>
+                  <button
+                    className="font-mono font-bold text-sm text-blue-700 hover:underline cursor-pointer"
+                    onClick={() => { setActiveTab("plan"); setTimeout(() => document.getElementById(`tail-${a.tail_number}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100); }}
+                    title="Jump to tail in Plan view"
+                  >{a.tail_number}</button>
                   <span className="text-xs text-gray-700">{description}</span>
                   {(a as unknown as { _count: number })._count > 1 && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-500 font-medium">
@@ -6445,7 +6504,11 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     }`}>
                       {imp.severity}
                     </span>
-                    <span className="font-mono font-bold text-sm text-gray-900">{imp.tail_number}</span>
+                    <button
+                      className="font-mono font-bold text-sm text-blue-700 hover:underline cursor-pointer"
+                      onClick={() => { setActiveTab("plan"); setTimeout(() => document.getElementById(`tail-${imp.tail_number}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100); }}
+                      title="Jump to tail in Plan view"
+                    >{imp.tail_number}</button>
                     {imp.detected_at && (
                       <span className="text-[10px] text-gray-400">
                         {new Date(imp.detected_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}
@@ -6542,6 +6605,83 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         </details>
       )}
 
+      </>}
+
+      {/* ═══ SCORING TAB ═══ */}
+      {activeTab === "scoring" && <>
+      <div className="space-y-4">
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Optimization Scoring Rules</h3>
+            <p className="text-xs text-gray-500 mt-1">These constants drive all optimizer decisions. Reference only — changes require a code update.</p>
+          </div>
+
+          <div className="divide-y">
+            {/* Duty & Rest Limits */}
+            <ScoringSection title="Duty & Rest Limits" rows={[
+              { name: "MAX_DUTY_HOURS", value: `${RULES.MAX_DUTY_HOURS}h`, desc: "Maximum duty day for Part 135 legs (wheels down)" },
+              { name: "MIN_REST_HOURS", value: `${RULES.MIN_REST_HOURS}h`, desc: "Minimum uninterrupted rest between duty periods" },
+              { name: "MAX_FLIGHT_HOURS_24", value: `${RULES.MAX_FLIGHT_HOURS_24}h`, desc: "Maximum flight time in any 24-hour period" },
+            ]} />
+
+            {/* Timing Buffers */}
+            <ScoringSection title="Timing Buffers" rows={[
+              { name: "DUTY_ON_BEFORE_COMMERCIAL", value: `${RULES.DUTY_ON_BEFORE_COMMERCIAL} min`, desc: "Duty starts this long before commercial flight departure" },
+              { name: "DEPLANE_BUFFER", value: `${RULES.DEPLANE_BUFFER} min`, desc: "Time to deplane and reach ground transport" },
+              { name: "TERMINAL_TO_FBO_BUFFER", value: `${RULES.TERMINAL_TO_FBO_BUFFER} min`, desc: "Uber time from commercial terminal to FBO" },
+              { name: "FBO_ARRIVAL_BUFFER", value: `${RULES.FBO_ARRIVAL_BUFFER} min`, desc: "Must arrive at FBO this long before departure" },
+              { name: "FBO_ARRIVAL_BUFFER_PREFERRED", value: `${RULES.FBO_ARRIVAL_BUFFER_PREFERRED} min`, desc: "Preferred FBO arrival buffer (bonus scoring)" },
+              { name: "RELAXED_FBO_ARRIVAL_BUFFER", value: `${RULES.RELAXED_FBO_ARRIVAL_BUFFER} min`, desc: "Relaxed buffer for unsolved tails (pass 3)" },
+              { name: "DUTY_OFF_AFTER_LAST_LEG", value: `${RULES.DUTY_OFF_AFTER_LAST_LEG} min`, desc: "Duty ends this long after last leg wheels down" },
+              { name: "INTERNATIONAL_DUTY_OFF", value: `${RULES.INTERNATIONAL_DUTY_OFF} min`, desc: "Extra time after international legs for customs" },
+              { name: "AIRPORT_SECURITY_BUFFER", value: `${RULES.AIRPORT_SECURITY_BUFFER} min`, desc: "Time before departure for security/gate" },
+              { name: "MIN_OFFGOING_COMMERCIAL_BUFFER", value: `${RULES.MIN_OFFGOING_COMMERCIAL_BUFFER} min`, desc: "Minimum gap: last leg wheels-down → commercial departure" },
+              { name: "RENTAL_RETURN_BUFFER", value: `${RULES.RENTAL_RETURN_BUFFER} min`, desc: "Extra time for returning a rental car" },
+              { name: "EARLIEST_DUTY_ON_HOUR", value: `${String(RULES.EARLIEST_DUTY_ON_HOUR).padStart(2, "0")}00L`, desc: "Avoid duty-on before this local hour" },
+            ]} />
+
+            {/* Ground Transport */}
+            <ScoringSection title="Ground Transport" rows={[
+              { name: "GROUND_ONLY_CUTOFF_HOUR", value: `${String(RULES.GROUND_ONLY_CUTOFF_HOUR).padStart(2, "0")}00L`, desc: "Departures before this hour = ground-only (no commercial)" },
+              { name: "UBER_MAX_MINUTES", value: `${RULES.UBER_MAX_MINUTES} min`, desc: "Max drive time for Uber" },
+              { name: "RENTAL_MIN_MINUTES", value: `${RULES.RENTAL_MIN_MINUTES} min`, desc: "Minimum drive time for rental car" },
+              { name: "RENTAL_MAX_MINUTES", value: `${RULES.RENTAL_MAX_MINUTES} min (${RULES.RENTAL_MAX_MINUTES / 60}h)`, desc: "Max drive time for rental car" },
+              { name: "RELAXED_RENTAL_MAX_MINUTES", value: `${RULES.RELAXED_RENTAL_MAX_MINUTES} min (${RULES.RELAXED_RENTAL_MAX_MINUTES / 60}h)`, desc: "Relaxed rental limit for unsolved tails (pass 3)" },
+              { name: "RENTAL_HANDOFF_FUEL_COST", value: `$${RULES.RENTAL_HANDOFF_FUEL_COST}`, desc: "Cost when offgoing takes oncoming's rental (fuel only)" },
+              { name: "HANDOFF_BUFFER_MINUTES", value: `${RULES.HANDOFF_BUFFER_MINUTES} min`, desc: "Oncoming must arrive this long before offgoing departs FBO" },
+            ]} />
+
+            {/* Flight Preferences */}
+            <ScoringSection title="Flight Preferences" rows={[
+              { name: "MAX_CONNECTIONS", value: String(RULES.MAX_CONNECTIONS), desc: "Max connections per itinerary" },
+              { name: "RELAXED_MAX_CONNECTIONS", value: String(RULES.RELAXED_MAX_CONNECTIONS), desc: "Relaxed limit for unsolved tails (pass 3)" },
+              { name: "BUDGET_CARRIERS", value: RULES.BUDGET_CARRIERS.join(", "), desc: "Last-resort only: Spirit, Frontier, Allegiant" },
+              { name: "PREFERRED_HUBS", value: RULES.PREFERRED_HUBS.join(", "), desc: "Preferred connection airports (scoring bonus)" },
+              { name: "BACKUP_FLIGHT_MIN_GAP", value: `${RULES.BACKUP_FLIGHT_MIN_GAP} min`, desc: "Backup flight must depart this long after primary" },
+            ]} />
+
+            {/* Swap Day Rules */}
+            <ScoringSection title="Swap Day & Crew Rules" rows={[
+              { name: "SWAP_DAY", value: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][RULES.SWAP_DAY], desc: "Default swap day" },
+              { name: "OLD_CREW_HOME_BY_HOUR", value: `${RULES.OLD_CREW_HOME_BY_HOUR}:00`, desc: "Offgoing crew must be home by this hour" },
+              { name: "STAGGER_MIN_GAP_HOURS", value: `${RULES.STAGGER_MIN_GAP_HOURS}h`, desc: "Warn if two crews arrive at same airport within this gap" },
+            ]} />
+
+            {/* Volunteer Bonuses */}
+            <ScoringSection title="Volunteer Bonuses" rows={[
+              { name: "EARLY_LATE_BONUS_PIC", value: `$${RULES.EARLY_LATE_BONUS_PIC.toLocaleString()}`, desc: "PIC early/late volunteer bonus" },
+              { name: "EARLY_LATE_BONUS_SIC", value: `$${RULES.EARLY_LATE_BONUS_SIC.toLocaleString()}`, desc: "SIC early/late volunteer bonus" },
+            ]} />
+
+            {/* TEB Airport */}
+            <ScoringSection title="TEB Airport Preferences" rows={[
+              { name: "TEB_PENALTY_AIRPORTS", value: RULES.TEB_PENALTY_AIRPORTS.join(", "), desc: "Airports penalized for TEB swaps (bad Uber access)" },
+              { name: "TEB_OFFGOING_PENALTY", value: String(RULES.TEB_OFFGOING_PENALTY), desc: "Score penalty for offgoing via LGA/JFK" },
+              { name: "TEB_ONCOMING_PENALTY", value: String(RULES.TEB_ONCOMING_PENALTY), desc: "Score penalty for oncoming via LGA/JFK" },
+            ]} />
+          </div>
+        </div>
+      </div>
       </>}
 
       {/* Toast notifications */}

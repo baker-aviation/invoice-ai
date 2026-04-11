@@ -40,6 +40,7 @@ type TransportOption = {
   duration_minutes: number | null;
   is_direct: boolean;
   connection_count: number;
+  connection_airport: string | null;
   has_backup: boolean;
   backup_flight: string | null;
   score: number;
@@ -274,6 +275,7 @@ export async function GET(req: NextRequest) {
           duration_minutes: totalDuration,
           is_direct: isDirect,
           connection_count: connectionCount,
+          connection_airport: segs.length > 1 ? segs[0].arrival.iataCode : null,
           has_backup: false,
           backup_flight: null,
           score,
@@ -313,7 +315,7 @@ export async function GET(req: NextRequest) {
           cost_estimate: cost,
           duration_minutes: driveMin,
           is_direct: true,
-          connection_count: 0,
+          connection_count: 0, connection_airport: null,
           has_backup: false,
           backup_flight: null,
           score: isUber ? 70 : 50,
@@ -338,7 +340,7 @@ export async function GET(req: NextRequest) {
           cost_estimate: driveCost,
           duration_minutes: driveMin,
           is_direct: true,
-          connection_count: 0,
+          connection_count: 0, connection_airport: null,
           has_backup: false,
           backup_flight: null,
           score: 40,

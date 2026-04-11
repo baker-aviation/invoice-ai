@@ -96,6 +96,10 @@
     {
       "path": "/api/cron/fuel-release-replies",
       "schedule": "5,20,35,50 * * * *"
+    },
+    {
+      "path": "/api/cron/cleanup-flight-phantoms",
+      "schedule": "37 * * * *"
     }
   ]
 }

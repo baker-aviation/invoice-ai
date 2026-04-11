@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,10 @@ type Ctx = { params: Promise<{ token: string }> };
  * Public read-only endpoint that returns release status info for legs in
  * a shared fuel plan. No auth required — uses the plan token to validate.
  *
- * Returns minimal info: status, ref code, vendor name, payment method.
- * Does NOT expose reply text, status history, or internal notes.
+ * Returns: status, ref code, vendor name, payment method, plus the
+ * latest vendor email reply and a trimmed status_history timeline so
+ * crews can see correspondence. Deliberately excludes submitter emails
+ * and internal notes.
  */
 export async function GET(_req: NextRequest, ctx: Ctx) {
   const { token } = await ctx.params;
@@ -37,7 +40,9 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   // Get all active releases for this tail
   const { data: releases } = await supa
     .from("fuel_releases")
-    .select("id, tail_number, airport_code, vendor_name, vendor_id, status, vendor_confirmation, departure_date, gallons_requested, plan_link_token, plan_leg_index, fbo_name")
+    .select(
+      "id, tail_number, airport_code, vendor_name, vendor_id, status, vendor_confirmation, departure_date, gallons_requested, quoted_price, plan_link_token, plan_leg_index, fbo_name, status_history, reply_attachments",
+    )
     .eq("tail_number", planLink.tail_number)
     .neq("status", "cancelled")
     .order("created_at", { ascending: false });
@@ -54,20 +59,56 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     if (v.slug) vendorByName.set(v.slug.toLowerCase(), { release_type: v.release_type, notes: v.notes });
   }
 
-  // Strip sensitive fields, keep only display info
-  const publicReleases = (releases ?? []).map((r) => ({
-    id: r.id,
-    airport_code: r.airport_code,
-    vendor_name: r.vendor_name,
-    vendor_id: r.vendor_id,
-    status: r.status,
-    vendor_confirmation: r.vendor_confirmation,
-    departure_date: r.departure_date,
-    gallons_requested: r.gallons_requested,
-    plan_link_token: r.plan_link_token,
-    plan_leg_index: r.plan_leg_index,
-    fbo_name: r.fbo_name,
-  }));
+  type HistoryEntry = { at?: string; status?: string; by?: string; note?: string };
+  type StoredAttachment = { name: string; gcs_key: string; gcs_bucket: string; content_type: string; size?: number; uploaded_at?: string };
+
+  const publicReleases = await Promise.all(
+    (releases ?? []).map(async (r) => {
+      const history: HistoryEntry[] = Array.isArray(r.status_history) ? r.status_history : [];
+      const replies = history.filter((h) => h.by === "email-reply");
+      const rawAttachments: StoredAttachment[] = Array.isArray(r.reply_attachments) ? r.reply_attachments : [];
+      const attachments = await Promise.all(
+        rawAttachments.map(async (a) => {
+          let url: string | null = null;
+          try {
+            url = await signGcsUrl(a.gcs_bucket, a.gcs_key);
+          } catch (err) {
+            console.warn("[shared-plan/releases] signGcsUrl failed:", err);
+          }
+          return {
+            name: a.name,
+            content_type: a.content_type,
+            size: a.size ?? null,
+            uploaded_at: a.uploaded_at ?? null,
+            url,
+          };
+        }),
+      );
+
+      return {
+        id: r.id,
+        airport_code: r.airport_code,
+        vendor_name: r.vendor_name,
+        vendor_id: r.vendor_id,
+        status: r.status,
+        vendor_confirmation: r.vendor_confirmation,
+        departure_date: r.departure_date,
+        gallons_requested: r.gallons_requested,
+        quoted_price: r.quoted_price,
+        plan_link_token: r.plan_link_token,
+        plan_leg_index: r.plan_leg_index,
+        fbo_name: r.fbo_name,
+        latest_reply: replies.length > 0 ? replies[replies.length - 1] : null,
+        timeline: history.map((h) => ({
+          at: h.at,
+          status: h.status,
+          by: h.by,
+          note: h.note,
+        })),
+        attachments,
+      };
+    }),
+  );
 
   return NextResponse.json({
     ok: true,

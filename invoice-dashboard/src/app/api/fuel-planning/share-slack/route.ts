@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { resolveFuelSlackChannel } from "@/lib/slack";
 import { randomBytes } from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -104,7 +105,7 @@ export async function POST(req: NextRequest) {
 
   for (const tp of withSavings) {
     const linkToken = randomBytes(24).toString("base64url");
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
     await supa.from("fuel_plan_links").insert({
       token: linkToken,
       tail_number: tp.tail,
@@ -162,7 +163,7 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ channel, text: fallback, blocks }),
+      body: JSON.stringify({ channel: await resolveFuelSlackChannel(channel), text: fallback, blocks }),
     });
 
     const result = await res.json();

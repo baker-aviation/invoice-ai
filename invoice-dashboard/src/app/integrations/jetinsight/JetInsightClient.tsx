@@ -29,7 +29,7 @@ export default function JetInsightClient({
     window.history.replaceState(
       null,
       "",
-      slug ? `/jetinsight/${slug}` : "/jetinsight",
+      slug ? `/integrations/jetinsight/${slug}` : "/integrations/jetinsight",
     );
   }
 

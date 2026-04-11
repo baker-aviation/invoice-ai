@@ -20,6 +20,8 @@ const SEED_VENDORS = [
   // Physical card
   { name: "Signature", slug: "signature", contact_email: null, release_type: "card", is_international: false, requires_destination: false, notes: "Use Physical Horizon Card" },
   { name: "Retail", slug: "retail", contact_email: null, release_type: "card", is_international: false, requires_destination: false, notes: "Use Physical Horizon Card" },
+  { name: "Atlantic", slug: "atlantic", contact_email: null, release_type: "card", is_international: false, requires_destination: false, notes: "Card on file" },
+  { name: "Jet", slug: "jet", contact_email: null, release_type: "card", is_international: false, requires_destination: false, notes: "Card on file" },
 ];
 
 /**

@@ -213,6 +213,12 @@ export async function GET(req: NextRequest) {
     .eq("key", "slack_enabled")
     .single();
 
+  const { data: fuelTestSetting } = await supa
+    .from("app_settings")
+    .select("value")
+    .eq("key", "fuel_slack_test_mode")
+    .single();
+
   return NextResponse.json({
     checked_at: new Date().toISOString(),
     services: serviceResults,
@@ -224,6 +230,7 @@ export async function GET(req: NextRequest) {
     slackEnabled: slackSetting?.value !== "false",
     slackUpdatedAt: slackSetting?.updated_at ?? null,
     slackUpdatedBy: slackSetting?.updated_by ?? null,
+    fuelSlackTestMode: fuelTestSetting?.value === "true",
   });
 }
 
@@ -254,6 +261,19 @@ export async function POST(req: NextRequest) {
 
     console.log(`[super-admin] Slack ${enabled ? "ENABLED" : "DISABLED"} by ${auth.userId}`);
     return NextResponse.json({ ok: true, slack_enabled: enabled });
+  }
+
+  if (body.action === "toggle_fuel_slack_test") {
+    const enabled = body.enabled === true;
+    await supa.from("app_settings").upsert({
+      key: "fuel_slack_test_mode",
+      value: enabled ? "true" : "false",
+      updated_at: new Date().toISOString(),
+      updated_by: auth.userId,
+    }, { onConflict: "key" });
+
+    console.log(`[super-admin] Fuel Slack test mode ${enabled ? "ON" : "OFF"} by ${auth.userId}`);
+    return NextResponse.json({ ok: true, fuel_slack_test_mode: enabled });
   }
 
   return NextResponse.json({ error: "Unknown action" }, { status: 400 });

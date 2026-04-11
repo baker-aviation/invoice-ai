@@ -5,6 +5,7 @@ import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { buildBestRateByAirport, airportVariants, getBestRateAtFbo, getAllRatesAtFbo } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, STD_AIRCRAFT, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
 import { getFboWaiver, preloadDbFees } from "@/lib/fboFeeLookup";
+import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -114,6 +115,8 @@ interface LegData {
   bestPriceAtFbo?: number | null;
   bestVendorAtFbo?: string | null;
   allVendors?: Array<{ vendor: string; price: number; tier: string }>;
+  // Phase 4b: cheaper alternative FBO at same airport
+  cheaperAtOtherFbo?: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null;
   ffSource: "foreflight" | "estimate";
   ffZfw: number | null;   // ForeFlight actual ZFW for this leg
   ffMlw: number | null;   // ForeFlight actual MLW for this leg
@@ -149,10 +152,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const targetDate = (body.date as string) || tomorrow();
+    const skipSync = body.skipSync === true;
 
     const supa = createServiceClient();
 
-    // 0. Preload FBO fees from DB (jetinsight-scrape data)
+    // 0a. Pull fresh shutdown fuel from JetInsight before planning. Skippable
+    // via { skipSync: true } for callers (e.g. the cron) that already ran it.
+    if (!skipSync) {
+      try {
+        await syncPostFlightData(undefined, 1);
+      } catch (err) {
+        console.warn("[fuel-planning/generate] post-flight sync failed (continuing with stale data):", err);
+      }
+    }
+
+    // 0b. Preload FBO fees from DB (jetinsight-scrape data)
     await preloadDbFees();
 
     // 1. Get shutdown fuel + avg burn rates from post-flight data
@@ -206,7 +220,7 @@ export async function POST(req: NextRequest) {
 
     const { data: flightRows } = await supa
       .from("flights")
-      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo, jetinsight_trip_id, jetinsight_event_uuid, flight_type")
       .gte("scheduled_departure", dayStart)
       .lte("scheduled_departure", dayEndExtended)
       .order("scheduled_departure", { ascending: true });
@@ -229,11 +243,46 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Group by tail
+    // Filter phantom flight rows. A phantom is a row with no JetInsight
+    // event UUID — real JSON-synced legs always have one. When such a
+    // row collides with a real leg (same tail + dep + arr + date), drop
+    // the phantom. Standalone phantoms (no collision) still pass through
+    // as a safety net for tails the JSON sync hasn't seen yet.
+    type FlightRow = {
+      tail_number: string;
+      departure_icao: string;
+      arrival_icao: string;
+      scheduled_departure: string;
+      scheduled_arrival: string | null;
+      origin_fbo: string | null;
+      jetinsight_trip_id: string | null;
+      jetinsight_event_uuid: string | null;
+      flight_type: string | null;
+    };
+    const hasRealLegForDayRoute = new Set<string>();
+    for (const f of flightRows as FlightRow[]) {
+      if (!f.jetinsight_event_uuid) continue;
+      const date = f.scheduled_departure.slice(0, 10);
+      hasRealLegForDayRoute.add(
+        `${f.tail_number.toUpperCase()}|${f.departure_icao}|${f.arrival_icao}|${date}`,
+      );
+    }
+
+    // Exact-time dedupe after phantom filter.
     const scheduleByTail = new Map<string, ScheduleLeg[]>();
-    for (const f of flightRows) {
+    const seenExactKeys = new Set<string>();
+    for (const f of flightRows as FlightRow[]) {
       if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
       const tail = f.tail_number.toUpperCase();
+      const date = f.scheduled_departure.slice(0, 10);
+      const dayRouteKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${date}`;
+      if (!f.jetinsight_event_uuid && hasRealLegForDayRoute.has(dayRouteKey)) {
+        continue; // phantom collides with a real leg — drop it
+      }
+      const exactKey = `${tail}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      if (seenExactKeys.has(exactKey)) continue;
+      seenExactKeys.add(exactKey);
+
       if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
       const originFbo = fboByLeg.get(`${tail}|${f.departure_icao}`) ?? null;
       scheduleByTail.get(tail)!.push({
@@ -343,33 +392,33 @@ export async function POST(req: NextRequest) {
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
         const fboName = leg.origin_fbo ?? (legWaiver.fboName || null);
 
-        // Fuel price at departure — priority:
-        // 1. Sales rep's pick from trip notes (what they actually chose)
-        // 2. Cheapest contract vendor at this specific FBO
+        // Fuel price at departure — priority (Phase 4a: default to cheapest):
+        // 1. Cheapest contract vendor at selected FBO for expected uplift
+        // 2. Sales rep's pick from trip notes (only if no contract rate found)
         // 3. JetInsight retail Jet A price at this FBO
         // 4. Airport-wide best (only if no FBO name known)
         let depRate = 0;
         let depVendor: string | null = null;
         let priceSource: "trip_notes" | "contract" | "retail" | "airport_fallback" = "contract";
 
-        // 1. Check trip notes fuel choice
-        if (leg.jetinsight_trip_id) {
-          const fc = fuelChoiceMap.get(`${leg.jetinsight_trip_id}|${leg.departure_icao}`);
-          if (fc) {
-            depRate = fc.price;
-            depVendor = fc.vendor;
-            priceSource = "trip_notes";
-          }
-        }
-
-        // 2. Cheapest contract vendor at this FBO
-        if (!depRate && fboName) {
+        // 1. Cheapest contract vendor at this FBO (defaults to cheapest)
+        if (fboName) {
           const estimatedGallons = Math.round(totalFuel / ppg);
           const fboRate = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
           if (fboRate) {
             depRate = fboRate.price;
             depVendor = fboRate.vendor;
             priceSource = "contract";
+          }
+        }
+
+        // 2. Sales rep's manual pick from trip notes (fallback if no contract)
+        if (!depRate && leg.jetinsight_trip_id) {
+          const fc = fuelChoiceMap.get(`${leg.jetinsight_trip_id}|${leg.departure_icao}`);
+          if (fc) {
+            depRate = fc.price;
+            depVendor = fc.vendor;
+            priceSource = "trip_notes";
           }
         }
 
@@ -413,6 +462,28 @@ export async function POST(req: NextRequest) {
               .map((r) => ({ vendor: r.vendor, price: r.price, tier: r.tier }))
           : [];
 
+        // Phase 4b: cheaper alternative FBO at same airport (>10¢/gal delta)
+        let cheaperAtOtherFbo: { fbo: string; vendor: string; price: number; savingsPerGal: number } | null = null;
+        if (depRate > 0 && fboName) {
+          const depVariants = airportVariants(leg.departure_icao);
+          for (const v of depVariants) {
+            const airportBest = bestRates.get(v);
+            if (!airportBest) continue;
+            const sameFbo = airportBest.fbo && fboName &&
+              airportBest.fbo.toLowerCase().includes(fboName.toLowerCase().split(" ")[0]);
+            const delta = depRate - airportBest.price;
+            if (!sameFbo && delta > 0.10) {
+              cheaperAtOtherFbo = {
+                fbo: airportBest.fbo ?? airportBest.vendor,
+                vendor: airportBest.vendor,
+                price: airportBest.price,
+                savingsPerGal: delta,
+              };
+              break;
+            }
+          }
+        }
+
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
@@ -427,6 +498,7 @@ export async function POST(req: NextRequest) {
           bestPriceAtFbo: bestAtFbo,
           bestVendorAtFbo: bestVendorAtFbo,
           allVendors,
+          cheaperAtOtherFbo,
           ffSource: "estimate" as const,
           ffZfw: null,
           ffMlw: null,

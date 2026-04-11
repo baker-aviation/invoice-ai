@@ -34,7 +34,7 @@ const ROUTE_SECTION_MAP: Record<string, TicketSection> = {
   "/fees": "invoices",
   "/fuel-prices": "invoices",
   "/fuel-dashboard": "general",
-  "/foreflight": "general",
+  "/fuel-planning": "general",
   "/jobs": "hiring",
   "/job-applications": "hiring",
   "/pipeline": "hiring",

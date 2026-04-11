@@ -17,6 +17,7 @@ type TransportOption = {
   duration_minutes: number | null;
   is_direct: boolean;
   connection_count: number;
+  connection_airport: string | null;
   has_backup: boolean;
   backup_flight: string | null;
   score: number;
@@ -620,7 +621,18 @@ function OptionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           {opt.flight_number && (
-            <span className="font-mono text-sm font-medium text-gray-900">{opt.flight_number}</span>
+            opt.flight_number.includes("/") ? (
+              <span className="font-mono text-sm font-medium text-gray-900 flex items-center gap-0.5">
+                {opt.flight_number.split("/").map((seg, i) => (
+                  <span key={i} className="flex items-center gap-0.5">
+                    {i > 0 && <span className="text-gray-400 text-xs mx-0.5">&rarr;</span>}
+                    <span>{seg}</span>
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="font-mono text-sm font-medium text-gray-900">{opt.flight_number}</span>
+            )
           )}
           {opt.depart_at && opt.arrive_at && (
             <span className="text-xs text-gray-500">
@@ -648,7 +660,7 @@ function OptionRow({
           )}
           {opt.connection_count > 0 && (
             <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 text-amber-600">
-              {opt.connection_count} stop{opt.connection_count > 1 ? "s" : ""}
+              {opt.connection_count} stop{opt.connection_count > 1 ? "s" : ""}{opt.connection_airport ? ` via ${opt.connection_airport}` : ""}
             </span>
           )}
         </div>
