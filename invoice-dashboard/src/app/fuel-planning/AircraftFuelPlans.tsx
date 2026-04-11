@@ -106,31 +106,31 @@ export default function AircraftFuelPlans() {
       }
       setResult(data);
 
-      // Create plan link tokens for each tail so SharedPlanView can load them on expand.
+      // Create plan link tokens for every tail — even ones where the
+      // optimizer couldn't find a valid tanker solution. The vendor plan
+      // and FBO fees on the linked view are still useful.
       const tokens: Record<string, string> = {};
       await Promise.all(
-        data.plans
-          .filter((p) => p.plan && !p.error)
-          .map(async (p) => {
-            try {
-              const linkRes = await fetch("/api/fuel-planning/create-plan-link", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  tail: p.tail,
-                  aircraftType: p.aircraftType,
-                  date: data.date,
-                  plan: p,
-                }),
-              });
-              const linkData = await linkRes.json();
-              if (linkRes.ok && linkData.token) {
-                tokens[p.tail] = linkData.token;
-              }
-            } catch {
-              /* ignore individual failures */
+        data.plans.map(async (p) => {
+          try {
+            const linkRes = await fetch("/api/fuel-planning/create-plan-link", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                tail: p.tail,
+                aircraftType: p.aircraftType,
+                date: data.date,
+                plan: p,
+              }),
+            });
+            const linkData = await linkRes.json();
+            if (linkRes.ok && linkData.token) {
+              tokens[p.tail] = linkData.token;
             }
-          }),
+          } catch {
+            /* ignore individual failures */
+          }
+        }),
       );
       setTokensByTail(tokens);
     } catch (err) {
