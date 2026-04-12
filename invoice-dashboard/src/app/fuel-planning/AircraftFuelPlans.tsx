@@ -274,17 +274,17 @@ export default function AircraftFuelPlans() {
   };
 
   return (
-    <div className="px-2 py-3 space-y-4 max-w-6xl mx-auto">
+    <div className="px-2 sm:px-4 py-3 space-y-3 sm:space-y-4 max-w-6xl mx-auto">
       {/* Controls */}
       <Card size="sm">
         <CardHeader className="pb-0">
-          <CardTitle>Aircraft Fuel Plans</CardTitle>
-          <CardDescription>
-            Per-tail fuel plans for today and tomorrow. Each card shows the tanker solution and FBO fee picture.
+          <CardTitle className="text-base sm:text-lg">Aircraft Fuel Plans</CardTitle>
+          <CardDescription className="text-xs sm:text-sm">
+            Per-tail fuel plans. Each card shows the tanker solution and FBO fee picture.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-2 sm:gap-3">
             <div className="space-y-1">
               <Label htmlFor="plan-date" className="text-xs">Plan Date</Label>
               <Input
@@ -292,21 +292,23 @@ export default function AircraftFuelPlans() {
                 type="date"
                 value={targetDate}
                 onChange={(e) => setTargetDate(e.target.value)}
-                className="w-auto h-9"
+                className="w-full sm:w-auto h-9"
               />
             </div>
-            <Button onClick={handleGenerate} disabled={generating}>
+            <Button onClick={handleGenerate} disabled={generating} className="w-full sm:w-auto">
               {generating ? "Generating..." : "Generate Fuel Plans"}
             </Button>
-            <Button variant="outline" onClick={handlePostDailySummary} disabled={sharing || !result?.plans.length}>
-              {sharing ? "Posting..." : "Post Daily Summary"}
-            </Button>
-            <Button variant="outline" onClick={handleSendFuelBriefings} disabled={sendingBriefings}>
-              {sendingBriefings ? "Sending..." : "Send Fuel Briefings"}
-            </Button>
-            <Button variant="outline" onClick={handleLockPlans} disabled={locking}>
-              {locking ? "Locking..." : "Lock Plans"}
-            </Button>
+            <div className="flex gap-2 overflow-x-auto">
+              <Button variant="outline" size="sm" onClick={handlePostDailySummary} disabled={sharing || !result?.plans.length} className="whitespace-nowrap text-xs">
+                {sharing ? "Posting..." : "Post Summary"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleSendFuelBriefings} disabled={sendingBriefings} className="whitespace-nowrap text-xs">
+                {sendingBriefings ? "Sending..." : "Send Briefings"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleLockPlans} disabled={locking} className="whitespace-nowrap text-xs">
+                {locking ? "Locking..." : "Lock Plans"}
+              </Button>
+            </div>
           </div>
           {lockedCount !== null && (
             <p className="mt-3 text-xs text-emerald-700">Locked {lockedCount} plan{lockedCount === 1 ? "" : "s"} for {targetDate}.</p>
@@ -318,33 +320,33 @@ export default function AircraftFuelPlans() {
       {/* Fleet summary */}
       {result?.fleetTotals && (
         <Card size="sm">
-          <CardContent className="flex flex-wrap items-center gap-6 py-3">
-            <div>
-              <div className="text-xs text-slate-500">Fleet Fuel Plan</div>
-              <div className="text-base font-semibold text-slate-900">{result.date} — {result.fleetTotals.planCount} aircraft</div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Total Fuel</div>
-              <div className="text-sm font-medium">{fmtDollars(result.fleetTotals.totalFuelCost)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Fees</div>
-              <div className="text-sm font-medium">{fmtDollars(result.fleetTotals.totalFees)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Total</div>
-              <div className="text-sm font-medium">{fmtDollars(result.fleetTotals.totalTripCost)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Tanker Savings</div>
-              <div className="text-sm font-semibold text-emerald-600">{fmtDollars(result.fleetTotals.tankerSavings)}</div>
+          <CardContent className="py-3">
+            <div className="text-xs text-slate-500 mb-1">Fleet Fuel Plan</div>
+            <div className="text-sm sm:text-base font-semibold text-slate-900 mb-2">{result.date} — {result.fleetTotals.planCount} aircraft</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
+              <div>
+                <div className="text-[10px] sm:text-xs text-slate-500">Total Fuel</div>
+                <div className="text-xs sm:text-sm font-medium">{fmtDollars(result.fleetTotals.totalFuelCost)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] sm:text-xs text-slate-500">Fees</div>
+                <div className="text-xs sm:text-sm font-medium">{fmtDollars(result.fleetTotals.totalFees)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] sm:text-xs text-slate-500">Total</div>
+                <div className="text-xs sm:text-sm font-medium">{fmtDollars(result.fleetTotals.totalTripCost)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] sm:text-xs text-slate-500">Tanker Savings</div>
+                <div className="text-xs sm:text-sm font-semibold text-emerald-600">{fmtDollars(result.fleetTotals.tankerSavings)}</div>
+              </div>
             </div>
           </CardContent>
         </Card>
       )}
 
       {/* Per-tail cards */}
-      <div className="space-y-3">
+      <div className="space-y-2 sm:space-y-3">
         {sortedPlans.map((p) => {
           const isExpanded = expanded.has(p.tail);
           const savings = Math.round(p.tankerSavings);
@@ -358,39 +360,45 @@ export default function AircraftFuelPlans() {
             <div key={p.tail} className="rounded-lg border border-slate-200 bg-white shadow-sm">
               <button
                 onClick={() => toggleExpanded(p.tail)}
-                className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                className="w-full px-3 sm:px-4 py-2.5 sm:py-3 hover:bg-slate-50 transition-colors text-left"
               >
-                <div className="flex items-center gap-3 text-left">
-                  <svg
-                    className={`w-4 h-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                    fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                  <span className="text-base font-semibold text-slate-900">{p.tail}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{acLabel(p.aircraftType)}</span>
-                  <span className="text-xs text-slate-500">{legCount} leg{legCount === 1 ? "" : "s"}</span>
-                  <span className="text-xs text-slate-400">@ {shutdown}</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                    <svg
+                      className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-400 transition-transform shrink-0 ${isExpanded ? "rotate-90" : ""}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-sm sm:text-base font-semibold text-slate-900">{p.tail}</span>
+                    <span className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{acLabel(p.aircraftType)}</span>
+                    <span className="text-[10px] sm:text-xs text-slate-500">{legCount} leg{legCount === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="flex items-center gap-2 sm:gap-4 shrink-0 ml-2">
+                    {savings > 0 && (
+                      <span className="text-xs sm:text-sm font-semibold text-emerald-600">
+                        Save {fmtDollars(savings)}
+                      </span>
+                    )}
+                    {p.plan && (
+                      <span className="text-xs sm:text-sm font-medium text-slate-900">{fmtDollars(p.plan.totalTripCost)}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-4">
-                  {savings > 0 && (
-                    <span className="text-sm font-semibold text-emerald-600">
-                      Save {fmtDollars(savings)}
-                    </span>
-                  )}
-                  {p.plan && (
-                    <span className="text-sm font-medium text-slate-900">{fmtDollars(p.plan.totalTripCost)}</span>
-                  )}
-                  {p.error && <span className="text-xs text-red-600">{p.error}</span>}
+                {/* Second line on mobile: aircraft type, shutdown, error */}
+                <div className="flex items-center gap-2 mt-0.5 sm:mt-0 ml-6 sm:ml-7">
+                  <span className="sm:hidden text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">{acLabel(p.aircraftType)}</span>
+                  <span className="text-[10px] text-slate-400">@ {shutdown}</span>
+                  {p.error && <span className="text-[10px] text-red-500 truncate">{p.error}</span>}
                 </div>
               </button>
               {isExpanded && token && (
-                <div className="border-t border-slate-200 px-4 py-4 bg-slate-50/50">
+                <div className="border-t border-slate-200 px-2 sm:px-4 py-3 sm:py-4 bg-slate-50/50">
                   <SharedPlanView token={token} mode="admin" />
                 </div>
               )}
               {isExpanded && !token && (
-                <div className="border-t border-slate-200 px-4 py-4 text-sm text-slate-500">
+                <div className="border-t border-slate-200 px-3 sm:px-4 py-3 sm:py-4 text-sm text-slate-500">
                   Plan link not available — regenerate plans to view details.
                 </div>
               )}
