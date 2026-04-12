@@ -17,12 +17,12 @@ interface CreateResult {
 }
 
 const TAILS = [
-  "N106PC", "N125DZ", "N125TH", "N187CR", "N201HR", "N301HR",
-  "N371DB", "N416F", "N513JB", "N51GB", "N519FX", "N520FX",
-  "N521FX", "N526FX", "N533FX", "N541FX", "N552FX", "N553FX",
+  "N102VR", "N106PC", "N125DZ", "N125TH", "N186DB", "N187CR", "N201HR",
+  "N301HR", "N371DB", "N416F", "N513JB", "N51GB", "N519FX", "N520FX",
+  "N521FX", "N526FX", "N529FX", "N533FX", "N541FX", "N552FX", "N553FX",
   "N554FX", "N555FX", "N700LH", "N703TX", "N733FL", "N818CF",
   "N860TX", "N883TR", "N910E", "N939TX", "N954JS", "N955GH",
-  "N957JS", "N971JS", "N988TX", "N992MG", "N998CX", "N102VR",
+  "N957JS", "N971JS", "N988TX", "N992MG", "N998CX",
 ];
 
 // ─── Component ────────────────────────────────────────────────────────

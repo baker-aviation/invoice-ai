@@ -1611,7 +1611,7 @@ const DEFAULT_SERVICE_CHECKLISTS: Record<string, { label: string; steps: string[
 const TAIL_TYPE_MAP: Record<string, string> = {
   // Challenger 300 (CL30)
   N520FX: "CL30", N541FX: "CL30", N533FX: "CL30", N526FX: "CL30",
-  N548FX: "CL30", N555FX: "CL30", N554FX: "CL30", N521FX: "CL30",
+  N186DB: "CL30", N529FX: "CL30", N555FX: "CL30", N554FX: "CL30", N521FX: "CL30",
   N371BD: "CL30", N883TR: "CL30", N416F: "CL30", N519FX: "CL30",
   N552FX: "CL30", N553FX: "CL30",
   // Cessna Citation X (C750)

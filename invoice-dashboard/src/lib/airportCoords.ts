@@ -242,6 +242,10 @@ const AIRPORTS: Record<string, AirportInfo> = {
   TYS: { code: "TYS", name: "McGhee Tyson", lat: 35.8109, lon: -83.994, city: "Knoxville", state: "TN" },
   VDF: { code: "VDF", name: "Tampa Executive", lat: 28.0142, lon: -82.3453, city: "Tampa", state: "FL" },
   VPS: { code: "VPS", name: "Destin-Fort Walton Beach", lat: 30.4832, lon: -86.5254, city: "Valparaiso", state: "FL" },
+  RID: { code: "RID", name: "Richmond Municipal", lat: 39.7571, lon: -84.8428, city: "Richmond", state: "IN" },
+  SLN: { code: "SLN", name: "Salina Regional", lat: 38.7910, lon: -97.6522, city: "Salina", state: "KS" },
+  MDPP: { code: "MDPP", name: "Gregorio Luperón Intl", lat: 19.7579, lon: -70.5700, city: "Puerto Plata", state: "Dominican Republic" },
+  PHF: { code: "PHF", name: "Newport News/Williamsburg Intl", lat: 37.1319, lon: -76.4930, city: "Newport News", state: "VA" },
 };
 
 // Worldwide airport coordinates fallback (ICAO + IATA keyed)

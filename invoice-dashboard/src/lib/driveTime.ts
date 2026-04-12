@@ -448,6 +448,11 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KBKL: [41.5175, -81.6833],   // Burke Lakefront, Cleveland OH
   KVPC: [34.1231, -84.8487],   // Cartersville Airport, GA
   KLZU: [33.9781, -83.9624],   // Gwinnett County, Lawrenceville GA
+  // Added 2026-04-12 — missing coords alert
+  KRID: [39.7571, -84.8428],   // Richmond Municipal, IN
+  KSLN: [38.7910, -97.6522],   // Salina Regional, KS
+  MDPP: [19.7579, -70.5700],   // Gregorio Luperón Intl, Puerto Plata DR
+  KPHF: [37.1319, -76.4930],   // Newport News/Williamsburg Intl, VA
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────

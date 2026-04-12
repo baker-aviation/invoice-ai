@@ -55,6 +55,26 @@ async function getSessionCookie(): Promise<string | null> {
   return data?.config_value ?? null;
 }
 
+/** Only send the session-expired Slack DM once per hour */
+async function shouldAlertExpiry(): Promise<boolean> {
+  const supa = createServiceClient();
+  const { data } = await supa
+    .from("hamilton_config")
+    .select("config_value")
+    .eq("config_key", "expiry_alerted_at")
+    .single();
+  if (data?.config_value) {
+    const last = new Date(data.config_value).getTime();
+    if (Date.now() - last < 60 * 60 * 1000) return false; // within 1 hour
+  }
+  // Mark as alerted
+  await supa.from("hamilton_config").upsert(
+    { config_key: "expiry_alerted_at", config_value: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: "config_key" },
+  );
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // API fetch
 // ---------------------------------------------------------------------------
@@ -154,10 +174,12 @@ export async function fetchDeclinedTrips(
     }
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "SESSION_EXPIRED") {
-      await postSlackMessage({
-        channel: CHARLIE_SLACK_ID,
-        text: "🔑 Hamilton session expired — update the cookie in the dashboard settings.",
-      });
+      if (await shouldAlertExpiry()) {
+        await postSlackMessage({
+          channel: CHARLIE_SLACK_ID,
+          text: "🔑 Hamilton session expired — update the cookie in the dashboard settings.",
+        });
+      }
       return { trips: allTrips, total, sessionExpired: true, nextPage: page };
     }
     throw err;
