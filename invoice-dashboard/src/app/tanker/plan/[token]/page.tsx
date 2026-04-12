@@ -93,6 +93,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   const [showOverrides, setShowOverrides] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
+  const [originalCost, setOriginalCost] = useState<number | null>(null);
 
   // Fuel release state
   const [isAuthed, setIsAuthed] = useState(false);
@@ -143,6 +144,11 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
       setPlan(data.plan);
       setDate(data.date);
       setExpiresAt(data.expires_at);
+      // Capture original cost before any overrides — used to show cost
+      // delta when the user adjusts weights/fees.
+      if (data.plan?.plan?.totalTripCost != null) {
+        setOriginalCost((prev) => prev ?? data.plan.plan.totalTripCost);
+      }
       // Restore persisted overrides (survive page refresh).
       // If any overrides exist, auto-recalculate so the displayed plan
       // matches the saved overrides without requiring a manual button click.
@@ -430,7 +436,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                 {fmtNum(plan.shutdownFuel)} lbs @ {plan.shutdownAirport}
               </span>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap justify-end">
               {savings > 0 && plan.legs.length > 1 && (
                 <span className="text-sm font-semibold text-green-600">
                   Save {fmtDollars(savings)}
@@ -445,6 +451,16 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
               {visibleTotals && (
                 <span className="text-sm font-semibold text-gray-900">
                   {fmtDollars(visibleTotals.cost)}
+                </span>
+              )}
+              {/* Show cost delta when overrides changed the total vs original plan */}
+              {visibleTotals && originalCost != null && Math.abs(visibleTotals.cost - originalCost) > 1 && (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                  visibleTotals.cost > originalCost
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-green-50 text-green-700 border-green-200"
+                }`}>
+                  {visibleTotals.cost > originalCost ? "+" : ""}{fmtDollars(visibleTotals.cost - originalCost)} vs original
                 </span>
               )}
               {/* Request All Fuel button removed — releases are requested per-leg from the table below. */}
