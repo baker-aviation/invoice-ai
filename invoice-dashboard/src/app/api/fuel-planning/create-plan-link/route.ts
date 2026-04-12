@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
   const existing = existingRows?.[0] ?? null;
 
   let token: string;
-  const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
   if (existing?.token) {
     token = existing.token;

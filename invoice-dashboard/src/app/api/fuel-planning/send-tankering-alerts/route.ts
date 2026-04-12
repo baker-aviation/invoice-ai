@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
 
   for (const plan of validPlans) {
     const token = randomBytes(24).toString("base64url");
-    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     // Store the plan with token
     const { error: insertErr } = await supa.from("fuel_plan_links").insert({
