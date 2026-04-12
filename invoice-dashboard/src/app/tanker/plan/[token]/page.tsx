@@ -94,6 +94,8 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
   const [originalCost, setOriginalCost] = useState<number | null>(null);
+  const [lastSeenUpdatedAt, setLastSeenUpdatedAt] = useState<string | null>(null);
+  const [staleWarning, setStaleWarning] = useState(false);
 
   // Fuel release state
   const [isAuthed, setIsAuthed] = useState(false);
@@ -126,6 +128,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   const [feeOverrides, setFeeOverrides] = useState<Record<string, number>>({});
   const [waiverGalOverrides, setWaiverGalOverrides] = useState<Record<string, number>>({});
   const [fuelBurnOverrides, setFuelBurnOverrides] = useState<Record<string, number>>({});
+  const [landingFuelOverrides, setLandingFuelOverrides] = useState<Record<string, number>>({});
   const [priceHistory, setPriceHistory] = useState<Record<string, {
     avgPrice: number;
     minPrice: number;
@@ -159,6 +162,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
         if (data.overrides.fee) { setFeeOverrides(data.overrides.fee); hasOverrides = true; }
         if (data.overrides.waiver_gal) { setWaiverGalOverrides(data.overrides.waiver_gal); hasOverrides = true; }
         if (data.overrides.fuel_burn) { setFuelBurnOverrides(data.overrides.fuel_burn); hasOverrides = true; }
+        if (data.overrides.landing_fuel) { setLandingFuelOverrides(data.overrides.landing_fuel); hasOverrides = true; }
       }
       if (hasOverrides && token) {
         // Fire recalculate with the restored overrides so plan reflects them
@@ -172,6 +176,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
               fee_overrides: data.overrides?.fee ?? {},
               waiver_gal_overrides: data.overrides?.waiver_gal ?? {},
               fuel_burn_overrides: data.overrides?.fuel_burn ?? {},
+              landing_fuel_overrides: data.overrides?.landing_fuel ?? {},
             }),
           });
           const recalcData = await recalcRes.json();
@@ -197,6 +202,32 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
       .then((d) => { if (d.ok) setPriceHistory(d.history); })
       .catch(() => {});
   }, [plan]);
+
+  // Multi-user awareness: poll updated_at every 30s. If someone else
+  // recalculated the plan, show a banner instead of auto-reloading.
+  useEffect(() => {
+    if (!token) return;
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/fuel-planning/shared-plan/${token}/updated-at`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.updated_at) return;
+        if (!lastSeenUpdatedAt) {
+          setLastSeenUpdatedAt(data.updated_at);
+        } else if (data.updated_at !== lastSeenUpdatedAt) {
+          setStaleWarning(true);
+        }
+      } catch { /* ignore polling failures */ }
+    }, 30_000);
+    return () => clearInterval(poll);
+  }, [token, lastSeenUpdatedAt]);
+
+  // After a recalculate, update lastSeenUpdatedAt so we don't self-trigger
+  const markFresh = useCallback(() => {
+    setLastSeenUpdatedAt(new Date().toISOString());
+    setStaleWarning(false);
+  }, []);
 
   // Admins can request fuel. Crew (tokenized link) see status only.
   const canRequestFuel = mode === "admin";
@@ -367,10 +398,11 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
           fee_overrides: feeOverrides,
           waiver_gal_overrides: waiverGalOverrides,
           fuel_burn_overrides: fuelBurnOverrides,
+          landing_fuel_overrides: landingFuelOverrides,
         }),
       });
       const data = await res.json();
-      if (res.ok && data.plan) setPlan(data.plan);
+      if (res.ok && data.plan) { setPlan(data.plan); markFresh(); }
     } catch { /* ignore */ }
     setRecalculating(false);
   };
@@ -407,6 +439,17 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   // Visible leg indices (crew = today only, admin = all)
   const isLegVisible = (leg: { departureDate?: string }) =>
     mode !== "crew" || !date || !leg.departureDate || leg.departureDate === date;
+
+  // Excess landing fuel cost (only non-tankered legs)
+  const excessLandingCost = optimized ? plan.legs.reduce((total, leg, i) => {
+    if (!isLegVisible(leg)) return total;
+    const landing = landingFuelOverrides[String(i)] ?? 2000;
+    const excess = landing - 2000;
+    const isTankering = (optimized.tankerOutByStop[i] ?? 0) > 0;
+    if (excess <= 0 || isTankering) return total;
+    const excessGal = excess / (6.7);
+    return total + excessGal * leg.departurePricePerGal;
+  }, 0) : 0;
   const visibleTotals = optimized ? (() => {
     let lbs = 0, gal = 0, cost = 0;
     plan.legs.forEach((leg, i) => {
@@ -423,6 +466,19 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   return (
     <div className={wrapperCls}>
       <div className={innerCls}>
+
+        {/* Multi-user stale warning */}
+        {staleWarning && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 flex items-center justify-between">
+            <span className="text-sm text-blue-800">This plan was updated by someone else.</span>
+            <button
+              onClick={() => { loadPlan(); setStaleWarning(false); }}
+              className="text-sm font-medium text-blue-700 hover:text-blue-900 underline"
+            >
+              Reload
+            </button>
+          </div>
+        )}
 
         {/* Header */}
         <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
@@ -451,6 +507,12 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
               {visibleTotals && (
                 <span className="text-sm font-semibold text-gray-900">
                   {fmtDollars(visibleTotals.cost)}
+                </span>
+              )}
+              {/* Excess landing fuel cost (non-tankered legs only) */}
+              {excessLandingCost > 1 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
+                  +{fmtDollars(excessLandingCost)} excess landing fuel
                 </span>
               )}
               {/* Show cost delta when overrides changed the total vs original plan */}
@@ -1082,7 +1144,27 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                             onChange={(e) => setWaiverGalOverrides({ ...waiverGalOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
                             className="w-full sm:w-20 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
                         </div>
+                        <div className="flex items-center gap-1">
+                          <label className="text-xs text-gray-500 w-14">Landing</label>
+                          <input type="number" value={landingFuelOverrides[String(i)] ?? 2000}
+                            onChange={(e) => setLandingFuelOverrides({ ...landingFuelOverrides, [String(i)]: parseInt(e.target.value) || 2000 })}
+                            className="w-full sm:w-24 text-xs border border-gray-300 rounded px-2 py-1.5 text-right" />
+                        </div>
                       </div>
+                      {/* Excess landing fuel cost warning — only when NOT tankering this leg */}
+                      {(() => {
+                        const landing = landingFuelOverrides[String(i)] ?? 2000;
+                        const excess = landing - 2000;
+                        const isTankering = optimized && (optimized.tankerOutByStop[i] ?? 0) > 0;
+                        if (excess <= 0 || isTankering) return null;
+                        const excessGal = excess / (6.7);
+                        const excessCost = excessGal * leg.departurePricePerGal;
+                        return (
+                          <div className="mt-1 text-[10px] text-amber-600">
+                            +{fmtNum(excess)} lbs extra landing fuel costs ~{fmtDollars(excessCost)}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}

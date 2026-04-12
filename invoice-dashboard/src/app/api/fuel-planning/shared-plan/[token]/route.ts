@@ -84,6 +84,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const feeOverrides = (body.fee_overrides ?? {}) as Record<string, number>;
   const waiverGalOverrides = (body.waiver_gal_overrides ?? {}) as Record<string, number>;
   const fuelBurnOverrides = (body.fuel_burn_overrides ?? {}) as Record<string, number>;
+  const landingFuelOverrides = (body.landing_fuel_overrides ?? {}) as Record<string, number>;
 
   const plan = data.plan_data as {
     tail: string;
@@ -133,8 +134,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
     // Fuel burn override: recalculate totalFuelLbs proportionally
     const fuelBurn = fuelBurnOverrides[String(i)] ?? leg.fuelToDestLbs;
-    const reserveFuel = leg.totalFuelLbs - leg.fuelToDestLbs; // preserve original reserve
-    const totalFuel = fuelBurn + reserveFuel;
+    const landingFuel = landingFuelOverrides[String(i)] ?? 2000;
+    const totalFuel = fuelBurn + landingFuel;
 
     return {
       id: String(i),
@@ -168,19 +169,22 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     Object.keys(zfwOverrides).length > 0 ||
     Object.keys(feeOverrides).length > 0 ||
     Object.keys(waiverGalOverrides).length > 0 ||
-    Object.keys(fuelBurnOverrides).length > 0;
+    Object.keys(fuelBurnOverrides).length > 0 ||
+    Object.keys(landingFuelOverrides).length > 0;
 
-  if (hasOverrides) {
-    await supa.from("fuel_plan_links").update({
+  await supa.from("fuel_plan_links").update({
+    updated_at: new Date().toISOString(),
+    ...(hasOverrides && {
       overrides: {
         mlw: mlwOverrides,
         zfw: zfwOverrides,
         fee: feeOverrides,
         waiver_gal: waiverGalOverrides,
         fuel_burn: fuelBurnOverrides,
+        landing_fuel: landingFuelOverrides,
       },
-    }).eq("token", token);
-  }
+    }),
+  }).eq("token", token);
 
   if (!optimized) {
     return NextResponse.json({
