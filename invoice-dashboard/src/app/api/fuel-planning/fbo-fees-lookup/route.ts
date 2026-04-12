@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
@@ -50,9 +49,8 @@ function normAirport(code: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (!isAuthed(auth)) return auth.error;
-
+  // Public endpoint — no auth required. Fee data is non-sensitive and
+  // the crew-facing /tanker/plan/[token] page needs it without login.
   const body = await req.json().catch(() => ({}));
   const items: LookupItem[] = Array.isArray(body.items) ? body.items : [];
   if (!items.length) return NextResponse.json({ results: [] });
