@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { postSlackMessage } from "@/lib/slack";
+import { shouldAlertJetInsightExpiry } from "@/lib/jetinsight/alert-throttle";
 import { scrapeEapisStatus } from "@/lib/jetinsight/trip-sync";
 import * as cheerio from "cheerio";
 
@@ -205,7 +206,7 @@ export async function GET(req: NextRequest) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "SESSION_EXPIRED") {
+    if (msg === "SESSION_EXPIRED" && (await shouldAlertJetInsightExpiry())) {
       await postSlackMessage({
         channel: CHARLIE_SLACK_ID,
         text: ":warning: *JetInsight session expired*\n\nTrip passenger sync cookie has expired. Update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie>",
