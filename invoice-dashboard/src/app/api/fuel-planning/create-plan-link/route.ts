@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
       blocks: [{
         type: "section",
         text: { type: "mrkdwn", text: headerText },
-        accessory: { type: "button", text: { type: "plain_text", text: "View Plan" }, url: planUrl },
+        accessory: { type: "button", text: { type: "plain_text", text: "View Plan" }, url: planUrl, action_id: "view_plan_link" },
       }],
     };
 

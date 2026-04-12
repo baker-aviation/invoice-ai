@@ -139,6 +139,7 @@ export async function POST(req: NextRequest) {
                   type: "button",
                   text: { type: "plain_text", text: "View Plan" },
                   url: planUrl,
+                  action_id: "view_plan_link",
                 },
               },
               ...(bodyParts.length > 0 ? [{
