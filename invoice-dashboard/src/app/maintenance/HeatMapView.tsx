@@ -147,13 +147,15 @@ function findNearestVan(
 // Toggle button
 // ---------------------------------------------------------------------------
 
-function ToggleButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function ToggleButton({ label, active, onClick, dark }: { label: string; active: boolean; onClick: () => void; dark?: boolean }) {
   return (
     <button
       onClick={onClick}
       className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
         active
           ? "bg-blue-600 text-white"
+          : dark
+          ? "bg-black/50 text-gray-200 border border-white/20 hover:bg-black/70"
           : "bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
       }`}
     >
@@ -334,77 +336,92 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive, 
 
   const totalArrivals = clusters.reduce((s, c) => s + c.count, 0);
 
-  return (
-    <div ref={containerRef} className="relative">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 mb-3">
-        {/* Time window buttons */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-gray-500 font-medium mr-1">Window:</span>
-          {WINDOW_OPTIONS.map((h) => (
-            <button
-              key={h}
-              onClick={() => setWindowHours(h)}
-              className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
-                windowHours === h
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
-              }`}
-            >
-              {h}h
-            </button>
-          ))}
-        </div>
+  const inactiveBtn = isFs
+    ? "bg-black/50 text-gray-200 border border-white/20 hover:bg-black/70"
+    : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50";
 
-        {/* EOD filter */}
-        <button
-          onClick={() => setEodOnly((v) => !v)}
-          className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
-            eodOnly
-              ? "bg-purple-600 text-white"
-              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
-          }`}
-        >
-          EOD Only
-        </button>
-
-        {/* Include repo/ferry flights */}
-        <button
-          onClick={() => setIncludeRepo((v) => !v)}
-          className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
-            includeRepo
-              ? "bg-amber-600 text-white"
-              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
-          }`}
-        >
-          + Repo
-        </button>
-
-        {/* Stats */}
-        <div className="text-xs text-gray-500">
-          <span className="font-semibold text-gray-700">{totalArrivals}</span>{" "}
-          {eodOnly ? "aircraft overnighting" : `arrival${totalArrivals !== 1 ? "s" : ""}`} across{" "}
-          <span className="font-semibold text-gray-700">{clusters.length}</span> zone{clusters.length !== 1 ? "s" : ""}
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Layer toggles */}
-        <div className="flex gap-1.5">
-          <ToggleButton label="Vans" active={prefs.vans} onClick={() => togglePref("vans")} />
-          <ToggleButton label="200km Rings" active={prefs.rings} onClick={() => togglePref("rings")} />
-          <ToggleButton label="Dark" active={prefs.dark} onClick={() => togglePref("dark")} />
+  const toolbar = (
+    <>
+      <div className="flex items-center gap-1.5">
+        <span className={`text-xs font-medium mr-1 ${isFs ? "text-gray-300" : "text-gray-500"}`}>Window:</span>
+        {WINDOW_OPTIONS.map((h) => (
           <button
-            onClick={toggleFs}
-            className="px-2.5 py-1 rounded text-xs font-medium shadow-sm bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
+            key={h}
+            onClick={() => setWindowHours(h)}
+            className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+              windowHours === h ? "bg-blue-600 text-white" : inactiveBtn
+            }`}
           >
-            {isFs ? "Exit FS" : "Fullscreen"}
+            {h}h
           </button>
-        </div>
+        ))}
       </div>
 
+      <button
+        onClick={() => setEodOnly((v) => !v)}
+        className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+          eodOnly ? "bg-purple-600 text-white" : inactiveBtn
+        }`}
+      >
+        EOD Only
+      </button>
+
+      <button
+        onClick={() => setIncludeRepo((v) => !v)}
+        className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+          includeRepo ? "bg-amber-600 text-white" : inactiveBtn
+        }`}
+      >
+        + Repo
+      </button>
+
+      <div className={`text-xs ${isFs ? "text-gray-300" : "text-gray-500"}`}>
+        <span className={`font-semibold ${isFs ? "text-white" : "text-gray-700"}`}>{totalArrivals}</span>{" "}
+        {eodOnly ? "aircraft overnighting" : `arrival${totalArrivals !== 1 ? "s" : ""}`} across{" "}
+        <span className={`font-semibold ${isFs ? "text-white" : "text-gray-700"}`}>{clusters.length}</span> zone{clusters.length !== 1 ? "s" : ""}
+      </div>
+    </>
+  );
+
+  const layerToggles = (
+    <div className="flex gap-1.5 flex-wrap">
+      <ToggleButton label="Vans" active={prefs.vans} onClick={() => togglePref("vans")} dark={isFs} />
+      <ToggleButton label="200km Rings" active={prefs.rings} onClick={() => togglePref("rings")} dark={isFs} />
+      <ToggleButton label="Dark" active={prefs.dark} onClick={() => togglePref("dark")} dark={isFs} />
+      <button
+        onClick={toggleFs}
+        className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+          isFs
+            ? "bg-red-600/80 text-white border border-red-400/40 hover:bg-red-700/80"
+            : "bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
+        }`}
+      >
+        {isFs ? "Exit FS" : "Fullscreen"}
+      </button>
+    </div>
+  );
+
+  return (
+    <div ref={containerRef} className={`relative ${isFs ? "bg-black" : ""}`} style={isFs ? { height: "100vh", width: "100vw" } : undefined}>
+      {!isFs && (
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          {toolbar}
+          <div className="flex-1" />
+          {layerToggles}
+        </div>
+      )}
+
       {/* Map */}
-      <div className="rounded-xl overflow-hidden shadow-md border border-gray-200" style={{ height: isFs ? "100vh" : 600 }}>
+      <div className={`overflow-hidden ${isFs ? "" : "rounded-xl shadow-md border border-gray-200"}`} style={{ height: isFs ? "100%" : 600 }}>
+        {isFs && (
+          <div className="absolute top-0 left-0 right-0 z-[1000] pointer-events-none">
+            <div className="flex flex-wrap items-center gap-2 p-2 pointer-events-auto bg-black/60 backdrop-blur-sm">
+              {toolbar}
+              <div className="flex-1" />
+              {layerToggles}
+            </div>
+          </div>
+        )}
         <MapContainer
           center={initialCenter ?? [37.5, -96]}
           zoom={initialZoom ?? 4}
