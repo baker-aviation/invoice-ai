@@ -352,24 +352,24 @@ export async function POST(req: NextRequest) {
   // transport) but SIC has a deadline (has a flight) is NOT a timing deadlock — those are
   // independent crew members. Only exclude when the SAME role on the same tail somehow
   // ends up in both lists (shouldn't happen, but defensive).
+  // Log timing-deadlock and no-transport tails for diagnostics, but do NOT exclude them.
+  // All tails should appear in the plan — unsolvable ones show as [UNASSIGNED] with warnings.
   const deadlineTailRoles = offgoingFirstResult
     ? new Set(offgoingFirstResult.deadlines.map((d) => `${d.tail}|${d.role}`))
     : new Set<string>();
-  const unsolvableTails = offgoingFirstResult
-    ? new Set(
-        offgoingFirstResult.unsolvable
-          .filter((u) => deadlineTailRoles.has(`${u.tail}|${u.role}`))
-          .map((u) => u.tail)
-      )
-    : undefined;
-  if (unsolvableTails?.size) {
-    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} timing-deadlock tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
-  }
-  const noTransportTails = offgoingFirstResult
-    ? offgoingFirstResult.unsolvable.filter((u) => !deadlineTailRoles.has(`${u.tail}|${u.role}`)).map((u) => u.tail)
-    : [];
-  if (noTransportTails.length) {
-    console.log(`[Swap Optimizer] ${noTransportTails.length} tails have no offgoing transport but oncoming will still be assigned: ${noTransportTails.join(", ")}`);
+  if (offgoingFirstResult) {
+    const timingDeadlocks = offgoingFirstResult.unsolvable
+      .filter((u) => deadlineTailRoles.has(`${u.tail}|${u.role}`))
+      .map((u) => u.tail);
+    if (timingDeadlocks.length) {
+      console.log(`[Swap Optimizer] ${timingDeadlocks.length} tails have timing deadlocks (will still be included in plan): ${timingDeadlocks.join(", ")}`);
+    }
+    const noTransportTails = offgoingFirstResult.unsolvable
+      .filter((u) => !deadlineTailRoles.has(`${u.tail}|${u.role}`))
+      .map((u) => u.tail);
+    if (noTransportTails.length) {
+      console.log(`[Swap Optimizer] ${noTransportTails.length} tails have no offgoing transport but oncoming will still be assigned: ${noTransportTails.join(", ")}`);
+    }
   }
 
   // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────
@@ -396,7 +396,6 @@ export async function POST(req: NextRequest) {
       commercialFlights: hasFlightData ? effectiveFlights : undefined,
       preComputedRoutes: false ? crewRouteMap : undefined,
       preComputedOffgoing: false ? crewOffgoingMap : undefined,
-      excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
       constraints: swapConstraints,
       currentSwapDay: parsed.data.current_swap_day,
@@ -441,7 +440,6 @@ export async function POST(req: NextRequest) {
         commercialFlights: hasFlightData ? effectiveFlights : undefined,
         preComputedRoutes: false ? crewRouteMap : undefined,
         preComputedOffgoing: false ? crewOffgoingMap : undefined,
-        excludeTails: unsolvableTails,
         offgoingDeadlines: offgoingFirstResult?.deadlines,
         constraints: swapConstraints,
         currentSwapDay: parsed.data.current_swap_day,
