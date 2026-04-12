@@ -377,6 +377,22 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
   const optimized = plan.plan;
   const savings = Math.round(plan.tankerSavings);
 
+  // Visible leg indices (crew = today only, admin = all)
+  const isLegVisible = (leg: { departureDate?: string }) =>
+    mode !== "crew" || !date || !leg.departureDate || leg.departureDate === date;
+  const visibleTotals = optimized ? (() => {
+    let lbs = 0, gal = 0, cost = 0;
+    plan.legs.forEach((leg, i) => {
+      if (!isLegVisible(leg)) return;
+      const orderGal = optimized.fuelOrderGalByStop[i] ?? 0;
+      const feePaid = optimized.feePaidByStop[i] ?? 0;
+      lbs += optimized.fuelOrderLbsByStop[i] ?? 0;
+      gal += orderGal;
+      cost += orderGal * leg.departurePricePerGal + feePaid;
+    });
+    return { lbs, gal, cost };
+  })() : null;
+
   return (
     <div className={wrapperCls}>
       <div className={innerCls}>
@@ -405,9 +421,9 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                   ${plan.legs[0].departurePricePerGal.toFixed(2)} vs ${(plan.nationalAvgPrice ?? 0).toFixed(2)} avg — likely tanker opportunity when follow-on leg is known
                 </span>
               )}
-              {optimized && (
+              {visibleTotals && (
                 <span className="text-sm font-semibold text-gray-900">
-                  {fmtDollars(optimized.totalTripCost)}
+                  {fmtDollars(visibleTotals.cost)}
                 </span>
               )}
               {/* Request All Fuel button removed — releases are requested per-leg from the table below. */}
@@ -489,18 +505,23 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                         )}
                       </div>
 
-                      {/* All vendor options dropdown-style list */}
-                      {vendors.length > 1 && (
-                        <div className="flex gap-1 flex-wrap">
-                          {vendors.slice(0, 4).map((v, vi) => (
-                            <span key={vi} className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                              vi === 0 ? "border-green-200 bg-green-50 text-green-700 font-medium" : "border-gray-100 text-gray-500"
-                            }`}>
-                              {v.vendor} ${v.price.toFixed(4)} <span className="opacity-50">{v.tier}</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                      {/* Alternative vendor options — cheapest in green, rest gray.
+                          Skip the selected vendor so we don't double-display. */}
+                      {vendors.length > 0 && (() => {
+                        const alts = vendors.filter((v) => !(chosen && v.vendor === chosen && Math.abs(v.price - chosenPrice) < 0.001));
+                        if (!alts.length) return null;
+                        return (
+                          <div className="flex gap-1 flex-wrap">
+                            {alts.slice(0, 4).map((v, vi) => (
+                              <span key={vi} className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                vi === 0 ? "border-green-200 bg-green-50 text-green-700 font-medium" : "border-gray-100 text-gray-500"
+                              }`}>
+                                {v.vendor} ${v.price.toFixed(4)} <span className="opacity-50">{v.tier}</span>
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -749,10 +770,10 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                   <tfoot>
                     <tr className="border-t border-gray-200">
                       <td colSpan={6} className="py-2.5 text-xs text-gray-500 font-medium">TOTALS</td>
-                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderLbsByStop.reduce((a, b) => a + b, 0))}</td>
-                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))}</td>
+                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(visibleTotals?.lbs ?? 0)}</td>
+                      <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">{fmtNum(visibleTotals?.gal ?? 0)}</td>
                       <td className="py-2.5 pr-3"></td>
-                      <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(optimized.totalTripCost)}</td>
+                      <td className="py-2.5 text-right font-mono font-bold text-gray-900">{fmtDollars(visibleTotals?.cost ?? 0)}</td>
                       <td className="py-2.5"></td>
                       {canRequestFuel && <td></td>}
                     </tr>
@@ -931,11 +952,11 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                 <div className="rounded-lg border border-gray-200 bg-white p-3">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600 font-medium">Total Fuel</span>
-                    <span className="font-mono font-bold">{fmtNum(optimized.fuelOrderGalByStop.reduce((a, b) => a + b, 0))} gal</span>
+                    <span className="font-mono font-bold">{fmtNum(visibleTotals?.gal ?? 0)} gal</span>
                   </div>
                   <div className="flex justify-between text-sm mt-1">
                     <span className="text-gray-600 font-medium">Total Cost</span>
-                    <span className="font-mono font-bold">{fmtDollars(optimized.totalTripCost)}</span>
+                    <span className="font-mono font-bold">{fmtDollars(visibleTotals?.cost ?? 0)}</span>
                   </div>
                   {savings > 0 && (
                     <div className="flex justify-between text-sm mt-1 pt-1 border-t border-gray-100">
