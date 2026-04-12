@@ -387,7 +387,10 @@ export async function POST(req: NextRequest) {
 
         const fuelBurn = Math.round(burnRate * flightHrs);
         const totalFuel = fuelBurn + defaults.reserveLbs;
-        const estimatedGallons = Math.round(totalFuel / ppg);
+        // Estimate purchase gallons for volume-tier pricing. Use fuelBurn
+        // (not totalFuel) — the aircraft already has shutdown fuel so the
+        // actual purchase is closer to just the burn than the full need.
+        const estimatedGallons = Math.round(fuelBurn / ppg);
 
         // FBO fee lookup: use origin_fbo from flights if available, else best match at airport
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
