@@ -548,7 +548,10 @@ export async function POST(req: NextRequest) {
           if (ff.flightTimeHours > 0) ld.flightTimeHours = ff.flightTimeHours;
           ld.ffSource = "foreflight";
           ld.ffZfw = ff.zeroFuelWeight;
-          ld.ffMlw = ff.landingWeight;
+          // Store the structural MLW limit, not ForeFlight's computed
+          // actual landing weight. The actual LW is a result of the
+          // flight plan, not a constraint the optimizer should use.
+          ld.ffMlw = null;
         }
       }
 
@@ -561,7 +564,10 @@ export async function POST(req: NextRequest) {
           requiredStartFuelLbs: ld.totalFuelLbs,
           fuelToDestLbs: ld.fuelToDestLbs,
           flightTimeHours: ld.flightTimeHours,
-          maxLandingGrossWeightLbs: ld.ffMlw ?? defaults.mlw,
+          // MLW = structural limit (always use aircraft type default, NOT
+          // ForeFlight's computed actual LW which is much lower).
+          // ZFW = actual from ForeFlight (real aircraft + payload weight).
+          maxLandingGrossWeightLbs: defaults.mlw,
           zeroFuelWeightLbs: ld.ffZfw ?? defaults.zfw,
           maxFuelCapacityLbs: STD_AIRCRAFT[acType].maxFuel,
           departurePricePerGal: ld.departurePricePerGal,
