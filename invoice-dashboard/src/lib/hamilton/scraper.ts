@@ -55,9 +55,21 @@ async function getSessionCookie(): Promise<string | null> {
   return data?.config_value ?? null;
 }
 
-/** Only send the session-expired Slack DM once per hour */
+/** Only send the session-expired Slack DM once per hour, and not if cookie was recently refreshed */
 async function shouldAlertExpiry(): Promise<boolean> {
   const supa = createServiceClient();
+
+  // If the cookie was updated in the last hour, suppress — user just refreshed it
+  const { data: cookieRow } = await supa
+    .from("hamilton_config")
+    .select("updated_at")
+    .eq("config_key", "session_cookie")
+    .single();
+  if (cookieRow?.updated_at) {
+    const cookieAge = Date.now() - new Date(cookieRow.updated_at).getTime();
+    if (cookieAge < 60 * 60 * 1000) return false; // cookie refreshed within 1 hour
+  }
+
   const { data } = await supa
     .from("hamilton_config")
     .select("config_value")
@@ -65,7 +77,7 @@ async function shouldAlertExpiry(): Promise<boolean> {
     .single();
   if (data?.config_value) {
     const last = new Date(data.config_value).getTime();
-    if (Date.now() - last < 60 * 60 * 1000) return false; // within 1 hour
+    if (Date.now() - last < 60 * 60 * 1000) return false; // already alerted within 1 hour
   }
   // Mark as alerted
   await supa.from("hamilton_config").upsert(

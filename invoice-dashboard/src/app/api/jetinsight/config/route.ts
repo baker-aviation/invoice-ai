@@ -1,6 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAdmin } from "@/lib/api-auth";
+import { isLoginRedirect } from "@/lib/jetinsight/parser";
+
+const JI_BASE = "https://portal.jetinsight.com";
+
+/** Quick probe — hit a lightweight JI endpoint to see if the cookie actually works */
+async function testJetInsightCookie(cookie: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${JI_BASE}/schedule/aircraft.json?start=2026-01-01&end=2026-01-02`,
+      {
+        headers: {
+          Cookie: cookie,
+          Accept: "application/json",
+          "User-Agent": "Baker-Aviation-Sync/1.0",
+        },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!res.ok) return false;
+    const text = await res.text();
+    return !isLoginRedirect(text);
+  } catch {
+    // Network error — don't block the save, just can't confirm
+    return true;
+  }
+}
 
 /**
  * GET /api/jetinsight/config — Read JetInsight config (cookie status, org UUID)
@@ -30,17 +56,15 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  // Check if cookie seems valid (exists and was updated recently)
+  // Actually validate the cookie against JetInsight
   const cookieRow = data?.find((r) => r.config_key === "session_cookie");
-  const cookieAge = cookieRow
-    ? Date.now() - new Date(cookieRow.updated_at).getTime()
-    : Infinity;
-  const cookieStatus =
-    !cookieRow?.config_value
-      ? "missing"
-      : cookieAge > 24 * 60 * 60 * 1000
-        ? "stale"
-        : "ok";
+  let cookieStatus: string;
+  if (!cookieRow?.config_value) {
+    cookieStatus = "missing";
+  } else {
+    const valid = await testJetInsightCookie(cookieRow.config_value);
+    cookieStatus = valid ? "ok" : "expired";
+  }
 
   return NextResponse.json({ config, cookieStatus });
 }
@@ -74,6 +98,17 @@ export async function PUT(req: NextRequest) {
     );
   }
 
+  // Validate the cookie actually works before saving
+  if (key === "session_cookie") {
+    const valid = await testJetInsightCookie(value);
+    if (!valid) {
+      return NextResponse.json(
+        { error: "Cookie rejected by JetInsight — session is expired or invalid. Log in again and copy a fresh cookie." },
+        { status: 422 },
+      );
+    }
+  }
+
   const supa = createServiceClient();
   const { error } = await supa.from("jetinsight_config").upsert(
     {
@@ -91,6 +126,14 @@ export async function PUT(req: NextRequest) {
       { error: "Failed to save config" },
       { status: 500 },
     );
+  }
+
+  // Clear expiry alert throttle so the cron doesn't immediately re-alert
+  if (key === "session_cookie") {
+    await supa
+      .from("jetinsight_config")
+      .delete()
+      .eq("config_key", "expiry_alerted_at");
   }
 
   return NextResponse.json({ ok: true });
