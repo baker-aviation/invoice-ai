@@ -82,11 +82,33 @@ export default function AircraftFuelPlans() {
   const [error, setError] = useState<string | null>(null);
   const [tokensByTail, setTokensByTail] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [fleetTails, setFleetTails] = useState<Array<{ tail: string; aircraftType: string }>>([]);
 
   const sortedPlans = useMemo(() => {
     if (!result?.plans) return [];
     return [...result.plans].sort(sortPlans);
   }, [result]);
+
+  // Load fleet tail list once on mount from ics_sources.
+  useEffect(() => {
+    fetch("/api/fuel-planning/fleet-tails")
+      .then((r) => r.json())
+      .then((data) => { if (data.tails) setFleetTails(data.tails); })
+      .catch(() => {});
+  }, []);
+
+  const missingTails = useMemo(() => {
+    if (!result?.plans || !fleetTails.length) return [];
+    const planned = new Set(result.plans.map((p) => p.tail.toUpperCase()));
+    return fleetTails
+      .filter((t) => !planned.has(t.tail.toUpperCase()))
+      .sort((a, b) => {
+        const oa = a.aircraftType === "CL-30" ? 0 : 1;
+        const ob = b.aircraftType === "CL-30" ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        return a.tail.localeCompare(b.tail, "en", { numeric: true });
+      });
+  }, [result, fleetTails]);
 
   // On mount / when targetDate changes, rehydrate tokens + plans from the
   // DB so a page refresh doesn't force a regenerate. If plans already exist
@@ -379,6 +401,23 @@ export default function AircraftFuelPlans() {
 
       {result && !sortedPlans.length && (
         <p className="text-sm text-slate-500 text-center py-6">No plans for {result.date}.</p>
+      )}
+
+      {/* Tails with no flights scheduled */}
+      {missingTails.length > 0 && result && (
+        <div className="mt-6">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">No Flights Scheduled</h3>
+          <div className="space-y-1">
+            {missingTails.map((t) => (
+              <div key={t.tail} className="rounded-lg border border-slate-100 bg-slate-50/50 px-4 py-2 flex items-center gap-3">
+                <span className="text-sm font-medium text-slate-400">{t.tail}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">
+                  {t.aircraftType === "CE-750" ? "Citation X" : t.aircraftType === "CL-30" ? "Challenger 300" : t.aircraftType}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
