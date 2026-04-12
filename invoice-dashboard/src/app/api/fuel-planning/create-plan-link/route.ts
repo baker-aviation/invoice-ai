@@ -43,12 +43,15 @@ export async function POST(req: NextRequest) {
   // Reuse existing (tail, date) row so fuel releases associated with the
   // old token stay associated across regenerates. Unlocked rows get the
   // fresh plan_data; locked rows keep the snapshot.
-  const { data: existing } = await supa
+  // Use .limit(1) + order to avoid maybeSingle() error when dupes exist.
+  const { data: existingRows } = await supa
     .from("fuel_plan_links")
     .select("id, token, locked_at")
     .eq("tail_number", tail)
     .eq("date", date)
-    .maybeSingle();
+    .order("expires_at", { ascending: false })
+    .limit(1);
+  const existing = existingRows?.[0] ?? null;
 
   let token: string;
   const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
