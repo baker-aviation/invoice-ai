@@ -2,6 +2,7 @@ import "server-only";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isLoginRedirect } from "./parser";
 import { postSlackMessage } from "@/lib/slack";
+import { shouldAlertJetInsightExpiry } from "./alert-throttle";
 
 const BASE_URL = "https://portal.jetinsight.com";
 const CHARLIE_SLACK_ID = "D0AK75CPPJM";
@@ -83,10 +84,12 @@ export async function syncPostFlightData(
       const text = await res.text();
       if (isLoginRedirect(text)) {
         result.sessionExpired = true;
-        await postSlackMessage({
-          channel: CHARLIE_SLACK_ID,
-          text: ":warning: *JetInsight session expired*\n\nThe post-flight sync cookie has expired. Tap below to update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie on Whiteboard>",
-        });
+        if (await shouldAlertJetInsightExpiry()) {
+          await postSlackMessage({
+            channel: CHARLIE_SLACK_ID,
+            text: ":warning: *JetInsight session expired*\n\nThe post-flight sync cookie has expired. Tap below to update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie on Whiteboard>",
+          });
+        }
         return result;
       }
 

@@ -120,9 +120,12 @@ function OverviewTab() {
     setStats((s) => ({ ...s, total: s.crew + s.aircraft + s.company }));
   }, [stats.crew, stats.aircraft]);
 
+  const [cookieError, setCookieError] = useState<string | null>(null);
+
   async function saveCookie() {
     if (!cookieInput.trim()) return;
     setSaving(true);
+    setCookieError(null);
     const res = await fetch("/api/jetinsight/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -131,6 +134,9 @@ function OverviewTab() {
     if (res.ok) {
       setCookieInput("");
       await loadConfig();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setCookieError(data.error ?? "Failed to save cookie");
     }
     setSaving(false);
   }
@@ -284,9 +290,9 @@ function OverviewTab() {
   const cookieBg =
     cookieStatus === "ok"
       ? "bg-green-100 text-green-800"
-      : cookieStatus === "stale"
-        ? "bg-yellow-100 text-yellow-800"
-        : "bg-red-100 text-red-800";
+      : cookieStatus === "expired"
+        ? "bg-red-100 text-red-800"
+        : "bg-yellow-100 text-yellow-800";
 
   return (
     <div className="space-y-6">
@@ -301,9 +307,11 @@ function OverviewTab() {
           >
             {cookieStatus === "ok"
               ? "Valid"
-              : cookieStatus === "stale"
-                ? "Stale (> 24h)"
-                : "Missing"}
+              : cookieStatus === "expired"
+                ? "Expired"
+                : cookieStatus === "missing"
+                  ? "Missing"
+                  : "Unknown"}
           </span>
           {config.session_cookie?.updated_at && (
             <span className="text-sm text-slate-500">
@@ -325,9 +333,12 @@ function OverviewTab() {
             disabled={saving || !cookieInput.trim()}
             className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
           >
-            {saving ? "Saving..." : "Save"}
+            {saving ? "Validating..." : "Save"}
           </button>
         </div>
+        {cookieError && (
+          <p className="mt-2 text-sm text-red-600">{cookieError}</p>
+        )}
         <p className="mt-2 text-xs text-slate-500">
           Log into portal.jetinsight.com, open DevTools &gt; Application &gt;
           Cookies, copy the full cookie string.
@@ -426,15 +437,22 @@ function HamiltonSection() {
 
   useEffect(() => { loadHConfig(); loadHStats(); }, [loadHConfig, loadHStats]);
 
+  const [hCookieError, setHCookieError] = useState<string | null>(null);
+
   async function saveHCookie() {
     if (!hCookieInput.trim()) return;
     setHSaving(true);
+    setHCookieError(null);
     const res = await fetch("/api/hamilton/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "session_cookie", value: hCookieInput }),
     });
     if (res.ok) { setHCookieInput(""); await loadHConfig(); }
+    else {
+      const data = await res.json().catch(() => ({}));
+      setHCookieError(data.error ?? "Failed to save cookie");
+    }
     setHSaving(false);
   }
 
@@ -457,7 +475,7 @@ function HamiltonSection() {
     setHSyncing(false);
   }
 
-  const hCookieBg = hCookieStatus === "ok" ? "bg-green-100 text-green-800" : hCookieStatus === "stale" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
+  const hCookieBg = hCookieStatus === "ok" ? "bg-green-100 text-green-800" : hCookieStatus === "expired" ? "bg-red-100 text-red-800" : "bg-yellow-100 text-yellow-800";
 
   return (
     <>
@@ -470,7 +488,7 @@ function HamiltonSection() {
         <h3 className="mb-4 text-lg font-semibold text-slate-900">Hamilton Session Cookie</h3>
         <div className="mb-4 flex items-center gap-3">
           <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${hCookieBg}`}>
-            {hCookieStatus === "ok" ? "Valid" : hCookieStatus === "stale" ? "Stale (> 24h)" : "Missing"}
+            {hCookieStatus === "ok" ? "Valid" : hCookieStatus === "expired" ? "Expired" : hCookieStatus === "missing" ? "Missing" : "Unknown"}
           </span>
           {hConfig.session_cookie?.updated_at && (
             <span className="text-sm text-slate-500">Updated: {new Date(hConfig.session_cookie.updated_at).toLocaleString()}</span>
@@ -478,8 +496,9 @@ function HamiltonSection() {
         </div>
         <div className="flex gap-2">
           <input type="password" placeholder="Paste wos-session cookie from app.hamilton.ai..." value={hCookieInput} onChange={(e) => setHCookieInput(e.target.value)} className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-          <button onClick={saveHCookie} disabled={hSaving || !hCookieInput.trim()} className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">{hSaving ? "Saving..." : "Save"}</button>
+          <button onClick={saveHCookie} disabled={hSaving || !hCookieInput.trim()} className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">{hSaving ? "Validating..." : "Save"}</button>
         </div>
+        {hCookieError && <p className="mt-2 text-sm text-red-600">{hCookieError}</p>}
         <p className="mt-2 text-xs text-slate-500">Log into app.hamilton.ai, open DevTools &gt; Application &gt; Cookies, copy the wos-session value.</p>
       </div>
 

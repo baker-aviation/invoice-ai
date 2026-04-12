@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { postSlackMessage } from "@/lib/slack";
+import { shouldAlertJetInsightExpiry } from "@/lib/jetinsight/alert-throttle";
 import {
   syncCrewIndex,
   syncCrewDocs,
@@ -134,7 +135,7 @@ export async function GET(req: NextRequest) {
     errors.push(...companyResult.errors);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "SESSION_EXPIRED") {
+    if (msg === "SESSION_EXPIRED" && (await shouldAlertJetInsightExpiry())) {
       await postSlackMessage({
         channel: CHARLIE_SLACK_ID,
         text: ":warning: *JetInsight session expired*\n\nThe daily doc sync cookie has expired. Tap below to update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie on Whiteboard>\n\nDoc sync is paused until refreshed.",

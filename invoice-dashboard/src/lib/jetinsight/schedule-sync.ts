@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { postSlackMessage } from "@/lib/slack";
 import { parseScheduleJson, type ScheduleEvent } from "./schedule-parser";
 import { isLoginRedirect } from "./parser";
+import { shouldAlertJetInsightExpiry } from "./alert-throttle";
 import { detectScheduleChanges, type ChangeDetectionResult } from "@/lib/gameday/changeDetection";
 
 const BASE_URL = "https://portal.jetinsight.com";
@@ -653,10 +654,11 @@ async function upsertMxNote(
 }
 
 /**
- * Send Slack DM to Charlie when JetInsight session expires.
+ * Send Slack DM to Charlie when JetInsight session expires (throttled: 1/hr, suppressed after cookie refresh).
  */
 async function notifySessionExpired(): Promise<void> {
   try {
+    if (!(await shouldAlertJetInsightExpiry())) return;
     await postSlackMessage({
       channel: CHARLIE_SLACK_ID,
       text: ":warning: *JetInsight session expired*\n\nThe schedule sync cookie has expired. Tap below to update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie on Whiteboard>\n\nSchedule enrichment and doc sync are paused until refreshed.",
