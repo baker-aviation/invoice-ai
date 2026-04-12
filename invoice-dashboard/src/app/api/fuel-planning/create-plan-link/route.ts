@@ -24,7 +24,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (await isRateLimited(auth.userId, 20)) {
+  if (await isRateLimited(auth.userId, 60)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
