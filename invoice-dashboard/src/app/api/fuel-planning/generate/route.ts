@@ -87,7 +87,7 @@ const AIRCRAFT_DEFAULTS: Record<AircraftType, {
   reserveLbs: number;       // reserve + taxi fuel estimate
 }> = {
   "CE-750": { mlw: 31_800, zfw: 23_500, defaultBurnRate: 3000, reserveLbs: 2000 },
-  "CL-30":  { mlw: 34_250, zfw: 25_600, defaultBurnRate: 2500, reserveLbs: 1800 },
+  "CL-30":  { mlw: 34_250, zfw: 25_600, defaultBurnRate: 2500, reserveLbs: 2000 },
 };
 
 // ─── Types ─────────────────────────────────────────────────────────────
@@ -387,6 +387,7 @@ export async function POST(req: NextRequest) {
 
         const fuelBurn = Math.round(burnRate * flightHrs);
         const totalFuel = fuelBurn + defaults.reserveLbs;
+        const estimatedGallons = Math.round(totalFuel / ppg);
 
         // FBO fee lookup: use origin_fbo from flights if available, else best match at airport
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
@@ -403,7 +404,6 @@ export async function POST(req: NextRequest) {
 
         // 1. Cheapest contract vendor at this FBO (defaults to cheapest)
         if (fboName) {
-          const estimatedGallons = Math.round(totalFuel / ppg);
           const fboRate = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
           if (fboRate) {
             depRate = fboRate.price;
@@ -448,7 +448,6 @@ export async function POST(req: NextRequest) {
         let bestAtFbo: number | null = null;
         let bestVendorAtFbo: string | null = null;
         if (fboName && priceSource === "trip_notes") {
-          const estimatedGallons = Math.round(totalFuel / ppg);
           const alt = getBestRateAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons);
           if (alt && alt.price < depRate) {
             bestAtFbo = alt.price;
@@ -458,7 +457,7 @@ export async function POST(req: NextRequest) {
 
         // All available vendors at this FBO (for vendor plan display)
         const allVendors = fboName
-          ? getAllRatesAtFbo(advertisedPrices, leg.departure_icao, fboName)
+          ? getAllRatesAtFbo(advertisedPrices, leg.departure_icao, fboName, estimatedGallons)
               .map((r) => ({ vendor: r.vendor, price: r.price, tier: r.tier }))
           : [];
 

@@ -243,6 +243,7 @@ export function getAllRatesAtFbo(
   advertisedPrices: AdvertisedPriceRow[],
   airport: string,
   fboName: string | null,
+  expectedGallons?: number,
 ): Array<BestRate & { tier: string }> {
   if (!fboName || !advertisedPrices.length) return [];
 
@@ -260,13 +261,23 @@ export function getAllRatesAtFbo(
     if (r.week_start > latestWeek) latestWeek = r.week_start;
   }
 
-  return atAirport
+  let results = atAirport
     .filter((r) => r.week_start === latestWeek && productMatchesFbo(r.product, fboName))
     .map((r) => ({
       price: r.price,
       vendor: r.fbo_vendor,
       fbo: extractFboName(r.product),
       tier: r.volume_tier,
-    }))
-    .sort((a, b) => a.price - b.price);
+    }));
+
+  // When expectedGallons is provided, filter to only tiers that match
+  if (expectedGallons != null) {
+    const filtered = results.filter((r) => {
+      const { min, max } = parseTier(r.tier);
+      return expectedGallons >= min && expectedGallons <= max;
+    });
+    if (filtered.length) results = filtered;
+  }
+
+  return results.sort((a, b) => a.price - b.price);
 }

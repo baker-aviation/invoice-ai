@@ -143,13 +143,34 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
       setPlan(data.plan);
       setDate(data.date);
       setExpiresAt(data.expires_at);
-      // Restore persisted overrides (survive page refresh)
+      // Restore persisted overrides (survive page refresh).
+      // If any overrides exist, auto-recalculate so the displayed plan
+      // matches the saved overrides without requiring a manual button click.
+      let hasOverrides = false;
       if (data.overrides) {
-        if (data.overrides.mlw) setMlwOverrides(data.overrides.mlw);
-        if (data.overrides.zfw) setZfwOverrides(data.overrides.zfw);
-        if (data.overrides.fee) setFeeOverrides(data.overrides.fee);
-        if (data.overrides.waiver_gal) setWaiverGalOverrides(data.overrides.waiver_gal);
-        if (data.overrides.fuel_burn) setFuelBurnOverrides(data.overrides.fuel_burn);
+        if (data.overrides.mlw) { setMlwOverrides(data.overrides.mlw); hasOverrides = true; }
+        if (data.overrides.zfw) { setZfwOverrides(data.overrides.zfw); hasOverrides = true; }
+        if (data.overrides.fee) { setFeeOverrides(data.overrides.fee); hasOverrides = true; }
+        if (data.overrides.waiver_gal) { setWaiverGalOverrides(data.overrides.waiver_gal); hasOverrides = true; }
+        if (data.overrides.fuel_burn) { setFuelBurnOverrides(data.overrides.fuel_burn); hasOverrides = true; }
+      }
+      if (hasOverrides && token) {
+        // Fire recalculate with the restored overrides so plan reflects them
+        try {
+          const recalcRes = await fetch(`/api/fuel-planning/shared-plan/${token}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mlw_overrides: data.overrides?.mlw ?? {},
+              zfw_overrides: data.overrides?.zfw ?? {},
+              fee_overrides: data.overrides?.fee ?? {},
+              waiver_gal_overrides: data.overrides?.waiver_gal ?? {},
+              fuel_burn_overrides: data.overrides?.fuel_burn ?? {},
+            }),
+          });
+          const recalcData = await recalcRes.json();
+          if (recalcRes.ok && recalcData.plan) setPlan(recalcData.plan);
+        } catch { /* use original plan if recalculate fails */ }
       }
     } catch { setError("Failed to load plan"); }
     setLoading(false);
@@ -649,7 +670,7 @@ export function SharedPlanView({ token, mode = "crew" }: { token: string | null;
                               <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-600">EST</span>
                             )}
                           </td>
-                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">{fmtNum(leg.fuelToDestLbs)}</td>
+                          <td className="py-2.5 pr-3 text-right font-mono text-gray-700">{fmtNum(fuelBurnOverrides[String(i)] ?? leg.fuelToDestLbs)}</td>
                           <td className="py-2.5 pr-3 text-right text-gray-600">{fmtHrs(leg.flightTimeHours)}</td>
                           <td className="py-2.5 pr-3 text-right font-mono">
                             {leg.departurePricePerGal > 0 ? fmtDollars(leg.departurePricePerGal) : <span className="text-gray-400">N/A</span>}
