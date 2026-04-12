@@ -53,6 +53,7 @@ export async function middleware(request: NextRequest) {
     (request.nextUrl.pathname.match(/^\/api\/jobs\/\d+\/parse-prd$/) !== null) ||
     request.nextUrl.pathname.startsWith("/api/fuel-prices/advertised/pull-mailbox") ||
     request.nextUrl.pathname.startsWith("/api/fuel-planning/shared-plan/") ||
+    request.nextUrl.pathname === "/api/fuel-planning/fbo-fees-lookup" ||
     request.nextUrl.pathname.startsWith("/api/public/") ||
     request.nextUrl.pathname.startsWith("/form/")
   ) {
