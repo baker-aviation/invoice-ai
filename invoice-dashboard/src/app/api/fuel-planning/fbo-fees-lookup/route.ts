@@ -53,7 +53,9 @@ export async function POST(req: NextRequest) {
   // the crew-facing /tanker/plan/[token] page needs it without login.
   const body = await req.json().catch(() => ({}));
   const items: LookupItem[] = Array.isArray(body.items) ? body.items : [];
-  if (!items.length) return NextResponse.json({ results: [] });
+  if (!items.length) return NextResponse.json({ results: [] }, {
+    headers: { "Cache-Control": "no-store, max-age=0" },
+  });
 
   const airports = [...new Set(items.map((i) => normAirport(i.airport)).filter(Boolean))];
   const aircraftTypes = [...new Set(items.map((i) => i.aircraft_type).filter(Boolean))];
@@ -143,5 +145,7 @@ export async function POST(req: NextRequest) {
     };
   });
 
-  return NextResponse.json({ results });
+  return NextResponse.json({ results }, {
+    headers: { "Cache-Control": "no-store, max-age=0" },
+  });
 }
