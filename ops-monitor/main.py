@@ -1304,6 +1304,17 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
+            # 4. All-day events: ICS encodes these as ~24h blocks
+            #    (e.g. 04:00 → next day 03:59). These are scheduling
+            #    placeholders, not real flights. The JSON schedule sync
+            #    handles real flights — ICS all-day events just create
+            #    phantom rows with wrong durations.
+            if arr_dt and dep_dt:
+                dur_hours = (arr_dt - dep_dt).total_seconds() / 3600
+                if dur_hours >= 23:
+                    skipped += 1
+                    continue
+
             # Always set ALL fields so stale data gets overwritten on re-sync
             flight: Dict[str, Any] = {
                 "ics_uid": uid,

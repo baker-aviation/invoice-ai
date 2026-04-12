@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
 
   const { data: rows, error } = await supa
     .from("flights")
-    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid, ics_uid")
+    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_event_uuid, ics_uid, flight_type")
     .gte("scheduled_departure", now.toISOString())
     .lte("scheduled_departure", horizon.toISOString());
 
@@ -49,9 +49,21 @@ export async function GET(req: NextRequest) {
     departure_icao: string | null;
     arrival_icao: string | null;
     scheduled_departure: string;
+    scheduled_arrival: string | null;
     jetinsight_event_uuid: string | null;
     ics_uid: string | null;
+    flight_type: string | null;
   };
+
+  /** Detect ICS "all-day event" encoding: ~24h duration, "Other" type, no UUID */
+  function isAllDayPhantom(r: Row): boolean {
+    if (r.jetinsight_event_uuid) return false;
+    if (r.flight_type && r.flight_type !== "Other") return false;
+    if (!r.scheduled_arrival) return false;
+    const durationMs = new Date(r.scheduled_arrival).getTime() - new Date(r.scheduled_departure).getTime();
+    const hours = durationMs / (60 * 60 * 1000);
+    return hours >= 23 && hours <= 25; // ICS all-day events land at ~23:59 next day
+  }
 
   const realKeys = new Set<string>();
   const phantomCandidates: Row[] = [];
@@ -67,29 +79,35 @@ export async function GET(req: NextRequest) {
   }
 
   const redundantIds: string[] = [];
-  const orphanCount = phantomCandidates.reduce((count, r) => {
+  const allDayPhantomIds: string[] = [];
+  let orphanCount = 0;
+
+  for (const r of phantomCandidates) {
     const date = r.scheduled_departure.slice(0, 10);
     const key = `${r.tail_number!.toUpperCase()}|${r.departure_icao}|${r.arrival_icao}|${date}`;
     if (realKeys.has(key)) {
       redundantIds.push(r.id);
-      return count;
+    } else if (isAllDayPhantom(r)) {
+      allDayPhantomIds.push(r.id);
+    } else {
+      orphanCount++;
     }
-    return count + 1;
-  }, 0);
+  }
 
+  const toDelete = [...redundantIds, ...allDayPhantomIds];
   let deleted = 0;
-  if (redundantIds.length > 0) {
+  if (toDelete.length > 0) {
     const { error: delErr, count } = await supa
       .from("flights")
       .delete({ count: "exact" })
-      .in("id", redundantIds);
+      .in("id", toDelete);
     if (delErr) {
       return NextResponse.json(
-        { error: delErr.message, considered: redundantIds.length },
+        { error: delErr.message, considered: toDelete.length },
         { status: 500 },
       );
     }
-    deleted = count ?? redundantIds.length;
+    deleted = count ?? toDelete.length;
   }
 
   return NextResponse.json({
@@ -97,7 +115,9 @@ export async function GET(req: NextRequest) {
     scanned: rows?.length ?? 0,
     real_legs: realKeys.size,
     phantoms_considered: phantomCandidates.length,
-    redundant_deleted: deleted,
+    redundant_deleted: redundantIds.length,
+    allday_phantoms_deleted: allDayPhantomIds.length,
     orphans_preserved: orphanCount,
+    total_deleted: deleted,
   });
 }

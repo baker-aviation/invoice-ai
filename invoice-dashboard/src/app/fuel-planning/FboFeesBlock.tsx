@@ -36,7 +36,6 @@ export default function FboFeesBlock({
 }) {
   const [results, setResults] = useState<FeeResult[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const key = useMemo(
     () => legs.map((l) => `${l.airport}|${l.fbo_name}|${l.aircraft_type}`).join("__"),
@@ -46,26 +45,17 @@ export default function FboFeesBlock({
   useEffect(() => {
     if (!legs.length) return;
     setLoading(true);
-    setFetchError(null);
     fetch("/api/fuel-planning/fbo-fees-lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items: legs }),
     })
       .then(async (r) => {
-        if (!r.ok) {
-          const text = await r.text().catch(() => "");
-          setFetchError(`HTTP ${r.status}: ${text.slice(0, 100)}`);
-          setResults([]);
-          return;
-        }
+        if (!r.ok) { setResults([]); return; }
         const data = await r.json();
         setResults(data.results ?? []);
       })
-      .catch((err) => {
-        setFetchError(String(err));
-        setResults([]);
-      })
+      .catch(() => setResults([]))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
@@ -77,9 +67,6 @@ export default function FboFeesBlock({
       <div className="px-4 py-2 bg-slate-50 border-b border-slate-100">
         <span className="text-sm font-semibold text-slate-900">FBO Fees</span>
         <span className="text-xs text-slate-500 ml-2">Per leg at departure FBO</span>
-        {fetchError && (
-          <div className="text-[10px] text-red-500 mt-1">{fetchError}</div>
-        )}
       </div>
       <div className="divide-y divide-slate-100">
         {legs.map((leg, i) => {
